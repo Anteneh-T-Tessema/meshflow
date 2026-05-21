@@ -48,7 +48,7 @@ from typing import Any
 from meshflow.core.ledger import ReplayLedger
 from meshflow.core.node import MeshNode, NodeInput
 from meshflow.core.runtime import StepRuntime
-from meshflow.core.workflow import WorkflowDefinition, WorkflowResult
+from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult
 from meshflow.agents.base import (
     AgentConfig, BaseAgent, CriticAgent, ExecutorAgent,
     PlannerAgent, ResearcherAgent,
@@ -492,6 +492,61 @@ class Mesh:
         )
 
         return await workflow.run(task or f"Execute {workflow.name}", runtime)
+
+    async def resume_workflow(
+        self,
+        workflow: "WorkflowDefinition",
+        run_id: str,
+        decision: "HumanDecision",
+        ledger_db: str = ":memory:",
+    ) -> "WorkflowResult":
+        """Resume a workflow that paused at a human approval gate.
+
+        Loads the checkpoint from ``ledger_db``, injects the human's decision,
+        and continues execution through the governance kernel.
+
+        Usage::
+
+            # Original run paused
+            result = await Mesh().run_workflow(wf, task="...", ledger_db="runs.db")
+            # result.paused_nodes == ["approval"]
+
+            # Human decides
+            from meshflow import HumanDecision
+            result = await Mesh().resume_workflow(
+                wf,
+                run_id=result.run_id,
+                decision=HumanDecision(approved=True, comment="Reviewed and approved"),
+                ledger_db="runs.db",
+            )
+            assert result.completed is True
+        """
+        from meshflow.core.ledger import ReplayLedger
+        from meshflow.core.workflow import HumanDecision as _HD  # noqa: F401 type ref
+
+        ledger = ReplayLedger(ledger_db)
+
+        # Load checkpoint to get the original run's policy and run_id
+        checkpoint = await ledger.load_checkpoint_data(run_id)
+        if checkpoint is None:
+            raise ValueError(f"No paused workflow found for run_id={run_id!r}")
+
+        pol = workflow.policy if workflow.policy.budget_usd < self._policy.budget_usd else self._policy
+
+        runtime = StepRuntime(
+            policy=pol,
+            run_id=run_id,   # preserve original run_id for ledger continuity
+            guardian=Guardian(budget_usd=pol.budget_usd) if pol.enable_guardian else None,
+            dasc_gate=DascGate(pol, run_id) if pol.deterministic_gate else None,
+            identity=AgentIdentityProvider(run_id),
+            uncertainty=UncertaintyEngine() if pol.enable_uncertainty else None,
+            collusion=CollusionAuditor() if pol.enable_collusion_audit else None,
+            telemetry=MeshFlowTracer(export_to_console=self._telemetry_console),
+            eco=EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None,
+            ledger=ledger,
+        )
+
+        return await workflow.resume(run_id, decision, ledger, runtime)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -40,6 +40,14 @@ CREATE TABLE IF NOT EXISTS step_records (
 )
 """
 
+_CREATE_CHECKPOINTS_SQL = """
+CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+    run_id      TEXT PRIMARY KEY,
+    data        TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+)
+"""
+
 _CREATE_INDEX_RUN   = "CREATE INDEX IF NOT EXISTS idx_run_id    ON step_records(run_id)"
 _CREATE_INDEX_NODE  = "CREATE INDEX IF NOT EXISTS idx_node_id   ON step_records(node_id)"
 _CREATE_INDEX_TS    = "CREATE INDEX IF NOT EXISTS idx_timestamp ON step_records(timestamp)"
@@ -71,6 +79,7 @@ class ReplayLedger:
     def _init_db(self) -> None:
         with self._conn:
             self._conn.execute(_CREATE_SQL)
+            self._conn.execute(_CREATE_CHECKPOINTS_SQL)
             self._conn.execute(_CREATE_INDEX_RUN)
             self._conn.execute(_CREATE_INDEX_NODE)
             self._conn.execute(_CREATE_INDEX_TS)
@@ -150,3 +159,41 @@ class ReplayLedger:
         """Export a full run as a JSON string for archiving or transfer."""
         records = await self.get_run(run_id)
         return json.dumps({"run_id": run_id, "steps": records}, indent=2)
+
+    # ── Durable HITL checkpoints ──────────────────────────────────────────────
+
+    async def save_checkpoint(self, run_id: str, data: dict[str, Any]) -> None:
+        """Persist a paused workflow state so it can survive process restarts."""
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO workflow_checkpoints (run_id, data, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (run_id, json.dumps(data), now),
+            )
+
+    async def load_checkpoint_data(self, run_id: str) -> dict[str, Any] | None:
+        """Load a paused workflow state by run_id. Returns None if not found."""
+        row = self._conn.execute(
+            "SELECT data FROM workflow_checkpoints WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    async def delete_checkpoint(self, run_id: str) -> None:
+        """Remove a checkpoint after the workflow has successfully resumed."""
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM workflow_checkpoints WHERE run_id=?", (run_id,)
+            )
+
+    async def list_paused_runs(self) -> list[dict[str, Any]]:
+        """Return all currently paused (checkpointed) runs."""
+        rows = self._conn.execute(
+            "SELECT run_id, created_at FROM workflow_checkpoints ORDER BY created_at"
+        ).fetchall()
+        return [{"run_id": r[0], "paused_at": r[1]} for r in rows]

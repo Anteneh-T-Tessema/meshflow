@@ -7,7 +7,7 @@
 """
 from meshflow.core.mesh import Mesh, MeshEvent
 from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
-from meshflow.core.workflow import WorkflowDefinition, WorkflowResult
+from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult
 from meshflow.core.ledger import ReplayLedger
 from meshflow.core.runtime import StepRuntime, RuntimeOutcome
 from meshflow.core.schemas import (
@@ -29,6 +29,7 @@ __all__ = [
     # Workflow
     "WorkflowDefinition",
     "WorkflowResult",
+    "HumanDecision",
     # Kernel
     "StepRuntime",
     "RuntimeOutcome",

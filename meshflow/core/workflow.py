@@ -82,6 +82,7 @@ without running any code.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import time
 import uuid
 from collections import deque
@@ -91,8 +92,25 @@ from typing import Any
 import yaml
 
 from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
-from meshflow.core.runtime import RuntimeOutcome, StepRuntime
+from meshflow.core.runtime import RuntimeOutcome, StepRecord, StepRuntime
 from meshflow.core.schemas import HumanInLoopConfig, Policy, RiskTier
+
+
+@dataclass
+class HumanDecision:
+    """A human's response to a HITL approval gate.
+
+    Pass to ``WorkflowDefinition.resume()`` or ``Mesh.resume_workflow()``
+    to continue a workflow that paused waiting for human approval.
+
+    ``approved=True`` routes the workflow forward; ``approved=False`` sets
+    ``confidence=0.0`` in context so conditional edges can route to a
+    rejection branch.
+    """
+
+    approved: bool
+    comment: str = ""
+    decided_by: str = "human"
 
 
 @dataclass
@@ -342,6 +360,19 @@ class WorkflowDefinition:
                 steps.append(outcome)
                 if outcome.paused_for_human:
                     paused_nodes.append(node_id)
+                    # Persist durable checkpoint so the workflow survives restarts
+                    if hasattr(runtime, "_ledger") and runtime._ledger is not None:
+                        await _save_checkpoint(
+                            ledger=runtime._ledger,
+                            run_id=run_id,
+                            workflow_name=self.name,
+                            task=task,
+                            paused_at_node=node_id,
+                            context=ctx,
+                            completed=completed,
+                            skipped=skipped_nodes[:],
+                            step_outcomes=step_outcomes,
+                        )
                 elif not outcome.ok:
                     blocked_nodes.append(node_id)
                 else:
@@ -395,6 +426,206 @@ class WorkflowDefinition:
             paused_nodes=paused_nodes,
             skipped_nodes=skipped_nodes,
             ledger_db=ledger_db,
+        )
+
+    # ── Durable HITL resume ───────────────────────────────────────────────────
+
+    async def resume(
+        self,
+        run_id: str,
+        decision: HumanDecision,
+        ledger: "ReplayLedger",
+        runtime: StepRuntime,
+    ) -> WorkflowResult:
+        """Continue a workflow that paused waiting for human approval.
+
+        Loads the checkpoint saved by ``run()`` when a HITL gate fired,
+        injects the human's decision, and continues execution from the next
+        ready nodes. The checkpoint is deleted on successful completion.
+
+        Usage::
+
+            # First run — pauses at approval node
+            result = await mesh.run_workflow(wf, task="...", ledger_db="runs.db")
+            assert result.paused_nodes == ["approval"]
+
+            # Human reviews and decides
+            decision = HumanDecision(approved=True, comment="LGTM")
+
+            # Resume — picks up exactly where it left off
+            result = await workflow.resume(
+                run_id=result.run_id,
+                decision=decision,
+                ledger=ReplayLedger("runs.db"),
+                runtime=<new StepRuntime with same run_id>,
+            )
+            assert result.completed is True
+        """
+        from meshflow.core.ledger import ReplayLedger  # avoid circular import
+
+        checkpoint = await ledger.load_checkpoint_data(run_id)
+        if checkpoint is None:
+            raise ValueError(f"No checkpoint found for run_id={run_id!r}")
+
+        # Restore state from checkpoint
+        task = checkpoint["task"]
+        ctx: dict[str, Any] = checkpoint["context"]
+        paused_at = checkpoint["paused_at_node"]
+        completed: set[str] = set(checkpoint["completed_nodes"])
+        skipped: set[str] = set(checkpoint["skipped_nodes"])
+        skipped_nodes: list[str] = checkpoint["skipped_nodes"][:]
+
+        # Reconstruct minimal step_outcomes so _condition_fires can work
+        step_outcomes: dict[str, RuntimeOutcome] = _rebuild_step_outcomes(
+            run_id, task, checkpoint.get("node_outputs", {})
+        )
+
+        # Record the human's decision as a proper step
+        decision_content = "approved" if decision.approved else "rejected"
+        decision_structured = {
+            "approved": decision.approved,
+            "comment": decision.comment,
+            "decided_by": decision.decided_by,
+        }
+        decision_output = NodeOutput(
+            content=decision_content,
+            confidence=1.0 if decision.approved else 0.0,
+            structured=decision_structured,
+        )
+        human_record = StepRecord(
+            run_id=run_id,
+            step_id=uuid.uuid4().hex[:8],
+            node_id=paused_at,
+            node_kind="human",
+            input_task=task,
+            output_content=decision_content,
+            verdict="commit",
+            blocked=False,
+            block_reason="",
+            uncertainty=0.0,
+            cost_usd=0.0,
+            tokens_used=0,
+            carbon_gco2=0.0,
+            duration_ms=0.0,
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            metadata={"human_decision": decision.approved, "comment": decision.comment},
+        )
+        await ledger.write(human_record)
+
+        human_outcome = RuntimeOutcome(
+            ok=True,
+            node_id=paused_at,
+            node_kind="human",
+            output=decision_output,
+            record=human_record,
+            blocked_by="",
+            paused_for_human=False,
+            human_context={},
+        )
+        step_outcomes[paused_at] = human_outcome
+        completed.add(paused_at)
+
+        # Inject decision into shared context for downstream conditions
+        ctx[f"{paused_at}_output"] = decision_content
+        ctx["human_decision"] = decision.approved
+        ctx["human_comment"] = decision.comment
+        ctx.update(decision_structured)
+
+        # Run the rest of the workflow using the same ready-queue logic
+        start = time.monotonic()
+        steps: list[RuntimeOutcome] = [human_outcome]
+        blocked_nodes: list[str] = []
+        paused_nodes: list[str] = []
+
+        ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+        while newly_skipped:
+            skipped.update(newly_skipped)
+            skipped_nodes.extend(newly_skipped)
+            ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+
+        while ready:
+            level_nodes = [self._nodes[nid] for nid in ready if nid in self._nodes]
+            if not level_nodes:
+                break
+
+            ctx_snapshot = ctx.copy()
+
+            async def _run_node(nd: MeshNode) -> RuntimeOutcome:
+                return await runtime.run(
+                    nd,
+                    NodeInput(task=task, context=ctx_snapshot.copy()),
+                    ctx_snapshot.copy(),
+                )
+
+            level_outcomes: list[RuntimeOutcome] = list(
+                await asyncio.gather(*[_run_node(nd) for nd in level_nodes])
+            )
+
+            for node_id, outcome in zip(ready, level_outcomes):
+                step_outcomes[node_id] = outcome
+                steps.append(outcome)
+                if outcome.paused_for_human:
+                    paused_nodes.append(node_id)
+                    await _save_checkpoint(
+                        ledger=ledger,
+                        run_id=run_id,
+                        workflow_name=self.name,
+                        task=task,
+                        paused_at_node=node_id,
+                        context=ctx,
+                        completed=completed,
+                        skipped=skipped_nodes[:],
+                        step_outcomes=step_outcomes,
+                    )
+                elif not outcome.ok:
+                    blocked_nodes.append(node_id)
+                else:
+                    completed.add(node_id)
+                    if outcome.output.content:
+                        ctx[f"{node_id}_output"] = outcome.output.content
+                    if outcome.output.structured:
+                        ctx.update(
+                            {k: v for k, v in outcome.output.structured.items()
+                             if not k.startswith("_")}
+                        )
+
+            if blocked_nodes or paused_nodes:
+                break
+
+            ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+            while newly_skipped:
+                skipped.update(newly_skipped)
+                skipped_nodes.extend(newly_skipped)
+                ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+
+        # Delete checkpoint on clean completion
+        if not blocked_nodes and not paused_nodes:
+            await ledger.delete_checkpoint(run_id)
+
+        final_output = ""
+        for outcome in reversed(steps):
+            if outcome.ok and outcome.output.content:
+                final_output = outcome.output.content
+                break
+
+        total_cost = sum(s.record.cost_usd for s in steps)
+        total_tokens = sum(s.record.tokens_used for s in steps)
+        total_carbon = sum(s.record.carbon_gco2 for s in steps)
+
+        return WorkflowResult(
+            run_id=run_id,
+            workflow_name=self.name,
+            completed=not blocked_nodes and not paused_nodes,
+            output=final_output,
+            steps=steps,
+            total_cost_usd=round(total_cost, 6),
+            total_tokens=total_tokens,
+            total_carbon_gco2=round(total_carbon, 4),
+            duration_s=round(time.monotonic() - start, 2),
+            blocked_nodes=blocked_nodes,
+            paused_nodes=paused_nodes,
+            skipped_nodes=skipped_nodes,
+            ledger_db=getattr(ledger, "_db_path", ":memory:"),
         )
 
     # ── YAML loader ───────────────────────────────────────────────────────────
@@ -533,6 +764,85 @@ class WorkflowDefinition:
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+async def _save_checkpoint(
+    ledger: Any,
+    run_id: str,
+    workflow_name: str,
+    task: str,
+    paused_at_node: str,
+    context: dict[str, Any],
+    completed: set[str],
+    skipped: list[str],
+    step_outcomes: dict[str, RuntimeOutcome],
+) -> None:
+    """Serialize paused workflow state to the ledger."""
+    node_outputs = {
+        nid: {
+            "content": o.output.content,
+            "confidence": o.output.confidence,
+            "structured": o.output.structured,
+            "kind": o.node_kind,
+        }
+        for nid, o in step_outcomes.items()
+        if o.ok
+    }
+    await ledger.save_checkpoint(run_id, {
+        "run_id": run_id,
+        "workflow_name": workflow_name,
+        "task": task,
+        "paused_at_node": paused_at_node,
+        "context": context,
+        "completed_nodes": list(completed),
+        "skipped_nodes": skipped,
+        "node_outputs": node_outputs,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    })
+
+
+def _rebuild_step_outcomes(
+    run_id: str,
+    task: str,
+    node_outputs: dict[str, Any],
+) -> dict[str, RuntimeOutcome]:
+    """Reconstruct minimal RuntimeOutcome objects from checkpoint data."""
+    outcomes: dict[str, RuntimeOutcome] = {}
+    for nid, out_data in node_outputs.items():
+        output = NodeOutput(
+            content=out_data.get("content", ""),
+            confidence=out_data.get("confidence", 0.0),
+            structured=out_data.get("structured", {}),
+        )
+        record = StepRecord(
+            run_id=run_id,
+            step_id="checkpoint",
+            node_id=nid,
+            node_kind=out_data.get("kind", "python"),
+            input_task=task,
+            output_content=output.content,
+            verdict="commit",
+            blocked=False,
+            block_reason="",
+            uncertainty=0.0,
+            cost_usd=0.0,
+            tokens_used=0,
+            carbon_gco2=0.0,
+            duration_ms=0.0,
+            timestamp="",
+            metadata={},
+        )
+        outcomes[nid] = RuntimeOutcome(
+            ok=True,
+            node_id=nid,
+            node_kind=out_data.get("kind", "python"),
+            output=output,
+            record=record,
+            blocked_by="",
+            paused_for_human=False,
+            human_context={},
+        )
+    return outcomes
+
 
 def _build_native_node(
     node_id: str, node_cfg: dict[str, Any], pol: Policy

@@ -360,6 +360,65 @@ edges:
 
 ---
 
+## Durable HITL — pause, survive restart, resume
+
+When a node with `risk=RiskTier.IRREVERSIBLE` is reached and the policy has
+`human_in_loop` enabled, the workflow **pauses**. MeshFlow immediately serializes
+the full execution state (context, completed nodes, outputs) to the ledger so the
+workflow survives process restarts.
+
+```python
+import asyncio
+from meshflow import Mesh, HumanDecision, WorkflowDefinition, MeshNode, RiskTier
+from meshflow.core.schemas import HumanInLoopConfig, Policy
+
+policy = Policy(
+    human_in_loop=HumanInLoopConfig(enabled=True, tier_threshold=RiskTier.IRREVERSIBLE)
+)
+
+wf = (WorkflowDefinition("deploy", policy=policy)
+      .add_node(MeshNode.from_callable("research", run_analysis))
+      .add_node(MeshNode.from_callable("approval", send_for_sign_off,
+                                       risk=RiskTier.IRREVERSIBLE))
+      .add_node(MeshNode.from_callable("publish", deploy_to_prod))
+      .add_edge("research", "approval")
+      .add_edge("approval", "publish"))
+
+mesh = Mesh(policy=policy)
+
+# Phase 1 — returns immediately when HITL gate fires
+result = await mesh.run_workflow(wf, task="Q2 analysis", ledger_db="runs.db")
+assert result.paused_nodes == ["approval"]
+
+# ... process restarts, comes back later ...
+
+# Phase 2 — resume with the human's decision
+result = await mesh.resume_workflow(
+    wf,
+    run_id=result.run_id,
+    decision=HumanDecision(approved=True, comment="Reviewed and approved"),
+    ledger_db="runs.db",   # same DB as Phase 1
+)
+assert result.completed is True
+```
+
+The human's decision is injected into the shared context as `human_decision`,
+`human_comment`, and `approved` so downstream conditional edges can route on it:
+
+```yaml
+edges:
+  - from: approval
+    to: publish
+    condition: "approved == True"
+  - from: approval
+    to: notify_rejection
+    condition: "approved == False"
+```
+
+`list_paused_runs()` returns all checkpointed runs across restarts.
+
+---
+
 ## Replay any run
 
 Every governed step is written to an append-only SQLite ledger automatically.
@@ -640,7 +699,8 @@ meshflow/
   concurrently via `asyncio.gather()`; all governance still fires per node
 - [x] **Conditional edge routing** — Python expression on any edge; nodes whose
   incoming conditions all evaluate False are skipped (propagated transitively)
-- [ ] **Durable HITL** — pause / resume that survives process restarts
+- [x] **Durable HITL** — checkpoint saved to ledger on pause; `resume()` and
+  `Mesh.resume_workflow()` continue from exact state across process restarts
 - [ ] **PostgreSQL / S3 ledger backend** — for high-concurrency and distributed deployments
 - [ ] **Web UI** — live run inspection, step-by-step replay, cost breakdown
 - [ ] **OTLP export** — push traces to Grafana, Jaeger, or Datadog
