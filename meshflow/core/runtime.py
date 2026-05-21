@@ -331,9 +331,9 @@ class StepRuntime:
             timestamp=_now_iso(),
         )
 
-        # 11. Audit ledger write  (synchronous sqlite connection — no executor needed)
+        # 11. Audit ledger write
         if self._ledger:
-            self._ledger._write_sync(record)
+            await self._ledger.write(record)
 
         return RuntimeOutcome(
             ok=not blocked,

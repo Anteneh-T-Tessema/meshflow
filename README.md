@@ -421,7 +421,10 @@ edges:
 
 ## Replay any run
 
-Every governed step is written to an append-only SQLite ledger automatically.
+Every governed step is written to an append-only replay ledger automatically.
+SQLite is the default for local and single-node deployments; PostgreSQL is
+selected automatically when `ReplayLedger` receives a `postgres://` or
+`postgresql://` DSN.
 
 ```python
 import asyncio
@@ -429,6 +432,8 @@ from meshflow import ReplayLedger
 
 async def main():
     ledger  = ReplayLedger("meshflow_runs.db")
+    # Or for distributed runners:
+    # ledger = ReplayLedger("postgresql://meshflow:secret@db.example.com/meshflow")
 
     # Summary — cost, tokens, carbon, blocked steps
     summary = await ledger.run_summary(run_id)
@@ -446,10 +451,10 @@ async def main():
 asyncio.run(main())
 ```
 
-> **Storage backends:** The default ledger uses SQLite, which works well for
-> single-node production deployments. For distributed or high-concurrency environments
-> a PostgreSQL / S3 backend is on the roadmap. The `ReplayLedger` interface is
-> intentionally simple so swapping backends requires no application code changes.
+> **Storage backends:** `ReplayLedger` is a backend facade. SQLite remains the
+> zero-config default, while PostgreSQL uses `asyncpg` lazily on first use so
+> construction does not perform network I/O. The same API powers durable HITL
+> checkpoints on both backends.
 
 ---
 
@@ -701,7 +706,9 @@ meshflow/
   incoming conditions all evaluate False are skipped (propagated transitively)
 - [x] **Durable HITL** — checkpoint saved to ledger on pause; `resume()` and
   `Mesh.resume_workflow()` continue from exact state across process restarts
-- [ ] **PostgreSQL / S3 ledger backend** — for high-concurrency and distributed deployments
+- [x] **PostgreSQL ledger backend** — `postgres://` / `postgresql://` DSNs select
+  an asyncpg backend behind the same `ReplayLedger` API
+- [ ] **S3 ledger archive backend** — long-term immutable export storage
 - [ ] **Web UI** — live run inspection, step-by-step replay, cost breakdown
 - [ ] **OTLP export** — push traces to Grafana, Jaeger, or Datadog
 - [ ] **Run SBOM** — signed software bill of materials for every governed run

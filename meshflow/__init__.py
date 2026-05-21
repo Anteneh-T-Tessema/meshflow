@@ -8,7 +8,7 @@
 from meshflow.core.mesh import Mesh, MeshEvent
 from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
 from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult
-from meshflow.core.ledger import ReplayLedger
+from meshflow.core.ledger import LedgerBackend, PostgresLedgerBackend, ReplayLedger, SQLiteLedgerBackend
 from meshflow.core.runtime import StepRuntime, RuntimeOutcome
 from meshflow.core.schemas import (
     AgentRole, Evidence, HumanInLoopConfig, Intent, Message,
@@ -35,6 +35,9 @@ __all__ = [
     "RuntimeOutcome",
     # Ledger
     "ReplayLedger",
+    "LedgerBackend",
+    "SQLiteLedgerBackend",
+    "PostgresLedgerBackend",
     # Policy + schemas
     "Policy",
     "HumanInLoopConfig",
