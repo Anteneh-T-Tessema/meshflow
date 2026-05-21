@@ -1,48 +1,60 @@
 """WorkflowDefinition — portable, YAML-declarative, graph-topological workflow.
 
-A workflow is a directed graph of MeshNodes with a single policy applied to
-all edges. Any cycle-free topology is supported: linear chains, fan-out
-(parallel branches), fan-in (joins), conditional routing, and DAGs.
+A workflow is a directed acyclic graph of MeshNodes with a single policy
+applied to all edges. Any DAG topology is supported, including fan-out
+(parallel branches) and fan-in (joins).
 
-YAML format::
+Fan-out / fan-in example::
 
     name: research_pipeline
     version: "1"
 
     policy:
-      budget_usd: 1.00
-      max_steps: 20
+      budget_usd: 2.00
+      max_steps: 30
       enable_guardian: true
-      human_approval_tier: irreversible   # READ_ONLY|INTERNAL|EXTERNAL_IO|IRREVERSIBLE
 
     nodes:
-      planner:
-        kind: native
-        role: planner
-
-      research_crew:
-        kind: crewai
-        ref: crews.market_research        # looked up in node_registry
-
-      validator:
-        kind: langgraph
-        ref: graphs.fact_check
-
-      approval:
-        kind: human
-
-      final_writer:
-        kind: native
-        role: executor
+      planner:   {kind: native, role: planner}
+      branch_a:  {kind: python, ref: agents.research_a}
+      branch_b:  {kind: python, ref: agents.research_b}
+      branch_c:  {kind: python, ref: agents.research_c}
+      synthesizer: {kind: native, role: executor}
 
     edges:
-      - planner -> research_crew
-      - research_crew -> validator
-      - validator -> approval
-      - approval -> final_writer
+      - planner -> branch_a
+      - planner -> branch_b
+      - planner -> branch_c
+      - branch_a -> synthesizer
+      - branch_b -> synthesizer
+      - branch_c -> synthesizer
 
     terminal:
-      - final_writer
+      - synthesizer
+
+Execution order: planner runs first (level 0). branch_a, branch_b, branch_c
+have no dependency between them so they run concurrently via asyncio.gather()
+(level 1). synthesizer runs after all three complete (level 2).
+
+Every node, including parallel branches, passes through the full StepRuntime
+governance kernel: guardian scan, budget gate, HITL, OTEL span, uncertainty
+scoring, collusion detection, and ledger write. Parallelism is transparent to
+the control plane — each branch gets its own audit record.
+
+Linear (sequential) example::
+
+    nodes:
+      planner: {kind: native, role: planner}
+      researcher: {kind: crewai, ref: crews.market_research}
+      validator: {kind: langgraph, ref: graphs.fact_check}
+      approval: {kind: human}
+      writer: {kind: native, role: executor}
+
+    edges:
+      - planner -> researcher
+      - researcher -> validator
+      - validator -> approval
+      - approval -> writer
 
 The YAML is the artifact you commit to git. It is reproducible and inspectable
 without running any code.
@@ -139,25 +151,35 @@ class WorkflowDefinition:
     def _is_terminal(self, node_id: str) -> bool:
         return node_id in self._terminal or not self._successors(node_id)
 
-    def _topological_order(self) -> list[str]:
-        """Kahn's algorithm — returns nodes in execution order for a DAG."""
+    def _topological_levels(self) -> list[list[str]]:
+        """Kahn's algorithm — groups nodes into parallel-safe execution levels.
+
+        All nodes within a level have no dependency between them and can run
+        concurrently. Nodes in level N+1 depend only on nodes in level ≤ N.
+        """
         in_degree: dict[str, int] = {n: 0 for n in self._nodes}
         for edge in self._edges:
             if edge.to_node in in_degree:
                 in_degree[edge.to_node] += 1
 
-        queue: deque[str] = deque(
-            n for n, d in in_degree.items() if d == 0
-        )
-        order: list[str] = []
-        while queue:
-            node_id = queue.popleft()
-            order.append(node_id)
-            for succ in self._successors(node_id):
-                in_degree[succ] -= 1
-                if in_degree[succ] == 0:
-                    queue.append(succ)
-        return order
+        current: list[str] = sorted(n for n, d in in_degree.items() if d == 0)
+        levels: list[list[str]] = []
+
+        while current:
+            levels.append(current)
+            next_level: list[str] = []
+            for node_id in current:
+                for succ in self._successors(node_id):
+                    in_degree[succ] -= 1
+                    if in_degree[succ] == 0:
+                        next_level.append(succ)
+            current = sorted(next_level)
+
+        return levels
+
+    # kept for backward compatibility with any external callers
+    def _topological_order(self) -> list[str]:
+        return [n for level in self._topological_levels() for n in level]
 
     # ── Execution ─────────────────────────────────────────────────────────────
 
@@ -167,7 +189,12 @@ class WorkflowDefinition:
         runtime: StepRuntime,
         context: dict[str, Any] | None = None,
     ) -> WorkflowResult:
-        """Execute the workflow with full StepRuntime governance on every node."""
+        """Execute the workflow with full StepRuntime governance on every node.
+
+        Nodes with no dependency between them run concurrently via
+        asyncio.gather(). All governance (guardian, budget, HITL, ledger)
+        fires per node — parallelism is transparent to the control plane.
+        """
         run_id = runtime._run_id
         start = time.monotonic()
         ctx = dict(context or {})
@@ -177,37 +204,51 @@ class WorkflowDefinition:
         blocked_nodes: list[str] = []
         paused_nodes: list[str] = []
 
-        # Walk the graph in topological order
-        exec_order = self._topological_order()
-        if not exec_order and self._entry:
-            exec_order = [self._entry]
+        levels = self._topological_levels()
+        if not levels and self._entry:
+            levels = [[self._entry]]
 
-        for node_id in exec_order:
-            node = self._nodes.get(node_id)
-            if node is None:
+        for level in levels:
+            level_nodes = [self._nodes[nid] for nid in level if nid in self._nodes]
+            if not level_nodes:
                 continue
 
-            node_input = NodeInput(task=task, context=ctx.copy())
-            outcome = await runtime.run(node, node_input, ctx)
-            steps.append(outcome)
+            # Snapshot context so all parallel nodes see the same input state.
+            # Each node gets its own copy so runtime can write back internal
+            # keys (_upstream_confidence etc.) without cross-node interference.
+            ctx_snapshot = ctx.copy()
 
-            if outcome.paused_for_human:
-                paused_nodes.append(node_id)
-                # Paused workflows stop here — caller must resume
-                break
-
-            if not outcome.ok:
-                blocked_nodes.append(node_id)
-                break
-
-            # Merge output into shared context for downstream nodes
-            if outcome.output.content:
-                ctx[f"{node_id}_output"] = outcome.output.content
-            if outcome.output.structured:
-                ctx.update(
-                    {k: v for k, v in outcome.output.structured.items()
-                     if not k.startswith("_")}
+            async def _run_node(nd: MeshNode) -> RuntimeOutcome:
+                return await runtime.run(
+                    nd,
+                    NodeInput(task=task, context=ctx_snapshot.copy()),
+                    ctx_snapshot.copy(),
                 )
+
+            outcomes: list[RuntimeOutcome] = list(
+                await asyncio.gather(*[_run_node(nd) for nd in level_nodes])
+            )
+
+            for outcome in outcomes:
+                steps.append(outcome)
+                if outcome.paused_for_human:
+                    paused_nodes.append(outcome.record.node_id)
+                elif not outcome.ok:
+                    blocked_nodes.append(outcome.record.node_id)
+
+            # Merge all parallel outputs into shared context for the next level.
+            # Public keys only — skip internal runtime state (_prefixed keys).
+            for outcome in outcomes:
+                if outcome.ok and outcome.output.content:
+                    ctx[f"{outcome.record.node_id}_output"] = outcome.output.content
+                if outcome.ok and outcome.output.structured:
+                    ctx.update(
+                        {k: v for k, v in outcome.output.structured.items()
+                         if not k.startswith("_")}
+                    )
+
+            if blocked_nodes or paused_nodes:
+                break
 
         # Build final output from last successful step
         final_output = ""
@@ -220,7 +261,6 @@ class WorkflowDefinition:
         total_tokens = sum(s.record.tokens_used for s in steps)
         total_carbon = sum(s.record.carbon_gco2 for s in steps)
 
-        # Determine ledger db path from ledger if available
         ledger_db = getattr(runtime._ledger, "_db_path", ":memory:")
 
         return WorkflowResult(

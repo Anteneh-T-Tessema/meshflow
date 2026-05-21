@@ -606,8 +606,8 @@ meshflow/
 
 ## Roadmap
 
-- [ ] **Fan-out / fan-in** — parallel branch execution in the MeshFlow YAML orchestrator
-  (LangGraph subgraphs already run their own parallel branches today)
+- [x] **Fan-out / fan-in** — independent nodes in the same topological level run
+  concurrently via `asyncio.gather()`; all governance still fires per node
 - [ ] **Conditional edge routing** — expression-based branching between YAML nodes
 - [ ] **Durable HITL** — pause / resume that survives process restarts
 - [ ] **PostgreSQL / S3 ledger backend** — for high-concurrency and distributed deployments
