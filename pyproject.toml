@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meshflow"
-version = "0.6.0"
-description = "Gold-standard multi-agent orchestration: stateful, secure, observable, language-agnostic"
+version = "0.7.0"
+description = "The control plane for multi-agent systems — govern, orchestrate, audit, and standardize LangGraph, CrewAI, AutoGen and native agents under one policy layer"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
@@ -51,7 +51,7 @@ dev = [
 ]
 
 [project.scripts]
-meshflow = "meshflow.runtime.cli:main"
+meshflow = "meshflow.cli.main:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

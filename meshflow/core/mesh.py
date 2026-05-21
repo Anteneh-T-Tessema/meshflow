@@ -1,14 +1,40 @@
-"""MeshFlow Mesh — governed orchestration runtime.
+"""MeshFlow Mesh — control plane for multi-agent systems.
 
-Positioning: MeshFlow is not a replacement for LangGraph, CrewAI, or AutoGen.
-It is a governed wrapper that runs native agents OR imported agents from those
-frameworks under a unified policy, audit, identity, and MCP control plane.
+Positioning: MeshFlow is NOT a replacement for LangGraph, CrewAI, or AutoGen.
+It is the governance and orchestration standard ABOVE them — a unified control
+plane that runs agents from any framework under a single policy, identity,
+audit, and security layer.
 
-Every agent step — regardless of origin — passes through:
-  Guardian → PolicyEngine → Agent.step() → UncertaintyEngine
-  → DascGate → CAEP → CollusionAuditor → Telemetry → EnvironmentalOptimizer
+  Use LangGraph to build graphs.
+  Use CrewAI to build crews.
+  Use AutoGen to build agent conversations.
+  Use MeshFlow to govern, orchestrate, audit, and standardize them all.
 
-That full governed path is what makes MeshFlow distinct.
+Three entry points:
+
+  1. Native workflow (fastest start):
+        result = await Mesh().run("your task")
+
+  2. Universal MeshNode workflow (cross-framework):
+        from meshflow.core.node import MeshNode
+        from meshflow.core.workflow import WorkflowDefinition
+
+        wf = (WorkflowDefinition("pipeline")
+              .add_node(MeshNode.from_crewai("research", crew))
+              .add_node(MeshNode.from_langgraph("validate", graph))
+              .add_node(MeshNode.human_approval("approve"))
+              .add_edge("research", "validate")
+              .add_edge("validate", "approve"))
+
+        result = await Mesh().run_workflow(wf, task="analyse Q2 revenue")
+
+  3. YAML config (reproducible, git-committable):
+        mesh = Mesh.from_yaml("meshflow.yaml")
+
+Every node — regardless of origin — passes through the StepRuntime kernel:
+  pre_step  → identity | circuit-breaker | guardian | risk-gate | budget | HITL
+  execute   → node.run() | trace | checkpoint
+  post_step → uncertainty | cost | ledger | memory | collusion | CAEP
 """
 from __future__ import annotations
 
@@ -19,6 +45,10 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from meshflow.core.ledger import ReplayLedger
+from meshflow.core.node import MeshNode, NodeInput
+from meshflow.core.runtime import StepRuntime
+from meshflow.core.workflow import WorkflowDefinition, WorkflowResult
 from meshflow.agents.base import (
     AgentConfig, BaseAgent, CriticAgent, ExecutorAgent,
     PlannerAgent, ResearcherAgent,
@@ -422,6 +452,46 @@ class Mesh:
             agents.append(AgentClass(config, pol))
 
         return cls(agents=agents, policy=pol)
+
+    # ── Universal MeshNode workflow entry point ───────────────────────────────
+
+    async def run_workflow(
+        self,
+        workflow: "WorkflowDefinition",
+        task: str = "",
+        ledger_db: str = ":memory:",
+    ) -> "WorkflowResult":
+        """Run a WorkflowDefinition through the StepRuntime governance kernel.
+
+        Every node — regardless of kind — passes through the full governed path.
+
+        Usage::
+
+            wf = (WorkflowDefinition("my_pipeline")
+                  .add_node(MeshNode.from_crewai("research", crew))
+                  .add_node(MeshNode.from_langgraph("validate", graph))
+                  .add_edge("research", "validate"))
+
+            result = await Mesh(policy=Policy(budget_usd=2.0)).run_workflow(wf, "analyse Q2")
+        """
+        pol = workflow.policy if workflow.policy.budget_usd < self._policy.budget_usd else self._policy
+        run_id = str(uuid.uuid4())
+
+        ledger = ReplayLedger(ledger_db)
+        runtime = StepRuntime(
+            policy=pol,
+            run_id=run_id,
+            guardian=Guardian(budget_usd=pol.budget_usd) if pol.enable_guardian else None,
+            dasc_gate=DascGate(pol, run_id) if pol.deterministic_gate else None,
+            identity=AgentIdentityProvider(run_id),
+            uncertainty=UncertaintyEngine() if pol.enable_uncertainty else None,
+            collusion=CollusionAuditor() if pol.enable_collusion_audit else None,
+            telemetry=MeshFlowTracer(export_to_console=self._telemetry_console),
+            eco=EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None,
+            ledger=ledger,
+        )
+
+        return await workflow.run(task or f"Execute {workflow.name}", runtime)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

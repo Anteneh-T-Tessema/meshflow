@@ -117,6 +117,14 @@ class AgentIdentityProvider:
         doc = self._dids.get(agent_id)
         return doc is not None and not doc.revoked
 
+    def is_provisioned(self, agent_id: str) -> bool:
+        """Return True if a DID has been minted for this agent (active or revoked)."""
+        return agent_id in self._dids
+
+    def get_did(self, agent_id: str) -> str:
+        doc = self._dids.get(agent_id)
+        return doc.did if doc else ""
+
     # ── Verifiable Credentials ────────────────────────────────────────────────
 
     def issue_vc(

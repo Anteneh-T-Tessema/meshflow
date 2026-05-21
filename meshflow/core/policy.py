@@ -53,6 +53,10 @@ class BudgetTracker:
     def remaining_tokens(self) -> int:
         return self.policy.budget_tokens - self._tokens
 
+    def pre_check(self) -> None:
+        """Raise BudgetExceededError if any budget is already at/over limit."""
+        self._check()
+
     def _check(self) -> None:
         if self._usd > self.policy.budget_usd:
             raise BudgetExceededError(
