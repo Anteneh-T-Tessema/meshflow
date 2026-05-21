@@ -1,13 +1,21 @@
-"""Main Mesh class — the single entry point for all MeshFlow operations.
+"""MeshFlow Mesh — governed orchestration runtime.
 
-All nine layers are coordinated here. The user calls mesh.run() and
-all complexity is hidden inside. This is the "easy to use" promise.
+Positioning: MeshFlow is not a replacement for LangGraph, CrewAI, or AutoGen.
+It is a governed wrapper that runs native agents OR imported agents from those
+frameworks under a unified policy, audit, identity, and MCP control plane.
+
+Every agent step — regardless of origin — passes through:
+  Guardian → PolicyEngine → Agent.step() → UncertaintyEngine
+  → DascGate → CAEP → CollusionAuditor → Telemetry → EnvironmentalOptimizer
+
+That full governed path is what makes MeshFlow distinct.
 """
 from __future__ import annotations
 
 import asyncio
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,37 +23,56 @@ from meshflow.agents.base import (
     AgentConfig, BaseAgent, CriticAgent, ExecutorAgent,
     PlannerAgent, ResearcherAgent,
 )
+from meshflow.core.executor import GovernedStepExecutor, StepOutcome
 from meshflow.core.graph import GraphEdge, GraphNode, StateGraph
 from meshflow.core.policy import PolicyEngine
 from meshflow.core.schemas import (
-    AgentRole, AgentState, CheckpointRecord, Evidence,
-    Intent, Message, Policy, RunResult, RunStatus, RiskTier,
+    AgentRole, AgentState, CheckpointRecord, Policy,
+    RunResult, RunStatus,
 )
 from meshflow.efficiency.cross_run import CrossRunLearner, CrossRunStore, LearningQuery
 from meshflow.efficiency.environmental import EnvironmentalOptimizer
 from meshflow.intelligence.collusion import CollusionAuditor
-from meshflow.intelligence.mem1 import MEM1Store
 from meshflow.intelligence.uncertainty import UncertaintyEngine
 from meshflow.mcp.gateway import MCPGateway, ToolManifest
+from meshflow.observability.telemetry import MeshFlowTracer
 from meshflow.security.dasc_gate import DascGate
 from meshflow.security.guardian import Guardian
 from meshflow.security.identity import AgentIdentityProvider
 
 
+@dataclass
+class MeshEvent:
+    """Streaming event emitted as each governed step completes."""
+    event_type: str          # "step_complete" | "step_blocked" | "paused" | "run_complete" | "error"
+    agent_id: str
+    role: str
+    data: dict[str, Any]
+    run_id: str
+    step: int
+    timestamp: float = field(default_factory=time.monotonic)
+    uncertainty: float = 0.0
+    cost_usd: float = 0.0
+    tokens: int = 0
+    blocked_by: str = ""
+
+
 class Mesh:
-    """MeshFlow orchestrator — all nine layers, one simple API.
+    """MeshFlow governed orchestration runtime.
 
-    Usage:
-        mesh = Mesh()
-        result = await mesh.run(
-            task="Research and summarise the top 5 LLM frameworks",
-            policy=Policy(budget_usd=0.50),
-        )
-        print(result.output)
+    Three usage patterns:
 
-    Import external agents:
-        from meshflow.agents.adapters import from_crewai
-        mesh = Mesh(agents=[from_crewai(my_crew_agent)])
+    1. Native agents (fastest start):
+        result = await Mesh().run("your task")
+
+    2. Import from another framework:
+        from meshflow.agents.adapters import from_crewai, from_autogen, from_langgraph
+        mesh = Mesh(agents=[from_crewai(agent), from_autogen(agent2)])
+
+    3. YAML config:
+        mesh = Mesh.from_yaml("meshflow.yaml")
+
+    All three patterns route every step through the same governance layers.
     """
 
     def __init__(
@@ -54,12 +81,13 @@ class Mesh:
         policy: Policy | None = None,
         mcp_tools: list[ToolManifest] | None = None,
         cross_run_db: str = ":memory:",
+        telemetry_console: bool = False,
     ) -> None:
         self._custom_agents = agents or []
         self._policy = policy or Policy()
         self._mcp_tools = mcp_tools or []
         self._cross_run_db = cross_run_db
-        self._cross_run_store = CrossRunStore(cross_run_db)
+        self._telemetry_console = telemetry_console
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -69,109 +97,195 @@ class Mesh:
         policy: Policy | None = None,
         context: dict[str, Any] | None = None,
     ) -> RunResult:
-        """Execute a task through the full MeshFlow pipeline."""
+        """Execute a task through the full governed pipeline."""
+        events = []
+        async for event in self.stream(task, policy=policy, context=context):
+            events.append(event)
+
+        # Reconstruct RunResult from the terminal run_complete event
+        terminal = next((e for e in reversed(events) if e.event_type == "run_complete"), None)
+        if terminal:
+            return terminal.data.get("_run_result", self._empty_result(task, events))
+        return self._empty_result(task, events)
+
+    async def stream(
+        self,
+        task: str,
+        policy: Policy | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> AsyncIterator[MeshEvent]:
+        """Stream governed events as each agent step completes.
+
+        Usage:
+            async for event in mesh.stream("task"):
+                print(f"{event.role}: {event.data.get('execution_result', '')[:100]}")
+                print(f"  confidence={event.uncertainty:.2f}  cost=${event.cost_usd:.4f}")
+        """
         pol = policy or self._policy
         run_id = str(uuid.uuid4())
         trace_id = str(uuid.uuid4())
         start = time.monotonic()
 
-        # ── Initialise all layers ─────────────────────────────────────────────
+        # ── Initialise all governance layers ──────────────────────────────────
         policy_engine = PolicyEngine(pol, run_id)
         identity      = AgentIdentityProvider(run_id)
         guardian      = Guardian(budget_usd=pol.budget_usd)
         dasc_gate     = DascGate(pol, run_id)
         uncertainty   = UncertaintyEngine()
         collusion     = CollusionAuditor()
+        telemetry     = MeshFlowTracer(export_to_console=self._telemetry_console)
         eco           = EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None
-        learner       = CrossRunLearner(self._cross_run_store) if pol.enable_cross_run_learning else None
-        mcp           = MCPGateway(budget_usd_per_turn=pol.budget_usd / 10)
+        mcp           = MCPGateway(budget_usd_per_turn=pol.budget_usd / 20)
         for tool in self._mcp_tools:
             mcp.register_tool(tool)
 
-        # ── Complexity check ──────────────────────────────────────────────────
+        executor = GovernedStepExecutor(
+            policy_engine=policy_engine,
+            identity=identity,
+            guardian=guardian,
+            dasc_gate=dasc_gate,
+            uncertainty=uncertainty,
+            collusion=collusion,
+            telemetry=telemetry,
+            eco=eco,
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+
+        # ── Complexity check — single vs multi agent ──────────────────────────
         complexity = policy_engine.check_complexity(task, len(self._custom_agents) or 4)
         if complexity["recommendation"] == "single_agent" and not self._custom_agents:
-            return await self._single_agent_run(task, pol, run_id, trace_id, start)
+            async for event in self._single_agent_stream(
+                task, pol, run_id, trace_id, start, executor, identity
+            ):
+                yield event
+            return
 
-        # ── Cross-run learning recommendation ─────────────────────────────────
-        if learner:
+        # ── Cross-run learning ────────────────────────────────────────────────
+        learner: CrossRunLearner | None = None
+        if pol.enable_cross_run_learning:
+            store = CrossRunStore(self._cross_run_db)
+            learner = CrossRunLearner(store)
             rec = learner.recommend(LearningQuery(
                 task_description=task,
                 estimated_tokens=len(task.split()) * 10,
                 available_roles=[r.value for r in AgentRole],
             ))
-            # Use recommendation to inform agent selection (simplified)
 
-        # ── Build agent pool ──────────────────────────────────────────────────
+        # ── Build agents and provision identities ─────────────────────────────
         agents = self._build_agents(pol)
-
-        # Provision DIDs for all agents
         for agent in agents:
             caps = self._capabilities_for_role(agent.role)
             doc = identity.provision(agent.agent_id, caps)
             agent.state.did = doc.did
 
-        # ── Build state graph ─────────────────────────────────────────────────
-        graph = self._build_graph(run_id, agents, task, context or {})
-        ctx = context or {}
-
-        # ── Execute graph ─────────────────────────────────────────────────────
+        # ── Execute pipeline with full governance at every step ───────────────
+        ctx = dict(context or {})
+        ctx["task"] = task
+        step = 0
         error = ""
-        output: Any = None
-        agent_states: dict[str, AgentState] = {}
         checkpoint_ids: list[str] = []
+        total_tokens = 0
+        total_cost = 0.0
+        all_outcomes: list[StepOutcome] = []
 
-        try:
-            graph_state = await graph.run(
-                initial_data={"task": task, **ctx},
-                on_checkpoint=self._make_checkpoint_handler(checkpoint_ids),
+        # Define the governed pipeline order
+        pipeline = self._build_pipeline(agents, pol)
+
+        for agent in pipeline:
+            step += 1
+
+            outcome = await executor.execute(agent, task, ctx)
+            all_outcomes.append(outcome)
+
+            event_type = "step_complete" if outcome.ok else "step_blocked"
+            total_tokens += outcome.tokens
+            total_cost += outcome.cost_usd
+
+            yield MeshEvent(
+                event_type=event_type,
+                agent_id=outcome.agent_id,
+                role=outcome.role,
+                data=outcome.data,
+                run_id=run_id,
+                step=step,
+                uncertainty=outcome.uncertainty.composite if outcome.uncertainty else 0.0,
+                cost_usd=outcome.cost_usd,
+                tokens=outcome.tokens,
+                blocked_by=outcome.blocked_by,
             )
 
-            output = (
-                graph_state.data.get("execution_result")
-                or graph_state.data.get("research")
-                or graph_state.data.get("plan")
-                or graph_state.data
-            )
-            checkpoint_ids = graph.checkpoint_ids()
+            if not outcome.ok:
+                error = outcome.blocked_by
+                break
 
-            # ── Post-run collusion audit ───────────────────────────────────────
-            agent_ids = [a.agent_id for a in agents]
-            collusion_alerts = collusion.audit(agent_ids)
+            # Merge outcome into shared context for next agent
+            ctx.update({k: v for k, v in outcome.data.items() if not k.startswith("__")})
 
-        except Exception as e:
-            error = str(e)
-            graph_state = type("GS", (), {"status": RunStatus.FAILED, "data": {}})()
+            # Checkpoint after each successful governed step
+            checkpoint_ids.append(f"{run_id}:step:{step}")
 
-        # ── Revoke all DIDs ───────────────────────────────────────────────────
+            # Human-in-loop pause
+            if outcome.paused_for_human:
+                yield MeshEvent(
+                    event_type="paused",
+                    agent_id=outcome.agent_id,
+                    role=outcome.role,
+                    data={"human_context": outcome.human_context},
+                    run_id=run_id,
+                    step=step,
+                )
+                break
+
+            # Critic logic: if critic fails, re-run executor (max 1 retry)
+            if outcome.role == AgentRole.CRITIC.value and not outcome.data.get("critic_passed", True):
+                executor_agent = next((a for a in agents if a.role == AgentRole.EXECUTOR), None)
+                if executor_agent:
+                    step += 1
+                    retry = await executor.execute(executor_agent, task, ctx)
+                    all_outcomes.append(retry)
+                    ctx.update({k: v for k, v in retry.data.items() if not k.startswith("__")})
+                    yield MeshEvent(
+                        event_type="step_complete" if retry.ok else "step_blocked",
+                        agent_id=retry.agent_id,
+                        role=retry.role,
+                        data=retry.data,
+                        run_id=run_id,
+                        step=step,
+                        uncertainty=retry.uncertainty.composite if retry.uncertainty else 0.0,
+                        cost_usd=retry.cost_usd,
+                        tokens=retry.tokens,
+                    )
+                    total_tokens += retry.tokens
+                    total_cost += retry.cost_usd
+
+        # ── Post-run audits ───────────────────────────────────────────────────
+        agent_ids = [a.agent_id for a in agents]
+        collusion_alerts = collusion.audit(agent_ids)
         identity.revoke_all(reason="run_complete")
 
-        # ── Aggregate costs ───────────────────────────────────────────────────
-        total_tokens = sum(a.state.token_count for a in agents)
-        total_cost = sum(a.state.cost_usd for a in agents)
         total_carbon = eco.summary()["carbon_spent_g"] if eco else 0.0
+        agent_states = {a.agent_id: a.state for a in agents}
 
-        for a in agents:
-            agent_states[a.agent_id] = a.state
+        final_output = self._extract_output(ctx)
+        status = RunStatus.FAILED if error else RunStatus.COMPLETED
 
-        # ── Cross-run learning: record outcome ────────────────────────────────
+        # Record for cross-run learning
         if learner:
             learner.record_run_outcome(
                 task_description=task,
                 agent_config={"roles": [a.role.value for a in agents]},
-                strategy="planner→researcher→executor→critic",
+                strategy="governed-pipeline",
                 success=not error,
                 cost_usd=total_cost,
                 tokens=total_tokens,
                 carbon_g=total_carbon,
             )
 
-        status = RunStatus.COMPLETED if not error else RunStatus.FAILED
-
-        return RunResult(
+        run_result = RunResult(
             run_id=run_id,
             status=status,
-            output=output,
+            output=final_output,
             agent_states=agent_states,
             total_cost_usd=round(total_cost, 6),
             total_tokens=total_tokens,
@@ -181,39 +295,133 @@ class Mesh:
             ledger_entries=dasc_gate.ledger_count(),
             trace_id=trace_id,
             error=error,
-            collusion_alerts=collusion.total_alerts(),
+            collusion_alerts=len(collusion_alerts),
             drift_alerts=0,
+        )
+
+        yield MeshEvent(
+            event_type="run_complete",
+            agent_id="orchestrator",
+            role="orchestrator",
+            data={"_run_result": run_result, "output": final_output},
+            run_id=run_id,
+            step=step,
+            cost_usd=total_cost,
+            tokens=total_tokens,
         )
 
     # ── Single-agent fast path ────────────────────────────────────────────────
 
-    async def _single_agent_run(
+    async def _single_agent_stream(
         self,
         task: str,
         pol: Policy,
         run_id: str,
         trace_id: str,
         start: float,
-    ) -> RunResult:
-        """Bypass multi-agent overhead for simple tasks — the complexity router in action."""
+        executor: GovernedStepExecutor,
+        identity: AgentIdentityProvider,
+    ) -> AsyncIterator[MeshEvent]:
         agent = ExecutorAgent(
             AgentConfig(role=AgentRole.EXECUTOR, model=pol.model_tier_map[AgentRole.EXECUTOR]),
             pol,
         )
-        result = await agent.step(task, {})
-        return RunResult(
+        doc = identity.provision(agent.agent_id, ["compute", "read"])
+        agent.state.did = doc.did
+
+        outcome = await executor.execute(agent, task, {"task": task})
+        identity.revoke_all(reason="run_complete")
+
+        yield MeshEvent(
+            event_type="step_complete" if outcome.ok else "step_blocked",
+            agent_id=outcome.agent_id,
+            role=outcome.role,
+            data=outcome.data,
             run_id=run_id,
-            status=RunStatus.COMPLETED,
-            output=result.get("execution_result", ""),
+            step=1,
+            uncertainty=outcome.uncertainty.composite if outcome.uncertainty else 0.0,
+            cost_usd=outcome.cost_usd,
+            tokens=outcome.tokens,
+        )
+
+        run_result = RunResult(
+            run_id=run_id,
+            status=RunStatus.COMPLETED if outcome.ok else RunStatus.FAILED,
+            output=outcome.data.get("execution_result", ""),
             agent_states={agent.agent_id: agent.state},
-            total_cost_usd=result.get("cost_usd", 0.0),
-            total_tokens=result.get("tokens", 0),
+            total_cost_usd=round(outcome.cost_usd, 6),
+            total_tokens=outcome.tokens,
             total_carbon_g=0.0,
             duration_s=round(time.monotonic() - start, 2),
             checkpoints=[],
             ledger_entries=0,
             trace_id=trace_id,
+            error=outcome.blocked_by,
         )
+        yield MeshEvent(
+            event_type="run_complete",
+            agent_id="orchestrator",
+            role="orchestrator",
+            data={"_run_result": run_result},
+            run_id=run_id,
+            step=1,
+        )
+
+    # ── YAML config loader ────────────────────────────────────────────────────
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "Mesh":
+        """Load a Mesh from a YAML config file.
+
+        Example meshflow.yaml:
+            policy:
+              budget_usd: 1.00
+              timeout_s: 120
+              enable_guardian: true
+              enable_collusion_audit: true
+            agents:
+              - role: planner
+                model: claude-sonnet-4-6
+              - role: researcher
+                model: claude-sonnet-4-6
+              - role: executor
+                model: claude-haiku-4-5-20251001
+              - role: critic
+                model: claude-sonnet-4-6
+        """
+        import yaml
+        with open(path) as f:
+            cfg = yaml.safe_load(f)
+
+        pol_cfg = cfg.get("policy", {})
+        pol = Policy(
+            budget_usd=pol_cfg.get("budget_usd", 1.0),
+            budget_tokens=pol_cfg.get("budget_tokens", 500_000),
+            timeout_s=pol_cfg.get("timeout_s", 300.0),
+            max_steps=pol_cfg.get("max_steps", 50),
+            deterministic_gate=pol_cfg.get("enable_guardian", True),
+            enable_guardian=pol_cfg.get("enable_guardian", True),
+            enable_collusion_audit=pol_cfg.get("enable_collusion_audit", True),
+            enable_environmental=pol_cfg.get("enable_environmental", False),
+            enable_cross_run_learning=pol_cfg.get("enable_cross_run_learning", False),
+        )
+
+        agents: list[BaseAgent] = []
+        role_map = {
+            "planner":    PlannerAgent,
+            "researcher": ResearcherAgent,
+            "executor":   ExecutorAgent,
+            "critic":     CriticAgent,
+        }
+        for agent_cfg in cfg.get("agents", []):
+            role_str = agent_cfg.get("role", "executor")
+            model    = agent_cfg.get("model", "claude-sonnet-4-6")
+            AgentClass = role_map.get(role_str, ExecutorAgent)
+            role = AgentRole(role_str)
+            config = AgentConfig(role=role, model=model)
+            agents.append(AgentClass(config, pol))
+
+        return cls(agents=agents, policy=pol)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -222,64 +430,45 @@ class Mesh:
             return list(self._custom_agents)
         return [
             PlannerAgent(
-                AgentConfig(role=AgentRole.PLANNER, model=pol.model_tier_map[AgentRole.PLANNER]),
+                AgentConfig(role=AgentRole.PLANNER,     model=pol.model_tier_map[AgentRole.PLANNER]),
                 pol,
             ),
             ResearcherAgent(
-                AgentConfig(role=AgentRole.RESEARCHER, model=pol.model_tier_map[AgentRole.RESEARCHER]),
+                AgentConfig(role=AgentRole.RESEARCHER,  model=pol.model_tier_map[AgentRole.RESEARCHER]),
                 pol,
             ),
             ExecutorAgent(
-                AgentConfig(role=AgentRole.EXECUTOR, model=pol.model_tier_map[AgentRole.EXECUTOR]),
+                AgentConfig(role=AgentRole.EXECUTOR,    model=pol.model_tier_map[AgentRole.EXECUTOR]),
                 pol,
             ),
             CriticAgent(
-                AgentConfig(role=AgentRole.CRITIC, model=pol.model_tier_map[AgentRole.CRITIC]),
+                AgentConfig(role=AgentRole.CRITIC,      model=pol.model_tier_map[AgentRole.CRITIC]),
                 pol,
             ),
         ]
 
-    def _build_graph(
-        self,
-        run_id: str,
-        agents: list[BaseAgent],
-        task: str,
-        context: dict[str, Any],
-    ) -> StateGraph:
-        graph = StateGraph(run_id)
-        agent_map = {a.role: a for a in agents}
-
-        # Build nodes
+    def _build_pipeline(self, agents: list[BaseAgent], pol: Policy) -> list[BaseAgent]:
+        """Ordered pipeline: Planner → Researcher → Executor → Critic."""
+        role_order = [
+            AgentRole.PLANNER,
+            AgentRole.RESEARCHER,
+            AgentRole.EXECUTOR,
+            AgentRole.CRITIC,
+        ]
+        ordered = []
+        agent_by_role = {a.role: a for a in agents}
+        for role in role_order:
+            if role in agent_by_role:
+                ordered.append(agent_by_role[role])
+        # Any custom agents not in the role order go at the end
+        known = set(agent_by_role.values())
         for agent in agents:
-            node = GraphNode(
-                node_id=agent.role.value,
-                agent_id=agent.agent_id,
-                fn=lambda data, a=agent: a.step(data.get("task", ""), data),
-            )
-            graph.add_node(node)
-
-        # Wire edges: planner → researcher → executor → critic
-        graph.add_edge(GraphEdge("planner", "researcher"))
-        graph.add_edge(GraphEdge("researcher", "executor"))
-        graph.add_edge(GraphEdge(
-            "executor", "critic",
-            condition=lambda d: AgentRole.CRITIC.value in {a.role.value for a in agents},
-        ))
-        graph.add_edge(GraphEdge("critic", "executor",
-            condition=lambda d: not d.get("critic_passed", True),
-        ))
-
-        # Set entry and terminals
-        if AgentRole.PLANNER in agent_map:
-            graph.set_entry("planner")
-        elif agents:
-            graph.set_entry(agents[0].role.value)
-
-        graph.set_terminals("critic", "executor")
-        return graph
+            if agent not in known:
+                ordered.append(agent)
+        return ordered
 
     def _capabilities_for_role(self, role: AgentRole) -> list[str]:
-        role_caps = {
+        caps = {
             AgentRole.ORCHESTRATOR: ["plan", "delegate", "evaluate", "terminate"],
             AgentRole.PLANNER:      ["plan", "decompose"],
             AgentRole.RESEARCHER:   ["search", "read", "synthesize"],
@@ -287,12 +476,26 @@ class Mesh:
             AgentRole.CRITIC:       ["evaluate", "score"],
             AgentRole.GUARDIAN:     ["monitor", "block", "alert"],
         }
-        return role_caps.get(role, ["read"])
+        return caps.get(role, ["read"])
 
-    @staticmethod
-    def _make_checkpoint_handler(
-        checkpoint_ids: list[str],
-    ):
-        async def handler(cp: CheckpointRecord) -> None:
-            checkpoint_ids.append(cp.checkpoint_id)
-        return handler
+    def _extract_output(self, ctx: dict[str, Any]) -> Any:
+        for key in ("execution_result", "research", "plan"):
+            if key in ctx:
+                return ctx[key]
+        return {k: v for k, v in ctx.items() if not k.startswith("_")}
+
+    def _empty_result(self, task: str, events: list[MeshEvent]) -> RunResult:
+        run_id = events[0].run_id if events else str(uuid.uuid4())
+        return RunResult(
+            run_id=run_id,
+            status=RunStatus.FAILED,
+            output=None,
+            agent_states={},
+            total_cost_usd=sum(e.cost_usd for e in events),
+            total_tokens=sum(e.tokens for e in events),
+            total_carbon_g=0.0,
+            duration_s=0.0,
+            checkpoints=[],
+            ledger_entries=0,
+            trace_id=run_id,
+        )
