@@ -1,4 +1,4 @@
-.PHONY: install test lint typecheck fmt check build clean venv help
+.PHONY: install test lint typecheck fmt check build clean venv run-quickstart run-live run-cross-framework run-multi-framework run-supervisor run-topoprior help
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 install:          ## Install in editable mode with dev dependencies
@@ -42,6 +42,12 @@ run-quickstart:   ## Run simulated quickstart (no API key needed)
 
 run-live:         ## Run live quickstart (needs ANTHROPIC_API_KEY in .env)
 	python examples/live_quickstart.py
+
+run-cross-framework: ## Run cross-framework demo (no API key — uses simulated adapters)
+	python examples/cross_framework_demo.py
+
+run-multi-framework: ## Run multi-framework demo
+	python examples/multi_framework.py
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 help:             ## Show this help

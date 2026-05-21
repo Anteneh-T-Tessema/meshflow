@@ -225,28 +225,24 @@ class StepRuntime:
         # ── EXECUTE ───────────────────────────────────────────────────────────
 
         if not blocked:
-            span = None
-            if self._telemetry:
-                span = self._telemetry.start_span(
-                    f"meshflow.node.{node.kind.value}",
-                    {"node.id": node.id, "node.kind": node.kind.value,
-                     "run_id": self._run_id, "step_id": step_id},
-                )
             try:
                 output = await node.run(node_input)
                 if self._cbs and node.id in self._cbs:
                     self._cbs[node.id].record_success(node.id)
+                if self._telemetry:
+                    with self._telemetry.span(
+                        f"meshflow.node.{node.kind.value}",
+                        run_id=self._run_id,
+                        **{"node.id": node.id, "node.kind": node.kind.value,
+                           "step_id": step_id},
+                    ):
+                        pass  # span wraps the completed execution for trace record
             except Exception as exc:
                 output = NodeOutput(content=f"[node_error: {exc}]", confidence=0.0)
                 block_reason = f"node_exception:{exc}"
                 blocked = True
                 if self._cbs and node.id in self._cbs:
                     self._cbs[node.id].record_failure(node.id)
-                if span and self._telemetry:
-                    self._telemetry.record_error(span, str(exc))
-            finally:
-                if span and self._telemetry:
-                    self._telemetry.end_span(span)
 
         # ── POST_STEP ─────────────────────────────────────────────────────────
 

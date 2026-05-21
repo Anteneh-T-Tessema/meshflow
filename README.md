@@ -477,6 +477,32 @@ The server returns a `RunResult` JSON object with output, cost, audit info, and 
 
 ---
 
+## Cross-framework example (Sprint 1 proof)
+
+The `examples/cross_framework_demo.py` file is a runnable 4-node pipeline that proves the control-plane thesis end-to-end — no API key required:
+
+```text
+CrewAI research agent  →  LangGraph validator  →  Human approval gate  →  Python summariser
+     (callable)               (callable)               (HITL)                (callable)
+```
+
+Every hop goes through the full **StepRuntime** governance kernel: identity check, guardian scan, risk classification, budget gate, HITL (for the approval node), OTEL span, uncertainty scoring, collusion detection, and ledger write.
+
+```bash
+# Run the demo
+python examples/cross_framework_demo.py
+
+# Replay the last run from the ledger
+python examples/cross_framework_demo.py --replay
+
+# Show what each adapter looks like with a real framework installed
+python examples/cross_framework_demo.py --show-adapters
+```
+
+Comments inside the file show the exact one-line swap needed to replace each callable with a real CrewAI `Crew`, a real LangGraph `StateGraph`, or a real AutoGen `ConversableAgent`. See also `examples/real_crewai.py` and `examples/real_langgraph.py` for complete working templates.
+
+---
+
 ## Adapter reference
 
 ```python
@@ -528,10 +554,11 @@ cd meshflow
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-make test            # run all tests
-make check           # lint + typecheck + tests
-make run-quickstart  # simulated run, no API key needed
-make run-live        # real LLM run — requires ANTHROPIC_API_KEY in .env
+make test                 # run all 114 tests
+make check                # lint + typecheck + tests
+make run-quickstart       # simulated run, no API key needed
+make run-live             # real LLM run — requires ANTHROPIC_API_KEY in .env
+make run-cross-framework  # cross-framework demo: CrewAI→LangGraph→Human→Python, no API key
 ```
 
 ### Environment
