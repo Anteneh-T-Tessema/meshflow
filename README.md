@@ -323,10 +323,40 @@ asyncio.run(main())
 The YAML file is the artifact you commit to git. It is reproducible and inspectable
 without running any code. `meshflow describe meshflow.yaml` prints the topology.
 
-> **Note on parallel execution:** The MeshFlow YAML orchestrator currently runs nodes
-> sequentially (one edge at a time). If a node is a LangGraph graph, that graph runs
-> its own internal parallel branches without restriction — MeshFlow only sees it as a
-> single call. Native fan-out / fan-in between MeshFlow nodes is on the roadmap.
+### Conditional edge routing
+
+Add a `condition` to any edge to control routing at runtime. The expression is
+evaluated against the shared context plus `output`, `content`, `confidence`, and
+`structured` from the source node:
+
+```yaml
+edges:
+  - from: validator
+    to: approval
+    condition: "confidence < 0.8"      # route to human review if uncertain
+
+  - from: validator
+    to: publisher
+    condition: "confidence >= 0.8"     # fast path when confident
+```
+
+If no incoming edge fires for a node, the node is **skipped** (recorded in
+`WorkflowResult.skipped_nodes`) and the skip propagates transitively to its
+dependents. Nodes with no condition always fire.
+
+### Parallel branches
+
+Independent nodes in the same topological level run concurrently via
+`asyncio.gather()`. All governance still fires per node — parallelism is
+transparent to the control plane:
+
+```yaml
+edges:
+  - planner -> branch_a
+  - planner -> branch_b        # branch_a and branch_b run in parallel
+  - branch_a -> synthesizer
+  - branch_b -> synthesizer    # synthesizer waits for both
+```
 
 ---
 
@@ -608,7 +638,8 @@ meshflow/
 
 - [x] **Fan-out / fan-in** — independent nodes in the same topological level run
   concurrently via `asyncio.gather()`; all governance still fires per node
-- [ ] **Conditional edge routing** — expression-based branching between YAML nodes
+- [x] **Conditional edge routing** — Python expression on any edge; nodes whose
+  incoming conditions all evaluate False are skipped (propagated transitively)
 - [ ] **Durable HITL** — pause / resume that survives process restarts
 - [ ] **PostgreSQL / S3 ledger backend** — for high-concurrency and distributed deployments
 - [ ] **Web UI** — live run inspection, step-by-step replay, cost breakdown

@@ -32,9 +32,29 @@ Fan-out / fan-in example::
     terminal:
       - synthesizer
 
-Execution order: planner runs first (level 0). branch_a, branch_b, branch_c
-have no dependency between them so they run concurrently via asyncio.gather()
-(level 1). synthesizer runs after all three complete (level 2).
+Execution order: planner runs first. branch_a, branch_b, branch_c have no
+dependency between them so they run concurrently via asyncio.gather().
+synthesizer runs after all three complete with their merged outputs in context.
+
+Conditional edge routing example::
+
+    nodes:
+      validator:  {kind: langgraph, ref: graphs.fact_check}
+      approval:   {kind: human}
+      publisher:  {kind: native, role: executor}
+
+    edges:
+      - from: validator
+        to: approval
+        condition: "confidence < 0.8"      # route to human review if uncertain
+      - from: validator
+        to: publisher
+        condition: "confidence >= 0.8"     # fast path when confident
+
+Conditions are Python expressions evaluated against the shared context plus
+``output``, ``content``, ``confidence``, and ``structured`` from the source
+node's output. Empty condition = always fire. If no incoming edge fires for a
+node, it is skipped (recorded in WorkflowResult.skipped_nodes).
 
 Every node, including parallel branches, passes through the full StepRuntime
 governance kernel: guardian scan, budget gate, HITL, OTEL span, uncertainty
@@ -79,7 +99,7 @@ from meshflow.core.schemas import HumanInLoopConfig, Policy, RiskTier
 class WorkflowEdge:
     from_node: str
     to_node: str
-    condition: str = ""     # future: expression evaluated against step output
+    condition: str = ""     # Python expression; empty = always fire
 
 
 @dataclass
@@ -97,6 +117,7 @@ class WorkflowResult:
     duration_s: float
     blocked_nodes: list[str]
     paused_nodes: list[str]
+    skipped_nodes: list[str]
     ledger_db: str
 
 
@@ -148,14 +169,99 @@ class WorkflowDefinition:
     def _successors(self, node_id: str) -> list[str]:
         return [e.to_node for e in self._edges if e.from_node == node_id]
 
+    def _predecessors(self, node_id: str) -> list[str]:
+        return [e.from_node for e in self._edges if e.to_node == node_id]
+
+    def _edges_to(self, node_id: str) -> list[WorkflowEdge]:
+        return [e for e in self._edges if e.to_node == node_id]
+
     def _is_terminal(self, node_id: str) -> bool:
         return node_id in self._terminal or not self._successors(node_id)
+
+    def _condition_fires(
+        self,
+        edge: WorkflowEdge,
+        ctx: dict[str, Any],
+        step_outcomes: dict[str, RuntimeOutcome],
+    ) -> bool:
+        """Evaluate an edge condition expression. Empty condition always fires.
+
+        The expression runs in a restricted namespace. Available names:
+          - Any key in the shared context (set by prior nodes)
+          - ``output``     — NodeOutput object from the source node
+          - ``content``    — output.content (str)
+          - ``confidence`` — output.confidence (float 0–1)
+          - ``structured`` — output.structured (dict)
+        """
+        if not edge.condition:
+            return True
+        prior = step_outcomes.get(edge.from_node)
+        node_out = prior.output if prior else None
+        namespace: dict[str, Any] = {
+            **{k: v for k, v in ctx.items() if not k.startswith("_")},
+            "output":     node_out,
+            "content":    node_out.content    if node_out else "",
+            "confidence": node_out.confidence if node_out else 0.0,
+            "structured": node_out.structured if node_out else {},
+            "__builtins__": {
+                "True": True, "False": False, "None": None,
+                "bool": bool, "int": int, "float": float, "str": str,
+                "len": len, "abs": abs, "min": min, "max": max,
+            },
+        }
+        try:
+            return bool(eval(edge.condition, {"__builtins__": {}}, namespace))  # noqa: S307
+        except Exception:
+            return False
+
+    def _compute_ready(
+        self,
+        completed: set[str],
+        skipped: set[str],
+        ctx: dict[str, Any],
+        step_outcomes: dict[str, RuntimeOutcome],
+    ) -> tuple[list[str], list[str]]:
+        """Return (nodes_ready_to_run, nodes_that_can_be_skipped).
+
+        A node is ready when:
+          - all its predecessors are done (completed | skipped), AND
+          - at least one incoming edge from a *completed* predecessor fires.
+
+        A node is skipped when all predecessors are done but no incoming edge
+        from a completed predecessor fires (all conditions evaluated False).
+        """
+        done = completed | skipped
+        ready: list[str] = []
+        newly_skipped: list[str] = []
+
+        for node_id in self._nodes:
+            if node_id in done:
+                continue
+            preds = self._predecessors(node_id)
+            if not preds:
+                ready.append(node_id)
+                continue
+            if not all(p in done for p in preds):
+                continue  # still waiting on an upstream node
+            any_fires = any(
+                self._condition_fires(e, ctx, step_outcomes)
+                for e in self._edges_to(node_id)
+                if e.from_node in completed   # skipped predecessors don't route forward
+            )
+            if any_fires:
+                ready.append(node_id)
+            else:
+                newly_skipped.append(node_id)
+
+        return sorted(ready), newly_skipped
 
     def _topological_levels(self) -> list[list[str]]:
         """Kahn's algorithm — groups nodes into parallel-safe execution levels.
 
         All nodes within a level have no dependency between them and can run
         concurrently. Nodes in level N+1 depend only on nodes in level ≤ N.
+        Useful for static analysis; ``run()`` uses the dynamic ready-queue
+        which respects conditional edges at runtime.
         """
         in_degree: dict[str, int] = {n: 0 for n in self._nodes}
         for edge in self._edges:
@@ -177,7 +283,6 @@ class WorkflowDefinition:
 
         return levels
 
-    # kept for backward compatibility with any external callers
     def _topological_order(self) -> list[str]:
         return [n for level in self._topological_levels() for n in level]
 
@@ -191,9 +296,10 @@ class WorkflowDefinition:
     ) -> WorkflowResult:
         """Execute the workflow with full StepRuntime governance on every node.
 
-        Nodes with no dependency between them run concurrently via
+        Uses a dynamic ready-queue so conditional edges are respected at
+        runtime. Nodes with no dependency between them run concurrently via
         asyncio.gather(). All governance (guardian, budget, HITL, ledger)
-        fires per node — parallelism is transparent to the control plane.
+        fires per node regardless of parallelism or routing.
         """
         run_id = runtime._run_id
         start = time.monotonic()
@@ -203,19 +309,21 @@ class WorkflowDefinition:
         steps: list[RuntimeOutcome] = []
         blocked_nodes: list[str] = []
         paused_nodes: list[str] = []
+        skipped_nodes: list[str] = []
+        completed: set[str] = set()
+        skipped: set[str] = set()
+        step_outcomes: dict[str, RuntimeOutcome] = {}
 
-        levels = self._topological_levels()
-        if not levels and self._entry:
-            levels = [[self._entry]]
+        ready, _ = self._compute_ready(completed, skipped, ctx, step_outcomes)
 
-        for level in levels:
-            level_nodes = [self._nodes[nid] for nid in level if nid in self._nodes]
+        while ready:
+            level_nodes = [self._nodes[nid] for nid in ready if nid in self._nodes]
             if not level_nodes:
-                continue
+                break
 
-            # Snapshot context so all parallel nodes see the same input state.
-            # Each node gets its own copy so runtime can write back internal
-            # keys (_upstream_confidence etc.) without cross-node interference.
+            # Snapshot context: all parallel nodes see the same input state.
+            # Each gets its own copy so runtime can write back internal keys
+            # (_upstream_confidence etc.) without cross-node interference.
             ctx_snapshot = ctx.copy()
 
             async def _run_node(nd: MeshNode) -> RuntimeOutcome:
@@ -225,32 +333,42 @@ class WorkflowDefinition:
                     ctx_snapshot.copy(),
                 )
 
-            outcomes: list[RuntimeOutcome] = list(
+            level_outcomes: list[RuntimeOutcome] = list(
                 await asyncio.gather(*[_run_node(nd) for nd in level_nodes])
             )
 
-            for outcome in outcomes:
+            for node_id, outcome in zip(ready, level_outcomes):
+                step_outcomes[node_id] = outcome
                 steps.append(outcome)
                 if outcome.paused_for_human:
-                    paused_nodes.append(outcome.record.node_id)
+                    paused_nodes.append(node_id)
                 elif not outcome.ok:
-                    blocked_nodes.append(outcome.record.node_id)
-
-            # Merge all parallel outputs into shared context for the next level.
-            # Public keys only — skip internal runtime state (_prefixed keys).
-            for outcome in outcomes:
-                if outcome.ok and outcome.output.content:
-                    ctx[f"{outcome.record.node_id}_output"] = outcome.output.content
-                if outcome.ok and outcome.output.structured:
-                    ctx.update(
-                        {k: v for k, v in outcome.output.structured.items()
-                         if not k.startswith("_")}
-                    )
+                    blocked_nodes.append(node_id)
+                else:
+                    completed.add(node_id)
+                    if outcome.output.content:
+                        ctx[f"{node_id}_output"] = outcome.output.content
+                    if outcome.output.structured:
+                        ctx.update(
+                            {k: v for k, v in outcome.output.structured.items()
+                             if not k.startswith("_")}
+                        )
 
             if blocked_nodes or paused_nodes:
                 break
 
-        # Build final output from last successful step
+            # Propagate skips transitively until stable: if B is skipped, C
+            # (which depends only on B) also becomes skipped without running.
+            ready, newly_skipped = self._compute_ready(
+                completed, skipped, ctx, step_outcomes
+            )
+            while newly_skipped:
+                skipped.update(newly_skipped)
+                skipped_nodes.extend(newly_skipped)
+                ready, newly_skipped = self._compute_ready(
+                    completed, skipped, ctx, step_outcomes
+                )
+
         final_output = ""
         for outcome in reversed(steps):
             if outcome.ok and outcome.output.content:
@@ -275,6 +393,7 @@ class WorkflowDefinition:
             duration_s=round(time.monotonic() - start, 2),
             blocked_nodes=blocked_nodes,
             paused_nodes=paused_nodes,
+            skipped_nodes=skipped_nodes,
             ledger_db=ledger_db,
         )
 
@@ -399,7 +518,8 @@ class WorkflowDefinition:
                 for n in self._nodes.values()
             ],
             "edges": [
-                {"from": e.from_node, "to": e.to_node}
+                {"from": e.from_node, "to": e.to_node,
+                 **({"condition": e.condition} if e.condition else {})}
                 for e in self._edges
             ],
             "entry": self._entry,

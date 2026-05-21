@@ -704,3 +704,190 @@ class TestFanOutFanIn:
         assert ran[-1] == "F"
         assert set(ran[1:3]) == {"B", "C"}
         assert set(ran[3:5]) == {"D", "E"}
+
+
+# ── Conditional edge routing ──────────────────────────────────────────────────
+
+class TestConditionalEdgeRouting:
+    """Prove that edge conditions gate which nodes run at runtime."""
+
+    def _runtime(self, run_id: str = "cond-test") -> StepRuntime:
+        from meshflow.core.ledger import ReplayLedger as RL
+        pol = Policy(budget_usd=10.0, max_steps=50, enable_guardian=False,
+                     enable_uncertainty=False, enable_collusion_audit=False)
+        return StepRuntime(policy=pol, run_id=run_id, ledger=RL(":memory:"))
+
+    def _conf_node(self, nid: str, confidence: float) -> MeshNode:
+        """Node that emits a fixed confidence score."""
+        async def runner(inp: NodeInput) -> NodeOutput:
+            return NodeOutput(content=f"{nid}-out", tokens_used=5,
+                              confidence=confidence)
+        return MeshNode(id=nid, kind=NodeKind.PYTHON, _runner=runner)
+
+    def _echo_node(self, nid: str, ran: list) -> MeshNode:
+        async def runner(inp: NodeInput) -> NodeOutput:
+            ran.append(nid)
+            return NodeOutput(content=f"{nid}-out", tokens_used=5)
+        return MeshNode(id=nid, kind=NodeKind.PYTHON, _runner=runner)
+
+    def test_high_confidence_takes_fast_path(self):
+        """validator(confidence=0.9) → publisher runs, approval skipped."""
+        ran: list[str] = []
+
+        wf = (
+            WorkflowDefinition("fast-path")
+            .add_node(self._conf_node("validator", confidence=0.9))
+            .add_node(self._echo_node("approval", ran))
+            .add_node(self._echo_node("publisher", ran))
+            .add_edge("validator", "approval",  condition="confidence < 0.8")
+            .add_edge("validator", "publisher", condition="confidence >= 0.8")
+        )
+
+        result = asyncio.run(wf.run("test", self._runtime()))
+
+        assert result.completed is True
+        assert "publisher" in ran
+        assert "approval" not in ran
+        assert "approval" in result.skipped_nodes
+
+    def test_low_confidence_takes_review_path(self):
+        """validator(confidence=0.5) → approval runs, publisher skipped."""
+        ran: list[str] = []
+
+        wf = (
+            WorkflowDefinition("review-path")
+            .add_node(self._conf_node("validator", confidence=0.5))
+            .add_node(self._echo_node("approval", ran))
+            .add_node(self._echo_node("publisher", ran))
+            .add_edge("validator", "approval",  condition="confidence < 0.8")
+            .add_edge("validator", "publisher", condition="confidence >= 0.8")
+        )
+
+        result = asyncio.run(wf.run("test", self._runtime()))
+
+        assert result.completed is True
+        assert "approval" in ran
+        assert "publisher" not in ran
+        assert "publisher" in result.skipped_nodes
+
+    def test_unconditional_edges_always_fire(self):
+        """Empty condition = always fire (backward-compatible)."""
+        ran: list[str] = []
+
+        wf = (
+            WorkflowDefinition("unconditional")
+            .add_node(self._echo_node("A", ran))
+            .add_node(self._echo_node("B", ran))
+            .add_edge("A", "B")   # no condition
+        )
+
+        result = asyncio.run(wf.run("test", self._runtime()))
+
+        assert result.completed is True
+        assert ran == ["A", "B"]
+        assert result.skipped_nodes == []
+
+    def test_condition_reads_structured_output(self):
+        """Condition can reference keys set via NodeOutput.structured."""
+        ran: list[str] = []
+
+        async def scorer(inp: NodeInput) -> NodeOutput:
+            return NodeOutput(content="scored", tokens_used=5,
+                              structured={"risk_score": 0.9})
+
+        wf = (
+            WorkflowDefinition("structured-cond")
+            .add_node(MeshNode(id="scorer", kind=NodeKind.PYTHON, _runner=scorer))
+            .add_node(self._echo_node("block", ran))
+            .add_node(self._echo_node("allow", ran))
+            .add_edge("scorer", "block", condition="structured.get('risk_score', 0) > 0.85")
+            .add_edge("scorer", "allow", condition="structured.get('risk_score', 0) <= 0.85")
+        )
+
+        result = asyncio.run(wf.run("test", self._runtime()))
+
+        assert "block" in ran
+        assert "allow" not in ran
+        assert "allow" in result.skipped_nodes
+
+    def test_condition_reads_context_key(self):
+        """Condition can reference keys set in the shared context by prior nodes."""
+        ran: list[str] = []
+
+        async def setter(inp: NodeInput) -> NodeOutput:
+            return NodeOutput(content="set", tokens_used=5,
+                              structured={"approved": True})
+
+        wf = (
+            WorkflowDefinition("ctx-cond")
+            .add_node(MeshNode(id="setter", kind=NodeKind.PYTHON, _runner=setter))
+            .add_node(self._echo_node("yes_branch", ran))
+            .add_node(self._echo_node("no_branch", ran))
+            .add_edge("setter", "yes_branch", condition="approved == True")
+            .add_edge("setter", "no_branch",  condition="approved == False")
+        )
+
+        result = asyncio.run(wf.run("test", self._runtime()))
+
+        assert "yes_branch" in ran
+        assert "no_branch" not in ran
+
+    def test_bad_condition_expression_skips_node(self):
+        """A condition that raises an exception is treated as False (safe default)."""
+        ran: list[str] = []
+
+        wf = (
+            WorkflowDefinition("bad-cond")
+            .add_node(self._echo_node("A", ran))
+            .add_node(self._echo_node("B", ran))
+            .add_edge("A", "B", condition="undefined_var > 0.5")
+        )
+
+        result = asyncio.run(wf.run("test", self._runtime()))
+
+        assert "A" in ran
+        assert "B" not in ran
+        assert "B" in result.skipped_nodes
+
+    def test_three_way_branch_only_one_fires(self):
+        """Three mutually exclusive conditions — exactly one branch runs."""
+        ran: list[str] = []
+
+        async def classifier(inp: NodeInput) -> NodeOutput:
+            return NodeOutput(content="classified", tokens_used=5, confidence=0.6)
+
+        wf = (
+            WorkflowDefinition("three-way")
+            .add_node(MeshNode(id="clf", kind=NodeKind.PYTHON, _runner=classifier))
+            .add_node(self._echo_node("high", ran))
+            .add_node(self._echo_node("mid", ran))
+            .add_node(self._echo_node("low", ran))
+            .add_edge("clf", "high", condition="confidence >= 0.8")
+            .add_edge("clf", "mid",  condition="0.5 <= confidence < 0.8")
+            .add_edge("clf", "low",  condition="confidence < 0.5")
+        )
+
+        result = asyncio.run(wf.run("test", self._runtime()))
+
+        assert ran == ["mid"]
+        assert set(result.skipped_nodes) == {"high", "low"}
+
+    def test_skipped_node_propagates_skip_to_downstream(self):
+        """If B is skipped (no edge fires to it), C which depends only on B is also skipped."""
+        ran: list[str] = []
+
+        wf = (
+            WorkflowDefinition("propagate-skip")
+            .add_node(self._conf_node("A", confidence=0.9))
+            .add_node(self._echo_node("B", ran))   # only reachable when confidence < 0.5
+            .add_node(self._echo_node("C", ran))   # only reachable from B
+            .add_edge("A", "B", condition="confidence < 0.5")
+            .add_edge("B", "C")
+        )
+
+        result = asyncio.run(wf.run("test", self._runtime()))
+
+        assert ran == []
+        assert "B" in result.skipped_nodes
+        assert "C" in result.skipped_nodes
+        assert result.completed is True   # no blocked nodes — just routing
