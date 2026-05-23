@@ -64,6 +64,7 @@ class WebhookRegistration:
     events: list[str]
     secret: str
     created_at: str
+    tenant_id: str = ""
     delivery_count: int = 0
     failure_count: int = 0
     last_delivery_at: str | None = None
@@ -77,6 +78,7 @@ class WebhookRegistration:
             "id": self.id,
             "url": self.url,
             "events": self.events,
+            "tenant_id": self.tenant_id,
             "created_at": self.created_at,
             "delivery_count": self.delivery_count,
             "failure_count": self.failure_count,
@@ -127,6 +129,7 @@ class WebhookManager:
         url: str,
         events: list[str] | None = None,
         secret: str = "",
+        tenant_id: str = "",
     ) -> WebhookRegistration:
         if not url.startswith(("http://", "https://")):
             raise ValueError(f"Webhook URL must start with http:// or https://: {url!r}")
@@ -140,34 +143,56 @@ class WebhookManager:
             events=list(ev),
             secret=secret or self._default_secret,
             created_at=datetime.now(timezone.utc).isoformat(),
+            tenant_id=tenant_id,
         )
         self._hooks[reg.id] = reg
         return reg
 
-    def unregister(self, webhook_id: str) -> bool:
-        if webhook_id in self._hooks:
-            del self._hooks[webhook_id]
-            return True
-        return False
+    def unregister(self, webhook_id: str, tenant_id: str = "") -> bool:
+        hook = self._hooks.get(webhook_id)
+        if hook is None:
+            return False
+        # Tenant isolation: can only delete own hooks unless no tenant scope
+        if tenant_id and hook.tenant_id and hook.tenant_id != tenant_id:
+            return False
+        del self._hooks[webhook_id]
+        return True
 
-    def list(self) -> list[WebhookRegistration]:
-        return list(self._hooks.values())
+    def list(self, tenant_id: str = "") -> list[WebhookRegistration]:
+        """List webhooks, optionally filtered to a tenant."""
+        if not tenant_id:
+            return list(self._hooks.values())
+        return [h for h in self._hooks.values() if not h.tenant_id or h.tenant_id == tenant_id]
 
-    def get(self, webhook_id: str) -> WebhookRegistration | None:
-        return self._hooks.get(webhook_id)
+    def get(self, webhook_id: str, tenant_id: str = "") -> WebhookRegistration | None:
+        hook = self._hooks.get(webhook_id)
+        if hook is None:
+            return None
+        if tenant_id and hook.tenant_id and hook.tenant_id != tenant_id:
+            return None
+        return hook
 
-    def delivery_history(self, webhook_id: str | None = None) -> list[DeliveryRecord]:
-        if webhook_id is None:
-            return list(self._history)
-        return [r for r in self._history if r.webhook_id == webhook_id]
+    def delivery_history(self, webhook_id: str | None = None, tenant_id: str = "") -> list[DeliveryRecord]:
+        records = self._history if webhook_id is None else [r for r in self._history if r.webhook_id == webhook_id]
+        if not tenant_id:
+            return list(records)
+        # Filter to records whose webhook belongs to this tenant
+        tenant_hooks = {h.id for h in self.list(tenant_id=tenant_id)}
+        return [r for r in records if r.webhook_id in tenant_hooks]
 
     def _sign(self, secret: str, body: bytes) -> str:
         key = (secret or "unsigned").encode()
         return hmac.new(key, body, hashlib.sha256).hexdigest()
 
-    async def deliver(self, event_type: str, payload: dict[str, Any]) -> None:
-        """Deliver event to all matching webhooks concurrently."""
+    async def deliver(self, event_type: str, payload: dict[str, Any], tenant_id: str = "") -> None:
+        """Deliver event to all matching webhooks concurrently.
+
+        When tenant_id is provided, only webhooks belonging to that tenant
+        (or global webhooks with no tenant) receive the event.
+        """
         targets = [h for h in self._hooks.values() if h.matches(event_type)]
+        if tenant_id:
+            targets = [h for h in targets if not h.tenant_id or h.tenant_id == tenant_id]
         if not targets:
             return
         envelope = {

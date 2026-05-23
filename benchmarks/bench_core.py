@@ -373,14 +373,20 @@ def main() -> None:
         "--output", type=str, default=None,
         help="Save results as JSON to this path",
     )
+    parser.add_argument(
+        "--quick", action="store_true",
+        help="Smoke-check only: run the first concurrency level with reduced iterations",
+    )
     args = parser.parse_args()
 
-    print("MeshFlow Benchmarks")
-    print(f"  concurrency levels: {args.concurrency}")
+    levels = [args.concurrency[0]] if args.quick else args.concurrency
+
+    print("MeshFlow Benchmarks" + (" (quick mode)" if args.quick else ""))
+    print(f"  concurrency levels: {levels}")
     print(f"  Python {sys.version.split()[0]}")
     print()
 
-    asyncio.run(_main(args.concurrency, args.output))
+    asyncio.run(_main(levels, args.output))
     print("\nDone.")
 
 

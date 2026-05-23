@@ -9,8 +9,15 @@ providers — no API key required.
 # All concurrency levels (10, 100, 1000)
 python benchmarks/bench_core.py
 
+# Quick smoke test (concurrency 10 only — used in CI)
+python benchmarks/bench_core.py --quick
+
 # Specific levels + JSON output
 python benchmarks/bench_core.py --concurrency 10 100 --output results.json
+
+# Via meshflow CLI
+meshflow bench --quick
+meshflow bench --concurrency 10 100
 
 # Via Makefile
 make bench

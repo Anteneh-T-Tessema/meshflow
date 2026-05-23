@@ -108,8 +108,25 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
     from meshflow.security.api_keys import KeyStore, KeyRecord
 
     metrics = MetricsCollector.get()
-    ledger = ReplayLedger(ledger_path)
+    ledger = ReplayLedger(ledger_path)  # default tenant ledger
     key_store = KeyStore(ledger_path if not ledger_path.startswith("postgresql") else "meshflow_runs.db")
+
+    # Per-tenant ledger cache — avoids creating a new ledger instance per request
+    _tenant_ledgers: dict[str, Any] = {}
+
+    def _ledger_for(principal: Any) -> Any:
+        """Return a ledger scoped to the principal's tenant, or the global ledger."""
+        tid = getattr(principal, "tenant_id", "") or ""
+        if not tid:
+            return ledger
+        if tid not in _tenant_ledgers:
+            _tenant_ledgers[tid] = ReplayLedger(ledger_path, tenant_id=tid)
+        return _tenant_ledgers[tid]
+
+    def _tenant_of(request: Any) -> str:
+        """Extract tenant_id from the authenticated principal (empty = global)."""
+        principal = _get_principal(request)
+        return getattr(principal, "tenant_id", "") or ""
 
     def _extract_raw_key(headers: Any) -> str:
         auth = headers.get("Authorization", "") or headers.get("authorization", "")
@@ -347,19 +364,19 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         return response
 
     async def get_trace(request: Any) -> Any:
-        if not _require_auth(request):
-            return web.Response(
-                status=401, text='{"error":"Unauthorized"}', content_type="application/json"
-            )
+        principal = _get_principal(request)
+        if principal is None:
+            return web.Response(status=401, text='{"error":"Unauthorized"}', content_type="application/json")
         run_id = request.match_info["run_id"]
-        records = await ledger.get_run(run_id)
+        tl = _ledger_for(principal)
+        records = await tl.get_run(run_id)
         if not records:
             return web.Response(
                 status=404,
                 text=json.dumps({"error": "run not found"}),
                 content_type="application/json",
             )
-        summary = await ledger.run_summary(run_id)
+        summary = await tl.run_summary(run_id)
         return web.Response(
             content_type="application/json",
             headers=_cors_headers(),
@@ -368,12 +385,12 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
 
     async def list_eval_results(request: Any) -> Any:
         """GET /eval-results[?suite=<name>] — stored EvalBaseline entries from the ledger."""
-        if not _require_auth(request):
-            return web.Response(
-                status=401, text='{"error":"Unauthorized"}', content_type="application/json"
-            )
+        principal = _get_principal(request)
+        if principal is None:
+            return web.Response(status=401, text='{"error":"Unauthorized"}', content_type="application/json")
         suite = request.rel_url.query.get("suite") or None
-        results = await ledger.list_eval_results(suite_name=suite)
+        tl = _ledger_for(principal)
+        results = await tl.list_eval_results(suite_name=suite)
         return web.Response(
             content_type="application/json",
             headers=_cors_headers(),
@@ -381,11 +398,11 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         )
 
     async def list_traces(request: Any) -> Any:
-        if not _require_auth(request):
-            return web.Response(
-                status=401, text='{"error":"Unauthorized"}', content_type="application/json"
-            )
-        runs = await ledger.list_runs()
+        principal = _get_principal(request)
+        if principal is None:
+            return web.Response(status=401, text='{"error":"Unauthorized"}', content_type="application/json")
+        tl = _ledger_for(principal)
+        runs = await tl.list_runs()
         return web.Response(
             content_type="application/json",
             headers=_cors_headers(),
@@ -393,11 +410,11 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         )
 
     async def hitl_pending(request: Any) -> Any:
-        if not _require_auth(request):
-            return web.Response(
-                status=401, text='{"error":"Unauthorized"}', content_type="application/json"
-            )
-        paused = await ledger.list_paused_runs()
+        principal = _get_principal(request)
+        if principal is None:
+            return web.Response(status=401, text='{"error":"Unauthorized"}', content_type="application/json")
+        tl = _ledger_for(principal)
+        paused = await tl.list_paused_runs()
         return web.Response(
             content_type="application/json",
             headers=_cors_headers(),
@@ -405,27 +422,26 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         )
 
     async def hitl_approve(request: Any) -> Any:
-        if not _require_auth(request):
-            return web.Response(
-                status=401, text='{"error":"Unauthorized"}', content_type="application/json"
-            )
+        principal = _get_principal(request)
+        if principal is None:
+            return web.Response(status=401, text='{"error":"Unauthorized"}', content_type="application/json")
         run_id = request.match_info["run_id"]
         try:
             body = cast(dict[str, Any], await request.json())
         except Exception:
             body = {}
-        checkpoint = await ledger.load_checkpoint_data(run_id)
+        tl = _ledger_for(principal)
+        checkpoint = await tl.load_checkpoint_data(run_id)
         if not checkpoint:
             return web.Response(
                 status=404,
                 text=json.dumps({"error": "run not found or not paused"}),
                 content_type="application/json",
             )
-        # Record reviewer metadata in checkpoint
         checkpoint["reviewed_by"] = body.get("reviewer_id", "api")
         checkpoint["review_notes"] = body.get("notes", "")
         checkpoint["approved"] = True
-        await ledger.save_checkpoint(run_id, checkpoint)
+        await tl.save_checkpoint(run_id, checkpoint)
         return web.Response(
             content_type="application/json",
             headers=_cors_headers(),
@@ -433,16 +449,16 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         )
 
     async def hitl_reject(request: Any) -> Any:
-        if not _require_auth(request):
-            return web.Response(
-                status=401, text='{"error":"Unauthorized"}', content_type="application/json"
-            )
+        principal = _get_principal(request)
+        if principal is None:
+            return web.Response(status=401, text='{"error":"Unauthorized"}', content_type="application/json")
         run_id = request.match_info["run_id"]
         try:
             body = cast(dict[str, Any], await request.json())
         except Exception:
             body = {}
-        checkpoint = await ledger.load_checkpoint_data(run_id)
+        tl = _ledger_for(principal)
+        checkpoint = await tl.load_checkpoint_data(run_id)
         if not checkpoint:
             return web.Response(
                 status=404,
@@ -452,7 +468,7 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         checkpoint["reviewed_by"] = body.get("reviewer_id", "api")
         checkpoint["review_notes"] = body.get("notes", "")
         checkpoint["approved"] = False
-        await ledger.save_checkpoint(run_id, checkpoint)
+        await tl.save_checkpoint(run_id, checkpoint)
         return web.Response(
             content_type="application/json",
             headers=_cors_headers(),
@@ -861,24 +877,26 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
     # ── Webhook management ────────────────────────────────────────────────────
 
     async def webhooks_list(request: Any) -> Any:
-        """GET /webhooks — list registered webhook endpoints."""
-        if not _require_auth(request):
+        """GET /webhooks — list registered webhook endpoints (tenant-scoped)."""
+        principal = _get_principal(request)
+        if principal is None:
             return web.Response(status=401)
         from meshflow.observability.webhooks import get_webhook_manager
-
+        tid = getattr(principal, "tenant_id", "") or ""
         mgr = get_webhook_manager()
         return web.Response(
             content_type="application/json",
             headers=_cors_headers(),
             text=json.dumps({
-                "webhooks": [h.to_dict() for h in mgr.list()],
+                "webhooks": [h.to_dict() for h in mgr.list(tenant_id=tid)],
                 "stats": mgr.stats(),
             }),
         )
 
     async def webhooks_register(request: Any) -> Any:
-        """POST /webhooks — register a new webhook."""
-        if not _require_auth(request):
+        """POST /webhooks — register a new webhook (tenant-scoped)."""
+        principal = _get_principal(request)
+        if principal is None:
             return web.Response(status=401)
         try:
             body = cast(dict[str, Any], await request.json())
@@ -897,12 +915,12 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
             )
         events = body.get("events", ["*"])
         secret = body.get("secret", "")
+        tid = getattr(principal, "tenant_id", "") or ""
 
         from meshflow.observability.webhooks import get_webhook_manager
-
         mgr = get_webhook_manager()
         try:
-            reg = mgr.register(url, events=events, secret=secret)
+            reg = mgr.register(url, events=events, secret=secret, tenant_id=tid)
         except ValueError as exc:
             return web.Response(
                 status=400,
@@ -917,14 +935,15 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         )
 
     async def webhooks_delete(request: Any) -> Any:
-        """DELETE /webhooks/{id} — remove a registered webhook."""
-        if not _require_auth(request):
+        """DELETE /webhooks/{id} — remove a registered webhook (tenant-scoped)."""
+        principal = _get_principal(request)
+        if principal is None:
             return web.Response(status=401)
         webhook_id = request.match_info["id"]
+        tid = getattr(principal, "tenant_id", "") or ""
         from meshflow.observability.webhooks import get_webhook_manager
-
         mgr = get_webhook_manager()
-        removed = mgr.unregister(webhook_id)
+        removed = mgr.unregister(webhook_id, tenant_id=tid)
         if not removed:
             return web.Response(
                 status=404,
@@ -938,21 +957,22 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         )
 
     async def webhooks_deliveries(request: Any) -> Any:
-        """GET /webhooks/{id}/deliveries — delivery history for a webhook."""
-        if not _require_auth(request):
+        """GET /webhooks/{id}/deliveries — delivery history for a webhook (tenant-scoped)."""
+        principal = _get_principal(request)
+        if principal is None:
             return web.Response(status=401)
         webhook_id = request.match_info["id"]
+        tid = getattr(principal, "tenant_id", "") or ""
         from meshflow.observability.webhooks import get_webhook_manager
-
         mgr = get_webhook_manager()
-        hook = mgr.get(webhook_id)
+        hook = mgr.get(webhook_id, tenant_id=tid)
         if not hook:
             return web.Response(
                 status=404,
                 content_type="application/json",
                 text=json.dumps({"error": "webhook not found"}),
             )
-        history = mgr.delivery_history(webhook_id)
+        history = mgr.delivery_history(webhook_id, tenant_id=tid)
         return web.Response(
             content_type="application/json",
             headers=_cors_headers(),

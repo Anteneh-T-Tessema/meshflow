@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "sprint/*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]" || pip install -e .
+          pip install pytest pytest-asyncio aiohttp cryptography
+
+      - name: Run tests
+        env:
+          MESHFLOW_MOCK: "1"
+          ANTHROPIC_API_KEY: ""
+        run: |
+          python -m pytest tests/ -q --tb=short \
+            --ignore=tests/test_integration.py \
+            -x
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-py${{ matrix.python-version }}
+          path: .pytest_cache/
+
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install -e . mypy
+      - name: mypy (non-strict)
+        run: |
+          python -m mypy meshflow/core/schemas.py \
+                        meshflow/security/api_keys.py \
+                        meshflow/core/policy_loader.py \
+                        meshflow/observability/otel_exporter.py \
+                        --ignore-missing-imports \
+                        --no-strict-optional \
+            || true  # non-blocking until all stubs are added
+
+  benchmark:
+    name: Benchmark smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+      - name: Run quick benchmark
+        env:
+          MESHFLOW_MOCK: "1"
+        run: |
+          python benchmarks/bench_core.py --concurrency 10 --quick \
+            --output /tmp/bench_results.json || true
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: /tmp/bench_results.json
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install ruff
+        run: pip install ruff
+      - name: Run ruff
+        run: |
+          ruff check meshflow/ --select E,W,F \
+            --ignore E501,W503,F401,F811 \
+            || true  # advisory only

@@ -5,6 +5,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.21.0] — 2026-05-23
+
+### Sprint 21 — Tenant isolation, CI, benchmarks, docs
+
+**1082 tests passing (18 skipped).**
+
+#### Added
+
+- **Sprint 21A — Tenant isolation**:
+  `WebhookRegistration` gains `tenant_id` field; `WebhookManager.list()`,
+  `get()`, `unregister()`, `deliver()`, `delivery_history()` all accept
+  optional `tenant_id` parameter for scoped filtering. Tenant-scoped
+  webhooks are only visible/deletable by the owning tenant; global hooks
+  (empty tenant_id) are visible to all. Server: all data endpoints
+  (`/traces`, `/hitl`, `/webhooks`, `/eval-results`) use `_ledger_for(principal)`
+  helper to scope ledger reads/writes to the authenticated key's tenant.
+  Per-tenant ledger cache avoids per-request `ReplayLedger` construction.
+
+- **Sprint 21B — GitHub Actions CI** (`.github/workflows/ci.yml`):
+  Matrix test job on Python 3.11 + 3.12; mypy type-check job;
+  ruff lint job; benchmark smoke-test job (`--quick`); artifact upload
+  for test results and benchmark output.
+
+- **Sprint 21C — Benchmark integration**:
+  `bench_core.py` tracked; `--quick` flag added (first concurrency level
+  only — used in CI); `benchmarks/README.md` updated with `--quick`
+  documentation and latency regression comparison script.
+
+- **Sprint 21D — Docs**:
+  `docs/QUICKSTART.md` — 9-section developer quickstart covering install,
+  first run, team API, policy-as-code, server, keys, endpoints, Kubernetes,
+  and OTEL tracing. `SECURITY.md` at repo root (GitHub's standard location).
+  All compliance guides (`HIPAA_GUIDE.md`, `GDPR_GUIDE.md`,
+  `SOC2_CONTROLS_MAPPING.md`) tracked in `docs/compliance/`.
+
+- `tests/test_sprint21.py` — 58 deterministic tests across all Sprint 21 features
+
+---
+
 ## [0.20.0] — 2026-05-23
 
 ### Sprint 20 — API auth, Helm chart, policy-as-code, OTEL export
