@@ -105,22 +105,60 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
 
     from meshflow.core.ledger import ReplayLedger
     from meshflow.observability.metrics import MetricsCollector
+    from meshflow.security.api_keys import KeyStore, KeyRecord
 
     metrics = MetricsCollector.get()
     ledger = ReplayLedger(ledger_path)
+    key_store = KeyStore(ledger_path if not ledger_path.startswith("postgresql") else "meshflow_runs.db")
+
+    def _extract_raw_key(headers: Any) -> str:
+        auth = headers.get("Authorization", "") or headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[7:]
+        return headers.get("X-API-Key", "") or headers.get("x-api-key", "")
+
+    def _get_principal(request: Any) -> KeyRecord | None:
+        """Return the authenticated KeyRecord or None.  Open mode returns a synthetic admin."""
+        raw_key = _extract_raw_key(request.headers)
+        # Try KeyStore first (DB-backed + static keys from env)
+        if raw_key:
+            principal = key_store.verify(raw_key)
+            if principal:
+                return principal
+        # Fall back to legacy env-var check for backward compatibility
+        if not raw_key and _check_auth(request.headers, api_keys):
+            # open-mode or legacy key accepted — treat as operator
+            return KeyRecord(key_id="legacy", name="legacy", role="operator",
+                             tenant_id="", created_at="", last_used_at="", revoked=False)
+        # Open mode (no keys configured anywhere)
+        if key_store.open_mode and not api_keys:
+            return KeyRecord(key_id="open", name="open", role="admin",
+                             tenant_id="", created_at="", last_used_at="", revoked=False)
+        return None
 
     def _require_auth(request: Any) -> bool:
-        if not _check_auth(request.headers, api_keys):
+        principal = _get_principal(request)
+        if principal is None:
             return False
         # Rate limiting (best-effort — never blocks startup)
         try:
             from meshflow.observability.sla import get_rate_limiter
-            key = request.headers.get("X-API-Key", "") or request.headers.get("Authorization", "anonymous")
+            key = _extract_raw_key(request.headers) or "anonymous"
             if not get_rate_limiter().allow(key):
-                return False  # 429 handled by caller (returns 401 for simplicity; subclass if needed)
+                return False
         except Exception:
             pass
         return True
+
+    def _require_role(request: Any, min_role: str) -> KeyRecord | None:
+        """Return principal if authenticated and has at least min_role, else None."""
+        _role_order = {"viewer": 0, "operator": 1, "admin": 2}
+        principal = _get_principal(request)
+        if principal is None:
+            return None
+        if _role_order.get(principal.role, -1) >= _role_order.get(min_role, 99):
+            return principal
+        return None
 
     def _cors_headers() -> dict[str, str]:
         origins = os.environ.get("MESHFLOW_CORS_ORIGINS", "*")
@@ -515,22 +553,35 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
             return web.Response(
                 status=401, text='{"error":"Unauthorized"}', content_type="application/json"
             )
-        from meshflow.observability.telemetry import get_tracer
-        tracer = get_tracer()
+        from meshflow.observability.otel_exporter import get_global_exporter
+        exporter = get_global_exporter()
+        exporter_cfg = exporter.config()
+        # Legacy telemetry tracer info (backward compat)
+        try:
+            from meshflow.observability.telemetry import get_tracer
+            tracer = get_tracer()
+            legacy = {
+                "legacy_tracer_otlp_enabled": tracer.otlp_enabled,
+                "legacy_tracer_endpoint": tracer.otlp_endpoint if tracer.otlp_enabled else "",
+            }
+        except Exception:
+            legacy = {}
         return web.Response(
             content_type="application/json",
             headers=_cors_headers(),
             text=json.dumps({
-                "otlp_enabled": tracer.otlp_enabled,
-                "otlp_endpoint": tracer.otlp_endpoint if tracer.otlp_enabled else "",
-                "otlp_protocol": tracer.otlp_protocol if tracer.otlp_enabled else "",
-                "otlp_error": tracer.otlp_error,
+                "otlp_enabled": exporter_cfg["enabled"],
+                "otlp_endpoint": exporter_cfg["endpoint"],
+                "service_name": exporter_cfg["service_name"],
+                "exported_count": exporter_cfg["exported_count"],
+                "error_count": exporter_cfg["error_count"],
                 "w3c_traceparent": True,
                 "env_vars": {
-                    "MESHFLOW_OTLP_ENDPOINT": "OTLP collector endpoint (empty = disabled)",
-                    "MESHFLOW_OTLP_PROTOCOL": "grpc or http/protobuf (default: grpc)",
-                    "MESHFLOW_OTLP_HEADERS": "comma-separated k=v auth headers",
+                    "OTEL_EXPORTER_OTLP_ENDPOINT": "OTLP/HTTP base URL (default: http://localhost:4318)",
+                    "OTEL_SERVICE_NAME": "service.name attribute (default: meshflow)",
+                    "OTEL_EXPORTER_OTLP_HEADERS": "comma-separated k=v auth headers",
                 },
+                **legacy,
             }),
         )
 
@@ -947,6 +998,91 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
             pass
         return response
 
+    # ── API key management (admin only) ──────────────────────────────────────
+
+    async def keys_list(request: Any) -> Any:
+        """GET /keys — list active API keys (admin only)."""
+        principal = _require_role(request, "admin")
+        if principal is None:
+            return web.Response(status=403, content_type="application/json",
+                                text=json.dumps({"error": "Forbidden — admin role required"}))
+        tenant = request.rel_url.query.get("tenant") or None
+        keys = key_store.list(tenant_id=tenant)
+        return web.Response(
+            content_type="application/json",
+            headers=_cors_headers(),
+            text=json.dumps({"keys": [k.to_dict() for k in keys], "count": len(keys)}),
+        )
+
+    async def keys_create(request: Any) -> Any:
+        """POST /keys — generate a new API key (admin only).
+
+        Body: { "name": "ci-bot", "role": "operator", "tenant_id": "" }
+        Returns: { "key_id": ..., "raw_key": ..., "role": ..., "name": ... }
+        The raw_key is shown exactly once — store it immediately.
+        """
+        principal = _require_role(request, "admin")
+        if principal is None:
+            return web.Response(status=403, content_type="application/json",
+                                text=json.dumps({"error": "Forbidden — admin role required"}))
+        try:
+            body = cast(dict[str, Any], await request.json())
+        except Exception:
+            body = {}
+        name = body.get("name", "").strip()
+        if not name:
+            return web.Response(status=400, content_type="application/json",
+                                text=json.dumps({"error": "name is required"}))
+        role = body.get("role", "operator")
+        tenant_id = body.get("tenant_id", "")
+        try:
+            key_id, raw_key = key_store.create(name, role=role, tenant_id=tenant_id)
+        except ValueError as exc:
+            return web.Response(status=400, content_type="application/json",
+                                text=json.dumps({"error": str(exc)}))
+        return web.Response(
+            status=201,
+            content_type="application/json",
+            headers=_cors_headers(),
+            text=json.dumps({
+                "key_id": key_id,
+                "raw_key": raw_key,
+                "name": name,
+                "role": role,
+                "tenant_id": tenant_id,
+                "note": "Store raw_key immediately — it will not be shown again.",
+            }),
+        )
+
+    async def keys_revoke(request: Any) -> Any:
+        """DELETE /keys/{key_id} — revoke an API key (admin only)."""
+        principal = _require_role(request, "admin")
+        if principal is None:
+            return web.Response(status=403, content_type="application/json",
+                                text=json.dumps({"error": "Forbidden — admin role required"}))
+        key_id = request.match_info["key_id"]
+        revoked = key_store.revoke(key_id)
+        if not revoked:
+            return web.Response(status=404, content_type="application/json",
+                                text=json.dumps({"error": "Key not found or already revoked"}))
+        return web.Response(
+            content_type="application/json",
+            headers=_cors_headers(),
+            text=json.dumps({"key_id": key_id, "status": "revoked"}),
+        )
+
+    async def keys_whoami(request: Any) -> Any:
+        """GET /keys/whoami — return the authenticated principal's info."""
+        principal = _get_principal(request)
+        if principal is None:
+            return web.Response(status=401, content_type="application/json",
+                                text=json.dumps({"error": "Unauthorized"}))
+        return web.Response(
+            content_type="application/json",
+            headers=_cors_headers(),
+            text=json.dumps(principal.to_dict()),
+        )
+
     app = web.Application()
     app.router.add_get("/health", health)
     app.router.add_get("/health/live", health_live)
@@ -980,6 +1116,11 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
     app.router.add_post("/webhooks", webhooks_register)
     app.router.add_delete("/webhooks/{id}", webhooks_delete)
     app.router.add_get("/webhooks/{id}/deliveries", webhooks_deliveries)
+    # API key management
+    app.router.add_get("/keys/whoami", keys_whoami)
+    app.router.add_get("/keys", keys_list)
+    app.router.add_post("/keys", keys_create)
+    app.router.add_delete("/keys/{key_id}", keys_revoke)
     app.router.add_route("OPTIONS", "/{path_info:.*}", options_handler)
     return app
 
@@ -991,6 +1132,7 @@ def serve(
     ledger_path: str = "meshflow_runs.db",
     tls_cert: str = "",
     tls_key: str = "",
+    policy_file: str = "",
 ) -> None:
     try:
         from aiohttp import web
@@ -1000,6 +1142,13 @@ def serve(
     keys = api_keys if api_keys is not None else _load_api_keys()
     if not keys:
         print("WARNING: No MESHFLOW_API_KEYS set — server is open (no authentication).")
+
+    if policy_file:
+        from meshflow.core.policy_loader import validate_policy_yaml
+        issues = validate_policy_yaml(policy_file)
+        if issues:
+            raise ValueError(f"Policy file '{policy_file}' has errors: {issues}")
+        print(f"  Policy file: {policy_file}")
 
     ssl_ctx: ssl.SSLContext | None = None
     if tls_cert and tls_key:

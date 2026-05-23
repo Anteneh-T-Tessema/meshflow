@@ -479,6 +479,42 @@ class StepRuntime:
             except Exception:
                 pass
 
+        # 15b. OTEL span export — fire-and-forget; never blocks the step
+        try:
+            from meshflow.observability.otel_exporter import get_global_exporter as _get_otel, now_ns as _now_ns
+            _otel = _get_otel()
+            if _otel._enabled:
+                import asyncio as _ao
+                _t0_ns = int(record.timestamp.replace("Z", "+00:00") and
+                             (__import__("datetime").datetime.fromisoformat(
+                                 record.timestamp.replace("Z", "+00:00")
+                             ).timestamp() * 1_000_000_000))
+                _otel_attrs = {
+                    "node.id": node.id,
+                    "node.kind": node.kind.value,
+                    "step_id": step_id,
+                    "run_id": self._run_id,
+                    "blocked": blocked,
+                    "cost_usd": cost_usd,
+                    "tokens_used": tokens_used,
+                }
+                if block_reason:
+                    _otel_attrs["block_reason"] = block_reason
+                _ao.get_event_loop().run_in_executor(
+                    None,
+                    lambda: _otel.export_span(
+                        trace_id=self._run_id.replace("-", "").ljust(32, "0")[:32],
+                        span_id=step_id.replace("-", "").ljust(16, "0")[:16],
+                        name=f"step:{node.id}",
+                        start_ns=int(_t0_ns - duration_ms * 1_000_000),
+                        end_ns=int(_t0_ns),
+                        attributes=_otel_attrs,
+                        status="error" if blocked else "ok",
+                    )
+                )
+        except Exception:
+            pass
+
         # 16. Webhook alerts — fire-and-forget; never blocks the step
         try:
             import asyncio as _asyncio

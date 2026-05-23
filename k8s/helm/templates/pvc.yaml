@@ -1,0 +1,17 @@
+{{- if eq .Values.ledger.backend "sqlite" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "meshflow.fullname" . }}-data
+  labels:
+    {{- include "meshflow.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.ledger.sqlite.storageSize }}
+  {{- if .Values.ledger.sqlite.storageClass }}
+  storageClassName: {{ .Values.ledger.sqlite.storageClass }}
+  {{- end }}
+{{- end }}

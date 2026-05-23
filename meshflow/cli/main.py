@@ -112,6 +112,10 @@ def main() -> None:
     p_serve.add_argument("--ledger", default="meshflow_runs.db")
     p_serve.add_argument("--tls-cert", default="")
     p_serve.add_argument("--tls-key", default="")
+    p_serve.add_argument(
+        "--policy-file", default="", dest="policy_file",
+        help="Path to meshflow.policy.yaml (policy-as-code)",
+    )
 
     # dev
     p_dev = sub.add_parser("dev", help="Start server in dev mode with colored output")
@@ -268,6 +272,24 @@ def main() -> None:
     p_wh_remove.add_argument("--server", default="http://localhost:8000")
     p_wh_remove.add_argument("--api-key", default="", dest="api_key")
 
+    # keys
+    p_keys = sub.add_parser("keys", help="Manage API keys (requires admin role)")
+    p_keys_sub = p_keys.add_subparsers(dest="keys_cmd", required=True)
+
+    p_keys_list = p_keys_sub.add_parser("list", help="List active API keys")
+    p_keys_list.add_argument("--db", default="meshflow_runs.db", help="Ledger SQLite path")
+    p_keys_list.add_argument("--tenant", default="", help="Filter by tenant ID")
+
+    p_keys_gen = p_keys_sub.add_parser("generate", help="Generate a new API key")
+    p_keys_gen.add_argument("name", help="Human-readable name for the key")
+    p_keys_gen.add_argument("--role", default="operator", choices=["admin", "operator", "viewer"])
+    p_keys_gen.add_argument("--tenant", default="", help="Tenant ID scope")
+    p_keys_gen.add_argument("--db", default="meshflow_runs.db", help="Ledger SQLite path")
+
+    p_keys_revoke = p_keys_sub.add_parser("revoke", help="Revoke an API key by key_id")
+    p_keys_revoke.add_argument("key_id", help="Key ID to revoke")
+    p_keys_revoke.add_argument("--db", default="meshflow_runs.db", help="Ledger SQLite path")
+
     p_bench = sub.add_parser("bench", help="Run performance benchmarks (no API key required)")
     p_bench.add_argument(
         "--concurrency", nargs="+", type=int, default=[10, 100, 1000],
@@ -311,6 +333,7 @@ def main() -> None:
         "mcp-stdio": _cmd_mcp_stdio,
         "compliance": _cmd_compliance,
         "webhooks": _cmd_webhooks,
+        "keys": _cmd_keys,
     }
     dispatch[args.cmd](args)
 
@@ -1199,6 +1222,22 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     from meshflow.runtime.server import serve, _load_api_keys
 
     keys: set[str] = set(args.api_keys) if getattr(args, "api_keys", None) else _load_api_keys()
+
+    policy_file = getattr(args, "policy_file", "")
+    if policy_file:
+        import os
+        if not os.path.exists(policy_file):
+            print(f"  Error: policy file not found: {policy_file}")
+            sys.exit(1)
+        from meshflow.core.policy_loader import validate_policy_yaml
+        issues = validate_policy_yaml(policy_file)
+        if issues:
+            print("  Policy file validation errors:")
+            for issue in issues:
+                print(f"    - {issue}")
+            sys.exit(1)
+        print(f"  Policy file: {policy_file} (validated)")
+
     serve(
         host=args.host,
         port=args.port,
@@ -1206,6 +1245,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         ledger_path=getattr(args, "ledger", "meshflow_runs.db"),
         tls_cert=getattr(args, "tls_cert", ""),
         tls_key=getattr(args, "tls_key", ""),
+        policy_file=policy_file,
     )
 
 
@@ -1723,3 +1763,52 @@ def _cmd_webhooks(args: argparse.Namespace) -> None:
             print(f"  Error: {exc}")
             sys.exit(1)
         print(f"  Webhook {data.get('deleted', args.id)} removed.")
+
+
+# ── keys ─────────────────────────────────────────────────────────────────────
+
+
+def _cmd_keys(args: argparse.Namespace) -> None:
+    from meshflow.security.api_keys import KeyStore
+
+    db = args.db
+    store = KeyStore(db)
+
+    if args.keys_cmd == "list":
+        tenant = args.tenant or None
+        keys = store.list(tenant_id=tenant)
+        if not keys:
+            print("  No active API keys found.")
+            return
+        print(f"\n  Active API keys ({len(keys)}):")
+        print(f"  {'Key ID':<20}  {'Name':<20}  {'Role':<10}  {'Tenant':<15}  Last used")
+        print(f"  {'─' * 20}  {'─' * 20}  {'─' * 10}  {'─' * 15}  {'─' * 24}")
+        for k in keys:
+            print(
+                f"  {k.key_id:<20}  {k.name:<20}  {k.role:<10}  "
+                f"{(k.tenant_id or '(global)'):<15}  {k.last_used_at or 'never'}"
+            )
+        print()
+
+    elif args.keys_cmd == "generate":
+        try:
+            key_id, raw_key = store.create(args.name, role=args.role, tenant_id=args.tenant)
+        except ValueError as exc:
+            print(f"  Error: {exc}")
+            sys.exit(1)
+        print(f"\n  API key created!")
+        print(f"  Key ID  : {key_id}")
+        print(f"  Raw key : {raw_key}")
+        print(f"  Role    : {args.role}")
+        print(f"  Tenant  : {args.tenant or '(global)'}")
+        print()
+        print("  Store the raw key now — it will not be shown again.")
+        print()
+
+    elif args.keys_cmd == "revoke":
+        ok = store.revoke(args.key_id)
+        if ok:
+            print(f"  Key {args.key_id} revoked.")
+        else:
+            print(f"  Key {args.key_id} not found or already revoked.")
+            sys.exit(1)

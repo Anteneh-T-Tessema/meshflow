@@ -1,0 +1,83 @@
+# MeshFlow Helm chart default values.
+# Override with: helm install meshflow ./k8s/helm -f my-values.yaml
+
+replicaCount: 2
+
+image:
+  repository: meshflow
+  pullPolicy: IfNotPresent
+  tag: "0.20.0"
+
+# API keys injected as a Secret.  Set via --set or a values override.
+# At least one key is required in production; in dev mode leave blank for open access.
+apiKeys: ""                          # comma-separated list, e.g. "mfk_abc,mfk_def"
+webhookSecret: "change-me-in-production"
+corsOrigins: "*"
+
+# Ledger storage
+ledger:
+  # "sqlite" or "postgres"
+  backend: sqlite
+  sqlite:
+    path: /data/runs.db
+    storageSize: 10Gi
+    storageClass: ""                 # leave blank for cluster default
+  postgres:
+    dsn: ""                          # e.g. postgresql://mesh:pass@postgres/mesh
+
+# External secrets (Kubernetes Secret name + keys)
+existingSecret: ""                   # if set, reads api-keys and webhook-secret from this Secret
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: meshflow.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "256Mi"
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# Extra env vars to inject into the pod
+extraEnv: []
+# - name: OPENAI_API_KEY
+#   valueFrom:
+#     secretKeyRef:
+#       name: my-secret
+#       key: openai-key
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: [ALL]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

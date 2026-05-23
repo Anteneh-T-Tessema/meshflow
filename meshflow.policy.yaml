@@ -1,0 +1,35 @@
+# MeshFlow Policy-as-Code — example configuration
+# Place this file in your project root and pass it with:
+#   meshflow serve --policy-file meshflow.policy.yaml
+#
+# All fields are optional. Unset fields use defaults.
+
+# ── Governance policy ──────────────────────────────────────────────────────────
+mode: standard              # standard | high-risk | legal-critical | low-risk | research
+budget_usd: 1.0             # per-run USD spend cap
+budget_tokens: 500000       # per-run token cap
+timeout_s: 300              # per-run wall-clock timeout
+max_steps: 50               # max steps per run
+deterministic_gate: true    # enable risk classification gate
+enable_guardian: true       # enable guardrails (toxicity, PII, prompt injection)
+enable_collusion_audit: true
+enable_uncertainty: true
+enable_environmental: false
+enable_cross_run_learning: false
+carbon_budget_g: 500.0
+
+# ── Compliance frameworks ──────────────────────────────────────────────────────
+compliance:
+  frameworks: []            # e.g. [hipaa, sox, gdpr, pci, nerc]
+  block_on_violation: true  # false = log-only mode
+
+  # Per-rule overrides (omit to use defaults)
+  rules:
+    hipaa_minimum_necessary:
+      max_input_chars: 50000
+    sox_dual_control:
+      max_consecutive: 5
+    gdpr_data_minimisation:
+      max_context_keys: 50
+    nerc_access_control:
+      approved_nodes: []    # list of approved node IDs, e.g. [agent_a, agent_b]

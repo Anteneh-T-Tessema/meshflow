@@ -1,0 +1,18 @@
+apiVersion: v2
+name: meshflow
+description: MeshFlow — governed multi-agent orchestration for regulated industries
+type: application
+version: 0.20.0
+appVersion: "0.20.0"
+keywords:
+  - meshflow
+  - multi-agent
+  - ai
+  - governance
+  - hipaa
+  - compliance
+home: https://github.com/Anteneh-T-Tessema/meshflow
+sources:
+  - https://github.com/Anteneh-T-Tessema/meshflow
+maintainers:
+  - name: MeshFlow Contributors

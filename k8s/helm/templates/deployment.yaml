@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "meshflow.fullname" . }}
+  labels:
+    {{- include "meshflow.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "meshflow.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "meshflow.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: meshflow
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MESHFLOW_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "meshflow.secretName" . }}
+                  key: api-keys
+            - name: MESHFLOW_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "meshflow.secretName" . }}
+                  key: webhook-secret
+            - name: MESHFLOW_CORS_ORIGINS
+              value: {{ .Values.corsOrigins | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          args:
+            - meshflow
+            - serve
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --ledger
+            - {{ if eq .Values.ledger.backend "postgres" }}{{ .Values.ledger.postgres.dsn }}{{ else }}{{ .Values.ledger.sqlite.path }}{{ end }}
+          volumeMounts:
+            {{- if eq .Values.ledger.backend "sqlite" }}
+            - name: data
+              mountPath: /data
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        {{- if eq .Values.ledger.backend "sqlite" }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "meshflow.fullname" . }}-data
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

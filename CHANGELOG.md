@@ -5,6 +5,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.20.0] — 2026-05-23
+
+### Sprint 20 — API auth, Helm chart, policy-as-code, OTEL export
+
+**1024 tests passing (18 skipped).**
+
+#### Added
+
+- **Sprint 20A — API key management** (`meshflow/security/api_keys.py`):
+  SQLite-backed `KeyStore` with PBKDF2-SHA256 hashed secrets; three roles
+  (`admin`, `operator`, `viewer`); per-tenant scoping; `create()`, `verify()`,
+  `revoke()`, `list()` API; co-exists with legacy `MESHFLOW_API_KEYS` env var.
+  Server: `GET /keys`, `POST /keys`, `DELETE /keys/{key_id}`, `GET /keys/whoami`;
+  key management endpoints restricted to `admin` role via `_require_role()`.
+  CLI: `meshflow keys generate|list|revoke --db --role --tenant`
+
+- **Sprint 20B — Deployment artifacts**:
+  Helm chart (`k8s/helm/`) — `Chart.yaml`, `values.yaml`, templates for
+  Deployment, Service, Secret, PVC, HPA, `_helpers.tpl`; Deployment uses
+  `/health/live` + `/health/ready` probes; autoscaling and ingress configurable
+  via values. `Dockerfile` updated: non-root user (uid 1000), healthcheck uses
+  `/health/live`. `docker-compose.yml` adds Redis service profile.
+  `k8s/deployment.yaml` updated to use `/health/live`+`/health/ready`.
+
+- **Sprint 20C — Policy-as-code** (`meshflow/core/policy_loader.py`):
+  `load_policy_yaml(path)` → `Policy`; `load_guard_yaml(path)` → `ComplianceGuard | None`;
+  `load_yaml(path)` → `(Policy, ComplianceGuard | None)` convenience;
+  `validate_policy_yaml(path)` → `list[str]` of issues.
+  Minimal built-in YAML parser (no PyYAML dep; uses PyYAML when installed).
+  `meshflow serve --policy-file meshflow.policy.yaml` validates on startup.
+  Example `meshflow.policy.yaml` in project root.
+
+- **Sprint 20D — OTEL export pipeline** (`meshflow/observability/otel_exporter.py`):
+  `OTELExporter` ships spans as OTLP/HTTP JSON to any OTEL collector
+  (Jaeger, Grafana Tempo, Honeycomb, etc.) using zero external dependencies.
+  `from_env()` factory reads `OTEL_EXPORTER_OTLP_ENDPOINT`,
+  `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_HEADERS`. Global singleton via
+  `get_global_exporter()`. `StepRuntime` exports a span per step via
+  `run_in_executor` (never blocks). `GET /otel/config` now reports live
+  exporter state including `exported_count` and `error_count`.
+
+- `tests/test_sprint20.py` — 75 deterministic tests across all Sprint 20 features
+
+---
+
 ## [0.19.0] — 2026-05-23
 
 ### Sprint 19 — Webhook wiring, production hardening, TypeScript SDK, ComplianceGuard
