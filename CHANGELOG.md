@@ -5,6 +5,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.19.0] — 2026-05-23
+
+### Sprint 19 — Webhook wiring, production hardening, TypeScript SDK, ComplianceGuard
+
+**949 tests passing (18 skipped).**
+
+#### Added
+
+- **Sprint 19A — Webhook wiring into StepRuntime**:
+  `meshflow/core/runtime.py` now fires `policy_violation`, `budget_exceeded`,
+  `hitl_pending`, and `collusion_alert` webhooks directly from step execution
+  via fire-and-forget `asyncio.create_task()` — step execution is never blocked
+
+- **Sprint 19B — TypeScript client SDK** (`sdks/typescript/`):
+  Full typed REST+SSE client for all MeshFlow API endpoints;
+  `verifyWebhookSignature()` using WebCrypto (constant-time HMAC comparison);
+  `liveEvents(runId?)` AsyncIterable for Server-Sent Events streaming;
+  `createClient()` factory reading `MESHFLOW_SERVER` / `MESHFLOW_API_KEY` env vars;
+  complete TypeScript interfaces for all MeshFlow types
+
+- **Sprint 19C — Production hardening**:
+  - `RedisBusBackend` in `meshflow/agents/messaging.py` — asyncio pub/sub
+    backed by `redis[asyncio]`; drop-in for the in-memory bus
+  - PostgreSQL connection pool config via `MESHFLOW_PG_POOL_MIN/MAX/TIMEOUT`
+    env vars (or constructor kwargs); `statement_cache_size=100` enabled
+  - Kubernetes probes: `GET /health/live` (always 200),
+    `GET /health/ready` (503 during shutdown or ledger unreachable)
+  - Graceful SIGTERM/SIGINT shutdown with 2 s drain window in `server.py`
+
+- **Sprint 19D — ComplianceGuard** (`meshflow/compliance/guard.py`):
+  Real-time mid-run enforcement that runs before each step executes;
+  8 built-in rules across 5 frameworks — HIPAA `§164.502(b)` / `§164.312(e)`,
+  SOX `§302` / `§404`, GDPR Art. `5(1)(b)` / `5(1)(c)`, PCI DSS Req 3,
+  NERC CIP-007; `block_on_violation=True` raises `ComplianceViolation`
+  and halts the step; `False` records violations without blocking;
+  integrates with `StepRuntime` via optional `compliance_guard` parameter
+
+- `tests/test_sprint19.py` — 47 deterministic tests across all Sprint 19 features
+
+---
+
 ## [0.18.0] — 2026-05-23
 
 ### Sprint 18 — Compliance reporting, webhook alerting

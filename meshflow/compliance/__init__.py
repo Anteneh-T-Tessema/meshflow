@@ -1,4 +1,4 @@
-"""MeshFlow compliance reporting — generate audit artifacts for HIPAA, SOX, GDPR, PCI."""
+"""MeshFlow compliance — reporting and real-time enforcement."""
 
 from meshflow.compliance.reporter import (
     ComplianceFinding,
@@ -7,6 +7,12 @@ from meshflow.compliance.reporter import (
     ComplianceSummary,
     SUPPORTED_FRAMEWORKS,
 )
+from meshflow.compliance.guard import (
+    ComplianceGuard,
+    ComplianceViolation,
+    ComplianceRule,
+    GuardViolationRecord,
+)
 
 __all__ = [
     "ComplianceFinding",
@@ -14,4 +20,8 @@ __all__ = [
     "ComplianceReporter",
     "ComplianceSummary",
     "SUPPORTED_FRAMEWORKS",
+    "ComplianceGuard",
+    "ComplianceViolation",
+    "ComplianceRule",
+    "GuardViolationRecord",
 ]

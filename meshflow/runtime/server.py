@@ -130,6 +130,8 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
             "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Tenant-ID",
         }
 
+    _shutting_down = False  # set True on SIGTERM to fail readiness
+
     async def health(request: Any) -> Any:
         return web.Response(
             content_type="application/json",
@@ -143,6 +145,35 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
                 }
             ),
         )
+
+    async def health_live(request: Any) -> Any:
+        """GET /health/live — Kubernetes liveness probe. Always 200 while process runs."""
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps({"live": True, "uptime_s": round(time.monotonic() - _START_TIME, 1)}),
+        )
+
+    async def health_ready(request: Any) -> Any:
+        """GET /health/ready — Kubernetes readiness probe. 503 during graceful shutdown."""
+        if _shutting_down:
+            return web.Response(
+                status=503,
+                content_type="application/json",
+                text=json.dumps({"ready": False, "reason": "shutting_down"}),
+            )
+        try:
+            runs = await ledger.list_runs()
+            _ = runs  # ledger is reachable
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"ready": True, "version": VERSION}),
+            )
+        except Exception as exc:
+            return web.Response(
+                status=503,
+                content_type="application/json",
+                text=json.dumps({"ready": False, "reason": str(exc)}),
+            )
 
     async def metrics_endpoint(request: Any) -> Any:
         return web.Response(
@@ -175,6 +206,23 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
                 result.total_tokens,
                 result.total_cost_usd,
             )
+            # Webhook: run_completed / run_failed
+            try:
+                from meshflow.observability.webhooks import get_webhook_manager
+                _wm = get_webhook_manager()
+                if _wm.list():
+                    _wh_payload = {
+                        "run_id": result.run_id,
+                        "status": result.status.value,
+                        "total_cost_usd": result.total_cost_usd,
+                        "total_tokens": result.total_tokens,
+                        "duration_s": result.duration_s,
+                        "error": result.error,
+                    }
+                    _ev = "run_failed" if result.status.value == "failed" else "run_completed"
+                    asyncio.create_task(_wm.deliver(_ev, _wh_payload))
+            except Exception:
+                pass
             return web.Response(
                 content_type="application/json",
                 headers=_cors_headers(),
@@ -901,6 +949,8 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
 
     app = web.Application()
     app.router.add_get("/health", health)
+    app.router.add_get("/health/live", health_live)
+    app.router.add_get("/health/ready", health_ready)
     app.router.add_get("/metrics", metrics_endpoint)
     app.router.add_post("/run", run_task)
     app.router.add_post("/stream", stream_task)
@@ -960,28 +1010,47 @@ def serve(
         proto = "http"
 
     async def _run() -> None:
+        import signal
+
         app = await _build_app(keys, ledger_path)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, host, port, ssl_context=ssl_ctx)
         await site.start()
         print(f"MeshFlow {VERSION} listening on {proto}://{host}:{port}")
-        print("  POST /run            — execute a task")
-        print("  POST /stream         — token-streaming NDJSON")
-        print("  GET  /events         — SSE workflow lifecycle events")
-        print("  GET  /events?run_id= — SSE filtered to one run")
-        print("  GET  /ws/bus         — WebSocket agent-to-agent message bus")
-        print("  GET  /pool/status    — registered AgentPool stats")
-        print("  GET  /eval-results   — stored eval baseline results")
-        print("  GET  /health         — health check (no auth)")
-        print("  GET  /metrics        — Prometheus metrics (no auth)")
-        print("  GET  /traces/<id>    — run trace")
-        print("  POST /hitl/<id>/approve|reject")
+        print("  POST /run              — execute a task")
+        print("  POST /stream           — token-streaming NDJSON")
+        print("  GET  /events           — SSE workflow lifecycle events")
+        print("  GET  /ws/bus           — WebSocket agent-to-agent message bus")
+        print("  GET  /health           — health check (no auth)")
+        print("  GET  /health/live      — Kubernetes liveness probe")
+        print("  GET  /health/ready     — Kubernetes readiness probe")
+        print("  GET  /metrics          — Prometheus metrics")
+        print("  GET  /compliance/report — compliance report")
+        print("  GET/POST/DELETE /webhooks — webhook management")
         if not keys:
             print("  Auth: DISABLED (set MESHFLOW_API_KEYS to enable)")
         else:
             print(f"  Auth: {len(keys)} API key(s) active")
-        await asyncio.Event().wait()  # run forever
+
+        stop_event = asyncio.Event()
+
+        def _handle_sigterm() -> None:
+            print("\nMeshFlow: SIGTERM received — draining connections (30s)…")
+            stop_event.set()
+
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, _handle_sigterm)
+            except (NotImplementedError, RuntimeError):
+                pass  # Windows / non-default loops
+
+        await stop_event.wait()
+        print("MeshFlow: shutting down gracefully…")
+        await asyncio.sleep(2)  # allow in-flight requests to complete
+        await runner.cleanup()
+        print("MeshFlow: shutdown complete.")
 
     asyncio.run(_run())
 

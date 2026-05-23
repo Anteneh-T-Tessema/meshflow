@@ -165,6 +165,7 @@ class StepRuntime:
         ledger: Any = None,
         budget: Any = None,
         circuit_breakers: Any = None,
+        compliance_guard: Any = None,
     ) -> None:
         self._policy = policy
         self._run_id = run_id
@@ -179,6 +180,7 @@ class StepRuntime:
         self._ledger = ledger
         self._budget = budget
         self._cbs = circuit_breakers  # dict[str, CircuitBreaker]
+        self._compliance_guard = compliance_guard
         self._prev_hash = ""  # grows with each committed record
 
     async def run(
@@ -277,6 +279,20 @@ class StepRuntime:
                 blocked = True
                 block_reason = "budget:exceeded"
 
+        # 5b. Real-time compliance guard (pre-check)
+        if not blocked and not paused and self._compliance_guard:
+            try:
+                self._compliance_guard.pre_check(
+                    node_id=node.id,
+                    input_task=node_input.task,
+                    policy=self._policy,
+                    context=context,
+                )
+            except Exception as _cg_exc:
+                # ComplianceViolation or unexpected error — block the step
+                blocked = True
+                block_reason = f"compliance:{_cg_exc}"
+
         # 6. HITL escalation if node tier >= threshold
         if (
             not blocked
@@ -363,6 +379,24 @@ class StepRuntime:
             and output.content
         ):
             self._collusion.record_output(node.id, output.content[:500])
+            # Collusion alert webhook — fire if risk score is high
+            try:
+                import asyncio as _ca_asyncio
+                _risk = getattr(self._collusion, "last_risk_score", None)
+                if _risk is None:
+                    _risk = getattr(self._collusion, "_last_risk", None)
+                if _risk is not None and float(_risk) > 0.7:
+                    from meshflow.observability.webhooks import get_webhook_manager as _gwh
+                    _cwh = _gwh()
+                    if _cwh.list():
+                        _ca_asyncio.create_task(_cwh.deliver("collusion_alert", {
+                            "run_id": self._run_id,
+                            "node_id": node.id,
+                            "step_id": step_id,
+                            "collusion_risk": float(_risk),
+                        }))
+            except Exception:
+                pass
 
         # 14. CAEP: revoke DID if risk spikes post-step
         if self._identity and not paused and uncertainty_val > 0.7:
@@ -435,6 +469,37 @@ class StepRuntime:
         try:
             from meshflow.observability.sla import get_sla_tracker
             get_sla_tracker().record(node.id, duration_ms)
+        except Exception:
+            pass
+
+        # Post-step compliance guard update
+        if self._compliance_guard:
+            try:
+                self._compliance_guard.post_step(node.id, blocked=blocked)
+            except Exception:
+                pass
+
+        # 16. Webhook alerts — fire-and-forget; never blocks the step
+        try:
+            import asyncio as _asyncio
+            from meshflow.observability.webhooks import get_webhook_manager as _get_wh
+            _wh = _get_wh()
+            if _wh.list():
+                _wp: dict[str, Any] = {
+                    "run_id": self._run_id,
+                    "step_id": step_id,
+                    "node_id": node.id,
+                    "block_reason": block_reason,
+                    "cost_usd": cost_usd,
+                    "tokens_used": tokens_used,
+                    "timestamp": record.timestamp,
+                }
+                if blocked and block_reason.startswith("budget:"):
+                    _asyncio.create_task(_wh.deliver("budget_exceeded", _wp))
+                elif blocked:
+                    _asyncio.create_task(_wh.deliver("policy_violation", _wp))
+                if paused:
+                    _asyncio.create_task(_wh.deliver("hitl_pending", {**_wp, "human_context": human_ctx}))
         except Exception:
             pass
 

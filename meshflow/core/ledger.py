@@ -360,11 +360,26 @@ class PostgresLedgerBackend:
     tests predictable while still supporting durable multi-process storage.
     """
 
-    def __init__(self, dsn: str, pool: Any = None) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        pool: Any = None,
+        *,
+        min_size: int | None = None,
+        max_size: int | None = None,
+        command_timeout: float | None = None,
+    ) -> None:
         self.db_path = dsn
         self._dsn = dsn
         self._pool = pool
         self._initialized = False
+        # Pool sizing: env vars override constructor kwargs
+        import os
+        self._min_size = int(os.environ.get("MESHFLOW_PG_POOL_MIN", min_size or 2))
+        self._max_size = int(os.environ.get("MESHFLOW_PG_POOL_MAX", max_size or 10))
+        self._command_timeout = float(
+            os.environ.get("MESHFLOW_PG_TIMEOUT", command_timeout or 30.0)
+        )
 
     async def _ensure_pool(self) -> Any:
         if self._pool is None:
@@ -375,7 +390,13 @@ class PostgresLedgerBackend:
                     "PostgreSQL ledger requires asyncpg. Install meshflow with asyncpg "
                     "or use a SQLite ledger path."
                 ) from exc
-            self._pool = await asyncpg.create_pool(self._dsn)
+            self._pool = await asyncpg.create_pool(
+                self._dsn,
+                min_size=self._min_size,
+                max_size=self._max_size,
+                command_timeout=self._command_timeout,
+                statement_cache_size=100,  # prepared statement cache per connection
+            )
         if not self._initialized:
             await self._init_db()
             self._initialized = True

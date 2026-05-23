@@ -166,6 +166,91 @@ class WebSocketBusBackend:
                 continue
 
 
+# ── Redis bus backend ─────────────────────────────────────────────────────────
+
+
+class RedisBusBackend:
+    """Production-grade cross-process bus backend via Redis pub/sub.
+
+    Requires redis-py with asyncio support: pip install redis[asyncio]
+
+    Usage::
+
+        backend = RedisBusBackend("redis://localhost:6379", channel="meshflow:bus")
+        bus = MessageBus(backend=backend)
+        await bus.connect()
+        ...
+        await bus.disconnect()
+    """
+
+    def __init__(
+        self,
+        url: str = "redis://localhost:6379",
+        channel: str = "meshflow:bus",
+        db: int = 0,
+    ) -> None:
+        self._url = url
+        self._channel = channel
+        self._db = db
+        self._client: Any = None
+        self._pubsub: Any = None
+        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._closed = False
+        self._recv_task: asyncio.Task[None] | None = None
+
+    async def connect(self) -> None:
+        try:
+            import redis.asyncio as aioredis
+        except ImportError as exc:
+            raise RuntimeError(
+                "RedisBusBackend requires redis[asyncio]. "
+                "pip install 'redis[asyncio]'"
+            ) from exc
+        self._client = aioredis.from_url(self._url, db=self._db, decode_responses=True)
+        self._pubsub = self._client.pubsub()
+        await self._pubsub.subscribe(self._channel)
+        self._recv_task = asyncio.create_task(self._receive_loop())
+
+    async def disconnect(self) -> None:
+        self._closed = True
+        if self._pubsub is not None:
+            await self._pubsub.unsubscribe(self._channel)
+            await self._pubsub.close()
+        if self._client is not None:
+            await self._client.aclose()
+        if self._recv_task is not None:
+            self._recv_task.cancel()
+
+    async def publish(self, message_dict: dict[str, Any]) -> None:
+        if self._client is None:
+            raise RuntimeError("RedisBusBackend not connected — call connect() first")
+        await self._client.publish(self._channel, json.dumps(message_dict))
+
+    async def _receive_loop(self) -> None:
+        try:
+            async for msg in self._pubsub.listen():
+                if self._closed:
+                    break
+                if msg.get("type") == "message":
+                    try:
+                        data = json.loads(msg["data"])
+                        await self._queue.put(data)
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+    async def incoming(self) -> AsyncIterator[dict[str, Any]]:  # type: ignore[override]
+        while not self._closed:
+            try:
+                msg = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+                yield msg
+            except asyncio.TimeoutError:
+                continue
+
+
 # ── MessageBus ────────────────────────────────────────────────────────────────
 
 
