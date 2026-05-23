@@ -2,16 +2,15 @@
 
 All constraints declared in Policy are enforced here, not scattered across agents.
 """
+
 from __future__ import annotations
 
-import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
-from meshflow.core.schemas import CircuitBreakerConfig, Policy, RunStatus
+from meshflow.core.schemas import CircuitBreakerConfig, Policy
 
 
 class BudgetExceededError(Exception):
@@ -29,6 +28,7 @@ class TimeoutError(Exception):
 @dataclass
 class BudgetTracker:
     """Tracks spend across cost, tokens, carbon, and time."""
+
     policy: Policy
     _usd: float = 0.0
     _tokens: int = 0
@@ -70,10 +70,7 @@ class BudgetTracker:
             raise TimeoutError(
                 f"Run timeout: {self.elapsed_s():.1f}s > {self.policy.timeout_s:.1f}s"
             )
-        if (
-            self.policy.enable_environmental
-            and self._carbon_g > self.policy.carbon_budget_g
-        ):
+        if self.policy.enable_environmental and self._carbon_g > self.policy.carbon_budget_g:
             raise BudgetExceededError(
                 f"Carbon budget exceeded: {self._carbon_g:.1f}g > {self.policy.carbon_budget_g:.1f}g"
             )

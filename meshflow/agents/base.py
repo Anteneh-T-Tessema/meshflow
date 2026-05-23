@@ -1,18 +1,551 @@
 """Base agent and role-specific agents — AutoGen DNA with HITL support."""
+
 from __future__ import annotations
 
 import asyncio
-import time
+import inspect
+import json
+import re
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
-
-import anthropic
+from typing import Any, Protocol, cast, runtime_checkable
 
 from meshflow.core.schemas import (
-    AgentRole, AgentState, Evidence, Intent, Message,
-    Policy, RiskTier, UncertaintyScore,
+    AgentRole,
+    AgentState,
+    Evidence,
+    Intent,
+    Message,
+    Policy,
+    RiskTier,
+    TokenChunk,
 )
+
+# ── Pricing registry (Claude 4.x rates, May 2025) ─────────────────────────────
+# Key: substring that appears in model name. Match order matters — more specific first.
+# Tuple: (input_usd_per_1k_tokens, output_usd_per_1k_tokens)
+_PRICING: dict[str, tuple[float, float]] = {
+    "claude-opus-4-7": (0.015, 0.075),
+    "claude-opus-4-5": (0.015, 0.075),
+    "claude-sonnet-4-6": (0.003, 0.015),
+    "claude-sonnet-4-5": (0.003, 0.015),
+    "claude-haiku-4-5": (0.0008, 0.004),
+    "opus": (0.015, 0.075),
+    "sonnet": (0.003, 0.015),
+    "haiku": (0.0008, 0.004),
+}
+
+
+# Publicly mutable so callers can update rates without a code change:
+#   from meshflow.agents.base import update_pricing
+#   update_pricing("my-model", input_per_1k=0.002, output_per_1k=0.008)
+def update_pricing(model_key: str, input_per_1k: float, output_per_1k: float) -> None:
+    """Register or update the per-token price for a model key."""
+    _PRICING[model_key] = (input_per_1k, output_per_1k)
+
+
+def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    model_lower = model.lower()
+    for key, (in_rate, out_rate) in _PRICING.items():
+        if key in model_lower:
+            return (input_tokens / 1000) * in_rate + (output_tokens / 1000) * out_rate
+    return (input_tokens / 1000) * 0.003 + (output_tokens / 1000) * 0.015
+
+
+# ── LLM provider abstraction ──────────────────────────────────────────────────
+
+
+@runtime_checkable
+class LLMProvider(Protocol):
+    """Plug-in interface for any LLM backend.
+
+    Implement this to add GPT-4, Gemini, a local model, or a stub for tests.
+    Inject via ``AgentConfig(provider=MyProvider())``.
+    """
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+    ) -> tuple[str, int, float]:
+        """Return (content, total_tokens, cost_usd)."""
+        ...
+
+    async def complete_with_tools(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        tool_schemas: list[dict[str, Any]],
+        tool_fns: dict[str, Any],
+    ) -> tuple[str, int, float]:
+        """Run the tool-dispatch loop. Return (content, total_tokens, cost_usd)."""
+        ...
+
+    def stream_complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        agent_id: str,
+        step_id: str,
+        run_id: str,
+    ) -> AsyncIterator[TokenChunk]:
+        """Yield TokenChunk objects as the LLM produces tokens."""
+        ...
+
+
+def _require_anthropic() -> Any:
+    """Lazy-import the anthropic SDK; raises ImportError with install hint if missing."""
+    try:
+        import anthropic
+        return anthropic
+    except ImportError as exc:
+        raise ImportError(
+            "The default AnthropicProvider requires the anthropic SDK. "
+            "Install it with: pip install anthropic"
+        ) from exc
+
+
+class AnthropicProvider(LLMProvider):
+    """Default provider — uses the Anthropic Python SDK with real tool dispatch."""
+
+    def __init__(self) -> None:
+        anthropic = _require_anthropic()
+        self._client = anthropic.AsyncAnthropic()
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+    ) -> tuple[str, int, float]:
+        response = await self._client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=cast(Any, messages),
+        )
+        first = cast(Any, response.content[0]) if response.content else None
+        content = str(getattr(first, "text", "")) if first else ""
+        cost = _cost_usd(model, response.usage.input_tokens, response.usage.output_tokens)
+        total = response.usage.input_tokens + response.usage.output_tokens
+        return content, total, cost
+
+    async def complete_with_tools(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        tool_schemas: list[dict[str, Any]],
+        tool_fns: dict[str, Any],
+    ) -> tuple[str, int, float]:
+        msgs: list[Any] = list(messages)
+        total_in = total_out = 0
+        max_rounds = 10
+
+        for _ in range(max_rounds):
+            response = await self._client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=cast(Any, msgs),
+                tools=cast(Any, tool_schemas),
+            )
+            total_in += response.usage.input_tokens
+            total_out += response.usage.output_tokens
+
+            # Cast the entire content list to Any so mypy doesn't complain about
+            # union-attr on the specific block subtypes we've already filtered.
+            content_any: list[Any] = cast(Any, response.content)
+            tool_uses: list[Any] = [b for b in content_any if getattr(b, "type", "") == "tool_use"]
+            if not tool_uses or response.stop_reason == "end_turn":
+                text_blocks: list[Any] = [
+                    b for b in content_any if getattr(b, "type", "") == "text"
+                ]
+                content = str(getattr(text_blocks[0], "text", "")) if text_blocks else ""
+                return content, total_in + total_out, _cost_usd(model, total_in, total_out)
+
+            # Append assistant turn with tool calls
+            msgs.append({"role": "assistant", "content": content_any})
+
+            # Execute all tool calls in parallel
+            async def _call_tool(tu: Any) -> dict[str, Any]:
+                fn = tool_fns.get(tu.name)
+                if fn is None:
+                    result_text = f"Tool '{tu.name}' is not available."
+                else:
+                    try:
+                        kwargs = dict(tu.input) if tu.input else {}
+                        if asyncio.iscoroutinefunction(fn):
+                            result_text = str(await fn(**kwargs))
+                        else:
+                            loop = asyncio.get_event_loop()
+                            result_text = str(
+                                await loop.run_in_executor(None, lambda: fn(**kwargs))
+                            )
+                    except Exception as exc:
+                        result_text = f"Tool error: {exc}"
+                return {"type": "tool_result", "tool_use_id": tu.id, "content": result_text}
+
+            tool_results: list[dict[str, Any]] = list(
+                await asyncio.gather(*[_call_tool(tu) for tu in tool_uses])
+            )
+            msgs.append({"role": "user", "content": cast(Any, tool_results)})
+
+        return (
+            "[max tool rounds reached]",
+            total_in + total_out,
+            _cost_usd(model, total_in, total_out),
+        )
+
+    async def stream_complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        agent_id: str,
+        step_id: str,
+        run_id: str,
+    ) -> AsyncIterator[TokenChunk]:
+        async with self._client.messages.stream(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=cast(Any, messages),
+        ) as stream:
+            async for text in stream.text_stream:
+                yield TokenChunk(text=text, agent_id=agent_id, step_id=step_id, run_id=run_id)
+
+
+class OpenAICompatibleProvider(LLMProvider):
+    """Provider for any OpenAI-compatible endpoint (OpenAI, Ollama, Groq, etc.).
+
+    Requires ``openai`` package: pip install openai
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        api_key: str = "",
+        base_url: str = "",
+        input_rate: float = 0.005,
+        output_rate: float = 0.015,
+    ) -> None:
+        self._model = model
+        self._api_key = api_key
+        self._base_url = base_url
+        self._in_rate = input_rate
+        self._out_rate = output_rate
+
+    def _client(self) -> Any:
+        try:
+            import openai
+        except ImportError as exc:
+            raise ImportError(
+                "OpenAICompatibleProvider requires openai: pip install openai"
+            ) from exc
+        kwargs: dict[str, Any] = {}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        if self._base_url:
+            kwargs["base_url"] = self._base_url
+        return openai.AsyncOpenAI(**kwargs)
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+    ) -> tuple[str, int, float]:
+        client = self._client()
+        oai_messages = [{"role": "system", "content": system}, *messages]
+        response = await client.chat.completions.create(
+            model=model or self._model,
+            messages=cast(Any, oai_messages),
+            max_tokens=max_tokens,
+        )
+        content = response.choices[0].message.content or ""
+        in_tok = response.usage.prompt_tokens if response.usage else 0
+        out_tok = response.usage.completion_tokens if response.usage else 0
+        cost = (in_tok / 1000) * self._in_rate + (out_tok / 1000) * self._out_rate
+        return content, in_tok + out_tok, cost
+
+    async def complete_with_tools(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        tool_schemas: list[dict[str, Any]],
+        tool_fns: dict[str, Any],
+    ) -> tuple[str, int, float]:
+        client = self._client()
+        oai_messages: list[Any] = [{"role": "system", "content": system}, *messages]
+        # Convert Anthropic-style schemas to OpenAI function schemas
+        oai_tools = [_anthropic_to_oai_tool(s) for s in tool_schemas]
+        total_in = total_out = 0
+        max_rounds = 10
+
+        for _ in range(max_rounds):
+            response = await client.chat.completions.create(
+                model=model or self._model,
+                messages=cast(Any, oai_messages),
+                max_tokens=max_tokens,
+                tools=cast(Any, oai_tools),
+            )
+            msg = response.choices[0].message
+            total_in += response.usage.prompt_tokens if response.usage else 0
+            total_out += response.usage.completion_tokens if response.usage else 0
+
+            if not msg.tool_calls:
+                content = msg.content or ""
+                cost = (total_in / 1000) * self._in_rate + (total_out / 1000) * self._out_rate
+                return content, total_in + total_out, cost
+
+            oai_messages.append(msg)
+            for tc in msg.tool_calls:
+                fn = tool_fns.get(tc.function.name)
+                if fn is None:
+                    result_text = f"Tool '{tc.function.name}' not available."
+                else:
+                    try:
+                        kwargs = json.loads(tc.function.arguments or "{}")
+                        if asyncio.iscoroutinefunction(fn):
+                            result_text = str(await fn(**kwargs))
+                        else:
+                            loop = asyncio.get_event_loop()
+                            result_text = str(
+                                await loop.run_in_executor(None, lambda: fn(**kwargs))
+                            )
+                    except Exception as exc:
+                        result_text = f"Tool error: {exc}"
+                oai_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result_text,
+                    }
+                )
+
+        cost = (total_in / 1000) * self._in_rate + (total_out / 1000) * self._out_rate
+        return "[max tool rounds reached]", total_in + total_out, cost
+
+    async def stream_complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        agent_id: str,
+        step_id: str,
+        run_id: str,
+    ) -> AsyncIterator[TokenChunk]:
+        client = self._client()
+        oai_messages = [{"role": "system", "content": system}, *messages]
+        stream = await client.chat.completions.create(
+            model=model or self._model,
+            messages=cast(Any, oai_messages),
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta and delta.content:
+                yield TokenChunk(
+                    text=delta.content, agent_id=agent_id, step_id=step_id, run_id=run_id
+                )
+
+
+def _anthropic_to_oai_tool(schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": schema["name"],
+            "description": schema.get("description", ""),
+            "parameters": schema.get("input_schema", {"type": "object", "properties": {}}),
+        },
+    }
+
+
+# ── Tool schema helpers ───────────────────────────────────────────────────────
+
+
+def _ann_to_json_schema(ann: Any, description: str = "") -> dict[str, Any]:
+    """Convert a Python type annotation to a JSON Schema dict.
+
+    Handles: str, int, float, bool, list[X], dict[str, X],
+    Optional[X] (→ anyOf with null), Literal["a","b"] (→ enum),
+    Annotated[X, "description"] (→ uses string metadata as description),
+    Pydantic BaseModel (→ model_json_schema()).
+    """
+    import typing
+
+    origin = getattr(ann, "__origin__", None)
+    args = getattr(ann, "__args__", ())
+
+    # Annotated[X, "description string"]
+    if origin is getattr(typing, "Annotated", None) or str(origin) == "typing.Annotated":
+        base = args[0] if args else str
+        desc = next((a for a in args[1:] if isinstance(a, str)), description)
+        schema = _ann_to_json_schema(base, desc)
+        if desc:
+            schema["description"] = desc
+        return schema
+
+    # Optional[X] == Union[X, None]
+    if origin is getattr(typing, "Union", None):
+        non_none = [a for a in args if a is not type(None)]
+        if len(non_none) == 1:
+            inner = _ann_to_json_schema(non_none[0], description)
+            result: dict[str, Any] = {"anyOf": [inner, {"type": "null"}]}
+            if description:
+                result["description"] = description
+            return result
+
+    # Literal["a", "b"]
+    if origin is getattr(typing, "Literal", None):
+        result = {"enum": list(args)}
+        if description:
+            result["description"] = description
+        return result
+
+    # list[X]
+    if origin is list:
+        item_schema = _ann_to_json_schema(args[0]) if args else {"type": "string"}
+        result = {"type": "array", "items": item_schema}
+        if description:
+            result["description"] = description
+        return result
+
+    # dict[str, X]
+    if origin is dict:
+        result = {"type": "object"}
+        if description:
+            result["description"] = description
+        return result
+
+    # Pydantic BaseModel
+    try:
+        from pydantic import BaseModel
+
+        if isinstance(ann, type) and issubclass(ann, BaseModel):
+            schema = ann.model_json_schema()
+            if description:
+                schema["description"] = description
+            return schema
+    except ImportError:
+        pass
+
+    # Primitive types
+    _PRIM_MAP = {str: "string", int: "integer", float: "number", bool: "boolean", bytes: "string"}
+    json_type = _PRIM_MAP.get(ann, "string")
+    result = {"type": json_type}
+    if description:
+        result["description"] = description
+    return result
+
+
+def _build_tool_schema(tool: Any) -> dict[str, Any]:
+    """Build an Anthropic-compatible tool schema from a MeshFlow Tool object.
+
+    Supports: raw input_schema dict, Pydantic BaseModel first param, and
+    full type annotation inference (Optional, List, Literal, Annotated, etc.).
+    """
+    # Escape hatch: caller provided a complete schema
+    if getattr(tool, "input_schema", None) is not None:
+        return {
+            "name": str(getattr(tool, "name", "tool")),
+            "description": str(getattr(tool, "description", "")),
+            "input_schema": tool.input_schema,
+        }
+
+    props: dict[str, Any] = {}
+    required: list[str] = []
+
+    fn = getattr(tool, "fn", None)
+    if fn is not None:
+        try:
+            sig = inspect.signature(fn)
+            hints = {}
+            try:
+                import typing
+
+                hints = typing.get_type_hints(fn, include_extras=True)
+            except Exception:
+                pass
+
+            for pname, param in sig.parameters.items():
+                if pname in ("self", "cls") or param.kind in (
+                    inspect.Parameter.VAR_KEYWORD,
+                    inspect.Parameter.VAR_POSITIONAL,
+                ):
+                    continue
+                ann = hints.get(pname, param.annotation)
+                if ann is inspect.Parameter.empty:
+                    ann = str
+                desc = pname.replace("_", " ")
+                props[pname] = _ann_to_json_schema(ann, desc)
+                if param.default is inspect.Parameter.empty:
+                    required.append(pname)
+        except (ValueError, TypeError):
+            pass
+
+    if not props:
+        props = {"input": {"type": "string", "description": "Input to the tool"}}
+        required = ["input"]
+
+    return {
+        "name": str(getattr(tool, "name", "tool")),
+        "description": str(getattr(tool, "description", "")),
+        "input_schema": {"type": "object", "properties": props, "required": required},
+    }
+
+
+# ── Confidence extraction ─────────────────────────────────────────────────────
+
+_CONFIDENCE_SUFFIX = (
+    "\n\nOn the very last line of your response, write your confidence as: "
+    "CONFIDENCE:0.XX  (a number 0.00–1.00, e.g. CONFIDENCE:0.82)"
+)
+
+
+def _extract_confidence(content: str) -> tuple[float, str]:
+    """Parse 'CONFIDENCE:0.XX' from the last lines; return (confidence, clean_content)."""
+    lines = content.strip().split("\n")
+    for i in range(len(lines) - 1, max(len(lines) - 5, -1), -1):
+        m = re.search(r"CONFIDENCE:\s*([0-9](?:\.[0-9]+)?)", lines[i], re.IGNORECASE)
+        if m:
+            confidence = min(1.0, max(0.0, float(m.group(1))))
+            clean = "\n".join(lines[:i] + lines[i + 1 :]).strip()
+            return confidence, clean
+    return 0.80, content  # default when model doesn't emit the tag
+
+
+def _parse_json_retry(raw: str) -> dict[str, Any] | None:
+    """Try json.loads, then regex-extract the first {...} block."""
+    try:
+        return cast(dict[str, Any], json.loads(raw))
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            try:
+                return cast(dict[str, Any], json.loads(m.group()))
+            except json.JSONDecodeError:
+                pass
+    return None
+
+
+# ── Agent config ──────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -25,6 +558,10 @@ class AgentConfig:
     capabilities: list[str] = field(default_factory=list)
     max_tokens: int = 4096
     temperature: float = 0.7
+    provider: LLMProvider | None = None  # None → AnthropicProvider()
+
+
+# ── Base agent ────────────────────────────────────────────────────────────────
 
 
 class BaseAgent:
@@ -40,7 +577,7 @@ class BaseAgent:
     def __init__(self, config: AgentConfig, policy: Policy) -> None:
         self.config = config
         self.policy = policy
-        self._client = anthropic.AsyncAnthropic()
+        self._provider: LLMProvider = config.provider or AnthropicProvider()
         self._state = AgentState(
             agent_id=config.agent_id,
             role=config.role,
@@ -61,35 +598,50 @@ class BaseAgent:
     def state(self) -> AgentState:
         return self._state
 
-    # ── Core LLM call ─────────────────────────────────────────────────────────
+    # ── Core LLM calls ───────────────────────────────────────────────────────
 
     async def think(
         self,
         messages: list[dict[str, str]],
         system: str | None = None,
     ) -> tuple[str, int, float]:
-        """Call the LLM — returns (content, tokens, cost_usd)."""
+        """Single LLM call — returns (content, tokens, cost_usd)."""
         sys = system or self.config.system_prompt
-        response = await self._client.messages.create(
+        content, tokens, cost = await self._provider.complete(
             model=self.config.model,
-            max_tokens=self.config.max_tokens,
+            messages=cast(Any, messages),
             system=sys,
-            messages=messages,
+            max_tokens=self.config.max_tokens,
         )
-        content = response.content[0].text if response.content else ""
-        tokens = response.usage.input_tokens + response.usage.output_tokens
-
-        # Estimate cost (simplified — real impl fetches from Anthropic pricing)
-        tier_cost = {"haiku": 0.0005, "sonnet": 0.003, "opus": 0.015}
-        rate = next((v for k, v in tier_cost.items() if k in self.config.model.lower()), 0.003)
-        cost = (tokens / 1000) * rate
-
         self._call_count += 1
         self._total_tokens += tokens
         self._total_cost += cost
         self._state.token_count += tokens
         self._state.cost_usd += cost
+        return content, tokens, cost
 
+    async def think_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tool_schemas: list[dict[str, Any]],
+        tool_fns: dict[str, Any],
+        system: str | None = None,
+    ) -> tuple[str, int, float]:
+        """LLM call with real tool dispatch loop — returns (content, tokens, cost_usd)."""
+        sys = system or self.config.system_prompt
+        content, tokens, cost = await self._provider.complete_with_tools(
+            model=self.config.model,
+            messages=cast(Any, messages),
+            system=sys,
+            max_tokens=self.config.max_tokens,
+            tool_schemas=tool_schemas,
+            tool_fns=tool_fns,
+        )
+        self._call_count += 1
+        self._total_tokens += tokens
+        self._total_cost += cost
+        self._state.token_count += tokens
+        self._state.cost_usd += cost
         return content, tokens, cost
 
     # ── Protocol helpers ──────────────────────────────────────────────────────
@@ -128,32 +680,53 @@ class BaseAgent:
 
 # ── Role-specific agents ──────────────────────────────────────────────────────
 
+
 class PlannerAgent(BaseAgent):
     """Decomposes tasks into a structured plan for other agents."""
 
     SYSTEM = (
-        "You are a Planner agent. Your job is to decompose the user's task into "
-        "clear, ordered steps. Each step must specify: which role executes it, "
-        "what inputs it needs, and what it must produce. Output valid JSON only. "
-        "Format: {\"steps\": [{\"role\": \"...\", \"input\": \"...\", \"expected_output\": \"...\"}]}"
+        "You are a Planner agent. Decompose the user's task into clear, ordered steps. "
+        "Each step must specify: which role executes it, what inputs it needs, and what it must produce.\n"
+        "Output valid JSON ONLY in this format:\n"
+        '{"steps": [{"role": "...", "input": "...", "expected_output": "..."}], '
+        '"confidence": 0.85}\n'
+        'Include a "confidence" field (0.00–1.00) reflecting your certainty the plan is correct.'
     )
 
     async def step(self, task: str, context: dict[str, Any]) -> dict[str, Any]:
         messages = [{"role": "user", "content": f"Task: {task}\nContext: {context}"}]
         content, tokens, cost = await self.think(messages, self.SYSTEM)
 
-        import json
-        try:
-            plan = json.loads(content)
-        except Exception:
-            plan = {"steps": [{"role": "executor", "input": task, "expected_output": "result"}]}
+        plan = _parse_json_retry(content)
+        if plan is None:
+            # Retry: ask the model to fix its JSON
+            fix_messages = [
+                {"role": "user", "content": f"Task: {task}\nContext: {context}"},
+                {"role": "assistant", "content": content},
+                {
+                    "role": "user",
+                    "content": "Your response was not valid JSON. Return ONLY the JSON, nothing else.",
+                },
+            ]
+            content2, t2, c2 = await self.think(fix_messages, self.SYSTEM)
+            tokens += t2
+            cost += c2
+            plan = _parse_json_retry(content2)
+
+        if plan is None:
+            plan = {
+                "steps": [{"role": "executor", "input": task, "expected_output": "result"}],
+                "confidence": 0.5,
+            }
+
+        confidence = float(plan.get("confidence", 0.80))
 
         return {
             "plan": plan,
             "planner_id": self.agent_id,
             "tokens": tokens,
             "cost_usd": cost,
-            "stated_confidence": 0.85,
+            "stated_confidence": confidence,
         }
 
 
@@ -163,7 +736,7 @@ class ResearcherAgent(BaseAgent):
     SYSTEM = (
         "You are a Researcher agent. Given a research question, provide a "
         "thorough, factual answer with source attribution. Flag any uncertainty. "
-        "Be explicit about what you do not know. Output as structured text."
+        "Be explicit about what you do not know. Output as structured text." + _CONFIDENCE_SUFFIX
     )
 
     async def step(self, task: str, context: dict[str, Any]) -> dict[str, Any]:
@@ -171,13 +744,14 @@ class ResearcherAgent(BaseAgent):
         query = plan_step.get("input", task)
         messages = [{"role": "user", "content": f"Research question: {query}"}]
         content, tokens, cost = await self.think(messages, self.SYSTEM)
+        confidence, content = _extract_confidence(content)
 
         return {
             "research": content,
             "researcher_id": self.agent_id,
             "tokens": tokens,
             "cost_usd": cost,
-            "stated_confidence": 0.75,
+            "stated_confidence": confidence,
             "evidence": [Evidence(content=content, source="llm_synthesis", trust_level="internal")],
         }
 
@@ -190,24 +764,29 @@ class ExecutorAgent(BaseAgent):
         "Execute the step precisely. If you need to write code, write complete, "
         "runnable code. If you need to take an action, describe it precisely and "
         "declare it as an Intent before proceeding. Do not take irreversible actions "
-        "without explicit instruction."
+        "without explicit instruction." + _CONFIDENCE_SUFFIX
     )
 
     async def step(self, task: str, context: dict[str, Any]) -> dict[str, Any]:
         research = context.get("research", "")
         plan_step = context.get("current_step", {})
-        messages = [{"role": "user", "content": (
-            f"Plan step: {plan_step}\n"
-            f"Research context: {research[:2000]}\n"
-            f"Task: {task}"
-        )}]
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    f"Plan step: {plan_step}\nResearch context: {research[:2000]}\nTask: {task}"
+                ),
+            }
+        ]
         content, tokens, cost = await self.think(messages, self.SYSTEM)
+        confidence, content = _extract_confidence(content)
+
         return {
             "execution_result": content,
             "executor_id": self.agent_id,
             "tokens": tokens,
             "cost_usd": cost,
-            "stated_confidence": 0.80,
+            "stated_confidence": confidence,
         }
 
 
@@ -222,40 +801,57 @@ class CriticAgent(BaseAgent):
         "You are a Critic agent looking for FAILURES. Given an output, "
         "identify all errors, omissions, hallucinations, and weak reasoning. "
         "Be adversarial. Score from 0–10 (10 = completely wrong). "
-        "Output JSON: {\"failure_score\": N, \"issues\": [...]}"
+        'Output JSON ONLY: {"failure_score": N, "issues": [...]}'
     )
 
     SYSTEM_SUCCESS = (
         "You are a Critic agent looking for SUCCESSES. Given an output, "
         "identify what is correct, well-reasoned, and complete. "
         "Score from 0–10 (10 = perfect). "
-        "Output JSON: {\"success_score\": N, \"strengths\": [...]}"
+        'Output JSON ONLY: {"success_score": N, "strengths": [...]}'
     )
 
     async def step(self, task: str, context: dict[str, Any]) -> dict[str, Any]:
-        output_to_review = context.get("execution_result", context.get("research", ""))
-        import json
+        output_to_review = str(context.get("execution_result", context.get("research", "")))
+        review_msg = [{"role": "user", "content": f"Output to review:\n{output_to_review}"}]
 
-        # Dual-judge: run both evaluations
-        fail_msgs = [{"role": "user", "content": f"Output to review:\n{output_to_review}"}]
-        succ_msgs = [{"role": "user", "content": f"Output to review:\n{output_to_review}"}]
+        fail_content, ftokens, fcost = await self.think(review_msg, self.SYSTEM_FAILURE)
+        succ_content, stokens, scost = await self.think(review_msg, self.SYSTEM_SUCCESS)
 
-        fail_content, ftokens, fcost = await self.think(fail_msgs, self.SYSTEM_FAILURE)
-        succ_content, stokens, scost = await self.think(succ_msgs, self.SYSTEM_SUCCESS)
+        fail_result = _parse_json_retry(fail_content)
+        if fail_result is None:
+            # Retry
+            fix = [
+                {"role": "user", "content": f"Output to review:\n{output_to_review}"},
+                {"role": "assistant", "content": fail_content},
+                {
+                    "role": "user",
+                    "content": 'Return ONLY valid JSON: {"failure_score": N, "issues": [...]}',
+                },
+            ]
+            raw2, ft2, fc2 = await self.think(fix, self.SYSTEM_FAILURE)
+            ftokens += ft2
+            fcost += fc2
+            fail_result = _parse_json_retry(raw2) or {"failure_score": 5, "issues": []}
 
-        try:
-            fail_result = json.loads(fail_content)
-        except Exception:
-            fail_result = {"failure_score": 5, "issues": []}
-        try:
-            succ_result = json.loads(succ_content)
-        except Exception:
-            succ_result = {"success_score": 5, "strengths": []}
+        succ_result = _parse_json_retry(succ_content)
+        if succ_result is None:
+            fix = [
+                {"role": "user", "content": f"Output to review:\n{output_to_review}"},
+                {"role": "assistant", "content": succ_content},
+                {
+                    "role": "user",
+                    "content": 'Return ONLY valid JSON: {"success_score": N, "strengths": [...]}',
+                },
+            ]
+            raw2, st2, sc2 = await self.think(fix, self.SYSTEM_SUCCESS)
+            stokens += st2
+            scost += sc2
+            succ_result = _parse_json_retry(raw2) or {"success_score": 5, "strengths": []}
 
-        failure_score = fail_result.get("failure_score", 5)
-        success_score = succ_result.get("success_score", 5)
-        # Arbitration: combine scores (higher success + lower failure = pass)
-        composite = (success_score - failure_score + 10) / 20.0  # normalise 0–1
+        failure_score = float(fail_result.get("failure_score", 5))
+        success_score = float(succ_result.get("success_score", 5))
+        composite = (success_score - failure_score + 10) / 20.0
         passed = composite >= 0.5
 
         return {

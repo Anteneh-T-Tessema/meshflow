@@ -41,7 +41,7 @@ def _check_langgraph() -> None:
 _check_langgraph()
 
 from langchain_anthropic import ChatAnthropic  # noqa: E402
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage  # noqa: E402
+from langchain_core.messages import BaseMessage, HumanMessage  # noqa: E402
 from langgraph.graph import END, StateGraph  # noqa: E402
 from langgraph.graph.message import add_messages  # noqa: E402
 

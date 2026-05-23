@@ -35,7 +35,6 @@ _check_crewai()
 from crewai import Agent, Crew, Task  # noqa: E402
 
 from meshflow import Mesh, MeshNode, Policy, WorkflowDefinition  # noqa: E402
-from meshflow.core.node import NodeKind  # noqa: E402
 
 
 # ── Define your CrewAI crew exactly as you normally would ─────────────────────

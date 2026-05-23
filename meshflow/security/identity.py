@@ -4,11 +4,10 @@ Every agent gets a cryptographic DID at spawn. VCs encode capabilities.
 Delegation enforces strict subsets — an agent cannot grant what it doesn't own.
 CAEP triggers immediate revocation when risk score exceeds threshold.
 """
+
 from __future__ import annotations
 
-import hashlib
 import json
-import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,10 +15,6 @@ from typing import Any
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.asymmetric.utils import (
-    decode_dss_signature,
-    encode_dss_signature,
-)
 
 
 @dataclass
@@ -38,6 +33,7 @@ class DIDDocument:
 @dataclass
 class VerifiableCredential:
     """VC issued to an agent encoding a specific capability claim."""
+
     vc_id: str = field(default_factory=lambda: f"vc:{uuid.uuid4().hex}")
     issuer_did: str = ""
     subject_did: str = ""
@@ -45,7 +41,7 @@ class VerifiableCredential:
     scope: dict[str, Any] = field(default_factory=dict)
     issued_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     expires_at: str = ""
-    proof: str = ""                 # ECDSA signature hex
+    proof: str = ""  # ECDSA signature hex
     revoked: bool = False
 
 
@@ -58,7 +54,7 @@ class AgentIdentityProvider:
     - All DIDs are run-scoped — no cross-run identity leakage
     """
 
-    REVOKE_THRESHOLD = 0.85   # risk score above which CAEP triggers
+    REVOKE_THRESHOLD = 0.85  # risk score above which CAEP triggers
 
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
@@ -110,7 +106,7 @@ class AgentIdentityProvider:
         """Continuous Access Evaluation Profile — revoke if risk spikes."""
         if risk_score >= self.REVOKE_THRESHOLD:
             self.revoke(agent_id, reason=f"caep_risk_score:{risk_score:.3f}")
-            return True   # was revoked
+            return True  # was revoked
         return False
 
     def is_active(self, agent_id: str) -> bool:
@@ -156,13 +152,16 @@ class AgentIdentityProvider:
         # Sign the VC with issuer's private key
         private_key = self._keys.get(issuer_id)
         if private_key:
-            payload = json.dumps({
-                "vc_id": vc.vc_id,
-                "issuer": vc.issuer_did,
-                "subject": vc.subject_did,
-                "capability": vc.capability,
-                "issued_at": vc.issued_at,
-            }, sort_keys=True).encode()
+            payload = json.dumps(
+                {
+                    "vc_id": vc.vc_id,
+                    "issuer": vc.issuer_did,
+                    "subject": vc.subject_did,
+                    "capability": vc.capability,
+                    "issued_at": vc.issued_at,
+                },
+                sort_keys=True,
+            ).encode()
             signature = private_key.sign(payload, ec.ECDSA(hashes.SHA256()))
             vc.proof = signature.hex()
 
@@ -195,15 +194,14 @@ class AgentIdentityProvider:
             return False
         try:
             from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
             pub = load_pem_public_key(doc.public_key_pem.encode())
-            pub.verify(bytes.fromhex(signature_hex), payload, ec.ECDSA(hashes.SHA256()))  # type: ignore[arg-type]
+            if not isinstance(pub, ec.EllipticCurvePublicKey):
+                return False
+            pub.verify(bytes.fromhex(signature_hex), payload, ec.ECDSA(hashes.SHA256()))
             return True
         except Exception:
             return False
-
-    def get_did(self, agent_id: str) -> str:
-        doc = self._dids.get(agent_id)
-        return doc.did if doc else ""
 
     def audit_report(self) -> dict[str, Any]:
         return {

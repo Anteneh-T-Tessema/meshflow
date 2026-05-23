@@ -27,8 +27,11 @@ human, HTTP, Python) — passes through this identical lifecycle:
 This is the architectural heart of MeshFlow's differentiation.
 One path. Every node. No exceptions.
 """
+
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -36,24 +39,59 @@ from datetime import datetime, timezone
 from typing import Any
 
 from meshflow.core.node import MeshNode, NodeInput, NodeOutput
-from meshflow.core.schemas import ActionVerdict, Evidence, Intent, Policy, RiskTier
+from meshflow.core.schemas import ActionVerdict, Intent, Policy
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _hash_record(
+    run_id: str,
+    step_id: str,
+    node_id: str,
+    input_task: str,
+    output_content: str,
+    verdict: str,
+    blocked: bool,
+    timestamp: str,
+    prev_hash: str,
+) -> str:
+    """SHA-256 of the canonical record fields for tamper-evidence chain."""
+    payload = json.dumps(
+        {
+            "run_id": run_id,
+            "step_id": step_id,
+            "node_id": node_id,
+            "input_task": input_task[:200],
+            "output_content": output_content[:200],
+            "verdict": verdict,
+            "blocked": blocked,
+            "timestamp": timestamp,
+            "prev_hash": prev_hash,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 @dataclass
 class StepRecord:
-    """Immutable governed-step record — written to the ReplayLedger."""
+    """Immutable governed-step record — written to the ReplayLedger.
+
+    Each record carries ``prev_hash`` (the hash of the previous record in this
+    run) and ``entry_hash`` (the SHA-256 of this record's canonical fields).
+    Together they form a tamper-evident hash chain that ``ReplayLedger.verify_chain``
+    can audit without trusting the database.
+    """
 
     run_id: str
     step_id: str
     node_id: str
     node_kind: str
-    input_task: str          # first 500 chars
-    output_content: str      # first 2 000 chars
-    verdict: str             # "commit" | "reject" | "escalate"
+    input_task: str  # first 500 chars
+    output_content: str  # first 2 000 chars
+    verdict: str  # "commit" | "reject" | "escalate"
     blocked: bool
     block_reason: str
     uncertainty: float
@@ -62,7 +100,22 @@ class StepRecord:
     carbon_gco2: float
     duration_ms: float
     timestamp: str
+    prev_hash: str = ""  # SHA-256 of the previous record (empty for first)
     metadata: dict[str, Any] = field(default_factory=dict)
+    entry_hash: str = field(default="", init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.entry_hash = _hash_record(
+            self.run_id,
+            self.step_id,
+            self.node_id,
+            self.input_task,
+            self.output_content,
+            self.verdict,
+            self.blocked,
+            self.timestamp,
+            self.prev_hash,
+        )
 
 
 @dataclass
@@ -126,6 +179,7 @@ class StepRuntime:
         self._ledger = ledger
         self._budget = budget
         self._cbs = circuit_breakers  # dict[str, CircuitBreaker]
+        self._prev_hash = ""  # grows with each committed record
 
     async def run(
         self,
@@ -135,6 +189,22 @@ class StepRuntime:
     ) -> RuntimeOutcome:
         step_id = str(uuid.uuid4())[:8]
         start = time.monotonic()
+
+        # W3C Trace Context — propagate or create
+        try:
+            from meshflow.observability.trace_context import TraceContext
+            _tp_header = context.get("_traceparent", "")
+            _tc = (
+                TraceContext.from_header(_tp_header)
+                if _tp_header
+                else TraceContext.new()
+            )
+            if _tc is None:
+                _tc = TraceContext.new()
+            context["_trace_id"] = _tc.trace_id
+            context["_traceparent"] = f"00-{_tc.trace_id}-{_tc.child_span_id()}-01"
+        except Exception:
+            pass
 
         blocked = False
         block_reason = ""
@@ -188,7 +258,7 @@ class StepRuntime:
             verdict = gate_result.value
             if gate_result == ActionVerdict.REJECT:
                 blocked = True
-                block_reason = f"dasc:rejected"
+                block_reason = "dasc:rejected"
             elif gate_result == ActionVerdict.ESCALATE:
                 paused = True
                 human_ctx = {
@@ -224,7 +294,7 @@ class StepRuntime:
 
         # ── EXECUTE ───────────────────────────────────────────────────────────
 
-        if not blocked:
+        if not blocked and not paused:
             try:
                 output = await node.run(node_input)
                 if self._cbs and node.id in self._cbs:
@@ -233,8 +303,7 @@ class StepRuntime:
                     with self._telemetry.span(
                         f"meshflow.node.{node.kind.value}",
                         run_id=self._run_id,
-                        **{"node.id": node.id, "node.kind": node.kind.value,
-                           "step_id": step_id},
+                        **{"node.id": node.id, "node.kind": node.kind.value, "step_id": step_id},
                     ):
                         pass  # span wraps the completed execution for trace record
             except Exception as exc:
@@ -252,7 +321,7 @@ class StepRuntime:
         carbon_gco2 = 0.0
 
         # 9. Uncertainty scoring + adaptive response
-        if not blocked and self._uncertainty and self._policy.enable_uncertainty:
+        if not blocked and not paused and self._uncertainty and self._policy.enable_uncertainty:
             u_score = self._uncertainty.evaluate(
                 agent_id=node.id,
                 outputs=[output.content] if output.content else [""],
@@ -290,16 +359,17 @@ class StepRuntime:
         if (
             self._collusion
             and self._policy.enable_collusion_audit
+            and not paused
             and output.content
         ):
             self._collusion.record_output(node.id, output.content[:500])
 
         # 14. CAEP: revoke DID if risk spikes post-step
-        if self._identity and uncertainty_val > 0.7:
+        if self._identity and not paused and uncertainty_val > 0.7:
             self._identity.caep_check(node.id, 1.0 - uncertainty_val)
 
         # 15. Behavioural monitoring
-        if self._guardian and self._policy.enable_guardian:
+        if self._guardian and self._policy.enable_guardian and not paused:
             self._guardian.observe_behaviour(
                 agent_id=node.id,
                 tokens=float(tokens_used),
@@ -308,18 +378,33 @@ class StepRuntime:
             )
 
         # 12. Memory update
-        if self._mem1 and output.content:
+        if self._mem1 and not paused and output.content:
             self._mem1.add(node.id, output.content, {"step_id": step_id})
 
-        # Build step record
+        # Build step record with tamper-evident hash chain
         duration_ms = (time.monotonic() - start) * 1000
+
+        raw_output = output.content
+        # PHI scrubbing before ledger write (HIPAA mode)
+        if getattr(self._policy, "scrub_phi", False):
+            try:
+                from meshflow.security.phi_scrubber import PHIScrubber
+
+                raw_output = PHIScrubber().scrub(raw_output)
+            except ImportError:
+                pass
+
+        # Respect max_output_chars policy (0 = unlimited)
+        max_chars = getattr(self._policy, "max_output_chars", 0)
+        ledger_output = raw_output[:max_chars] if max_chars > 0 else raw_output
+
         record = StepRecord(
             run_id=self._run_id,
             step_id=step_id,
             node_id=node.id,
             node_kind=str(node.kind.value),
             input_task=node_input.task[:500],
-            output_content=output.content[:2_000],
+            output_content=ledger_output,
             verdict=verdict,
             blocked=blocked,
             block_reason=block_reason,
@@ -329,11 +414,29 @@ class StepRuntime:
             carbon_gco2=carbon_gco2,
             duration_ms=duration_ms,
             timestamp=_now_iso(),
+            prev_hash=self._prev_hash,
         )
+        # Advance the chain pointer for the next record
+        self._prev_hash = record.entry_hash
+
+        # Calibration feedback: record actual outcome so the tracker corrects bias
+        if self._uncertainty and self._policy.enable_uncertainty:
+            self._uncertainty._calibration.record(
+                node.id,
+                stated=output.confidence,
+                actual=1.0 if not blocked else 0.0,
+            )
 
         # 11. Audit ledger write
         if self._ledger:
             await self._ledger.write(record)
+
+        # SLA latency recording (best-effort, never raises)
+        try:
+            from meshflow.observability.sla import get_sla_tracker
+            get_sla_tracker().record(node.id, duration_ms)
+        except Exception:
+            pass
 
         return RuntimeOutcome(
             ok=not blocked,

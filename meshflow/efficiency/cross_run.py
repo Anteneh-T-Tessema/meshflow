@@ -6,6 +6,7 @@ self-evolution via shared persistent memory across runs.
 Agents accumulate strategy patterns, failure modes, and solution templates
 that persist across independent runs — the mesh gets smarter over time.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -19,10 +20,11 @@ from typing import Any
 @dataclass
 class RunPattern:
     """A learned pattern from a completed run."""
+
     pattern_id: str
     task_type: str
-    agent_config: str           # JSON: roles and model tiers used
-    strategy_summary: str       # what approach worked
+    agent_config: str  # JSON: roles and model tiers used
+    strategy_summary: str  # what approach worked
     success_rate: float
     avg_cost_usd: float
     avg_tokens: int
@@ -34,9 +36,10 @@ class RunPattern:
 @dataclass
 class FailureMode:
     """A documented failure pattern — so future runs can avoid it."""
+
     mode_id: str
     description: str
-    trigger_conditions: str     # JSON: what caused it
+    trigger_conditions: str  # JSON: what caused it
     mitigation: str
     occurrence_count: int = 1
     last_seen: float = field(default_factory=time.time)
@@ -51,12 +54,12 @@ class LearningQuery:
 
 @dataclass
 class LearningRecommendation:
-    recommended_config: str     # JSON: suggested agent config
+    recommended_config: str  # JSON: suggested agent config
     predicted_success_rate: float
     predicted_cost_usd: float
     known_failure_modes: list[str]
     confidence: float
-    basis: str                  # "n patterns observed"
+    basis: str  # "n patterns observed"
 
 
 class CrossRunStore:
@@ -117,10 +120,16 @@ class CrossRunStore:
             self._conn.execute(
                 "INSERT INTO run_patterns VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
-                    pattern.pattern_id, pattern.task_type, pattern.agent_config,
-                    pattern.strategy_summary, pattern.success_rate,
-                    pattern.avg_cost_usd, pattern.avg_tokens, pattern.avg_carbon_g,
-                    pattern.sample_count, pattern.last_seen,
+                    pattern.pattern_id,
+                    pattern.task_type,
+                    pattern.agent_config,
+                    pattern.strategy_summary,
+                    pattern.success_rate,
+                    pattern.avg_cost_usd,
+                    pattern.avg_tokens,
+                    pattern.avg_carbon_g,
+                    pattern.sample_count,
+                    pattern.last_seen,
                 ),
             )
         self._conn.commit()
@@ -140,8 +149,12 @@ class CrossRunStore:
             self._conn.execute(
                 "INSERT INTO failure_modes VALUES (?,?,?,?,?,?)",
                 (
-                    mode.mode_id, mode.description, mode.trigger_conditions,
-                    mode.mitigation, mode.occurrence_count, mode.last_seen,
+                    mode.mode_id,
+                    mode.description,
+                    mode.trigger_conditions,
+                    mode.mitigation,
+                    mode.occurrence_count,
+                    mode.last_seen,
                 ),
             )
         self._conn.commit()
@@ -162,7 +175,7 @@ class CrossRunStore:
         return [FailureMode(*row) for row in rows]
 
     def pattern_count(self) -> int:
-        return self._conn.execute("SELECT COUNT(*) FROM run_patterns").fetchone()[0]
+        return int(self._conn.execute("SELECT COUNT(*) FROM run_patterns").fetchone()[0])
 
 
 class CrossRunLearner:
@@ -215,27 +228,29 @@ class CrossRunLearner:
             f"{task_type}:{json.dumps(agent_config, sort_keys=True)}".encode()
         ).hexdigest()
 
-        self._store.save_pattern(RunPattern(
-            pattern_id=pattern_id,
-            task_type=task_type,
-            agent_config=json.dumps(agent_config, sort_keys=True),
-            strategy_summary=strategy,
-            success_rate=1.0 if success else 0.0,
-            avg_cost_usd=cost_usd,
-            avg_tokens=tokens,
-            avg_carbon_g=carbon_g,
-        ))
+        self._store.save_pattern(
+            RunPattern(
+                pattern_id=pattern_id,
+                task_type=task_type,
+                agent_config=json.dumps(agent_config, sort_keys=True),
+                strategy_summary=strategy,
+                success_rate=1.0 if success else 0.0,
+                avg_cost_usd=cost_usd,
+                avg_tokens=tokens,
+                avg_carbon_g=carbon_g,
+            )
+        )
 
-    def record_failure(
-        self, description: str, conditions: dict[str, Any], mitigation: str
-    ) -> None:
+    def record_failure(self, description: str, conditions: dict[str, Any], mitigation: str) -> None:
         mode_id = hashlib.md5(description.encode()).hexdigest()
-        self._store.save_failure_mode(FailureMode(
-            mode_id=mode_id,
-            description=description,
-            trigger_conditions=json.dumps(conditions),
-            mitigation=mitigation,
-        ))
+        self._store.save_failure_mode(
+            FailureMode(
+                mode_id=mode_id,
+                description=description,
+                trigger_conditions=json.dumps(conditions),
+                mitigation=mitigation,
+            )
+        )
 
     def _classify_task(self, words: list[str]) -> str:
         keywords = {

@@ -2,46 +2,161 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.7.0-orange.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-81%20passing-brightgreen.svg)](tests/)
+[![Version](https://img.shields.io/badge/version-0.8.0-orange.svg)](pyproject.toml)
+[![Tests](https://img.shields.io/badge/tests-193%20passing-brightgreen.svg)](tests/)
 [![Status](https://img.shields.io/badge/status-Beta-yellow.svg)](README.md)
 
-**The control plane for multi-agent systems.**
+**Build agents. Form teams. Govern everything.**
 
-```text
-Use LangGraph to build graphs.
-Use CrewAI to build crews.
-Use AutoGen to build agent conversations.
-Use MeshFlow to govern, orchestrate, audit, and standardize them all.
+```python
+from meshflow import Agent, Team, tool, RiskTier, policy_for_mode
+
+# 1. Define tools
+@tool(name="web_search", description="Search the web", risk=RiskTier.EXTERNAL_IO)
+async def web_search(query: str) -> str:
+    ...
+
+# 2. Create agents declaratively
+researcher = Agent(name="researcher", role="researcher", tools=[web_search], memory=True)
+executor   = Agent(name="executor",   role="executor")
+critic     = Agent(name="critic",     role="critic")
+
+# 3. Form a team with a collaboration pattern
+team = Team(
+    name="dev_team",
+    agents=[researcher, executor, critic],
+    pattern="supervised",        # critic always reviews before output
+    policy="standard",
+)
+
+# 4. Run under governance
+result = await team.run("Build a rate-limiter in Python")
+print(result.run_id, result.output)
 ```
 
-MeshFlow is not a replacement for LangGraph, CrewAI, or AutoGen. It is the governance
-and orchestration standard **above** them — a unified control plane that runs agents
-from any framework under one policy, identity, audit, and security layer.
+MeshFlow is a full **multi-agent platform**: build agents, orchestrate them into teams,
+connect them with tools, let them message each other, and govern every step with
+policy, identity, audit, and human review gates.
 
 ```text
-Policy → Identity → Risk Gate → Runtime → Observability → Audit → Learning
+Build → Orchestrate → Tool → Communicate → Govern → Audit → Replay
 ```
 
 ---
 
 ## The problem MeshFlow solves
 
-Building multi-agent systems is now easy. Governing them is not.
+Building multi-agent systems is now easy. **Governing and scaling them is not.**
 
-When you run a LangGraph graph, a CrewAI crew, and an AutoGen conversation in the same
-pipeline, you have no unified answer to:
+When you run agents in production, you have no unified answer to:
 
 - Which agent made this decision?
 - Was this action within policy?
-- What did this agent cost, and in what region?
+- What did this agent cost?
 - Was the output tampered with?
 - Which tool call touched external state?
 - Can I replay from step 4?
 - Was this flagged for human approval?
 
-MeshFlow wraps every agent step — regardless of origin — in a governed execution kernel
-that answers all of these questions consistently and automatically.
+MeshFlow wraps every agent step in a governed execution kernel that answers all of
+these questions consistently — whether the agent was built with MeshFlow, LangGraph,
+CrewAI, AutoGen, or a plain Python callable.
+
+---
+
+## What you can build
+
+### Agents — declarative, no subclassing required
+
+```python
+from meshflow import Agent
+
+planner    = Agent(name="planner",    role="planner",    memory=True)
+researcher = Agent(name="researcher", role="researcher", model="claude-opus-4-7")
+executor   = Agent(name="executor",   role="executor",   tools=[web_search, code_runner])
+critic     = Agent(name="critic",     role="critic")
+
+# Run a single agent
+result = await researcher.run("Summarise recent AI safety research")
+```
+
+Roles: `planner` · `researcher` · `executor` · `critic` · `orchestrator` · `guardian`
+
+### Teams — multi-agent collaboration in one line
+
+```python
+from meshflow import Team
+
+team = Team(
+    name="research_team",
+    agents=[planner, researcher, executor, critic],
+    pattern="supervised",   # sequential, parallel, hierarchical, supervised
+    policy="regulated",
+)
+result = await team.run("Write and validate a Python HTTP client")
+```
+
+| Pattern | How it works |
+| --- | --- |
+| `sequential` | Each agent feeds the next |
+| `parallel` | All agents run concurrently; last agent synthesises |
+| `hierarchical` | First agent orchestrates; rest run in sequence |
+| `supervised` | Sequential, but last agent is always a critic/reviewer |
+
+### Tools — governed, discoverable
+
+```python
+from meshflow import tool, RiskTier
+
+@tool(name="code_runner", description="Execute Python code", risk=RiskTier.INTERNAL)
+async def code_runner(code: str) -> str:
+    ...
+
+# Search the tool catalog
+from meshflow import global_registry
+results = global_registry.search("code")
+```
+
+### Agent-to-agent messaging
+
+```python
+from meshflow import MessageBus, Message
+
+bus = MessageBus()
+
+async def on_message(msg: Message) -> None:
+    print(f"{msg.sender_id} → {msg.receiver_id}: {msg.content}")
+
+bus.subscribe("critic", on_message)
+await bus.send(Message(sender_id="executor", receiver_id="critic", content="Ready for review"))
+await bus.broadcast(Message(sender_id="planner", receiver_id="*", content="New task assigned"))
+```
+
+### Wrap existing frameworks
+
+```python
+from meshflow import govern
+
+# Works with LangGraph, CrewAI, AutoGen, or any callable
+result = await govern(my_langgraph_app, policy="standard").run("Process this document")
+```
+
+---
+
+## Who MeshFlow is for first
+
+> Platform, legal-ops, security, and compliance teams that want to let their
+> engineers use agents — but need audit trails, human review gates, replay, and
+> evidence before they can approve them for production.
+
+Governance is a dial, not a wall:
+
+| Mode | Best for | Default posture |
+| --- | --- | --- |
+| `dev` | Prototyping and local experiments | Fast tracing, minimal gates |
+| `standard` | Normal production workflows | Policy basics, ledger, observability |
+| `regulated` | Finance, healthcare, security, internal approvals | HITL, immutable audit, stricter gates |
+| `legal-critical` | Legal research, contract review, filings, external advice | Evidence, citations, review gates, no unreviewed high-risk action |
 
 ---
 
@@ -448,13 +563,22 @@ async def main():
     # Export entire run as JSON for archiving
     json_dump = await ledger.export_run(run_id)
 
+    # Archive the JSON export to write-once S3 storage
+    archived = await ledger.archive_run(run_id, "s3://my-bucket/meshflow-runs")
+    print(archived.uri)
+
 asyncio.run(main())
 ```
 
 > **Storage backends:** `ReplayLedger` is a backend facade. SQLite remains the
 > zero-config default, while PostgreSQL uses `asyncpg` lazily on first use so
 > construction does not perform network I/O. The same API powers durable HITL
-> checkpoints on both backends.
+> checkpoints on both backends. S3 is used as an immutable archive target for
+> exported run JSON.
+
+Install the optional S3 dependency with `pip install meshflow[s3]`. Each archive
+upload writes `{run_id}.json` below the configured prefix and uses S3
+`If-None-Match: *` semantics so an existing archived run is not overwritten.
 
 ---
 
@@ -467,14 +591,26 @@ meshflow run meshflow.yaml --task "analyse Q2 revenue"
 # Stream governed events as they emit
 meshflow stream meshflow.yaml --task "analyse Q2 revenue"
 
+# Tail live events for a known run
+meshflow watch <run_id> --db meshflow_runs.db
+
+# Resume a paused HITL workflow
+meshflow resume <run_id> --comment "Reviewed and approved"
+
 # Inspect a past run from the ledger
 meshflow replay <run_id> --db meshflow_runs.db
 
 # Export a run as JSON
 meshflow replay <run_id> --json
 
+# Archive a run export to S3
+meshflow replay <run_id> --archive-s3 s3://my-bucket/meshflow-runs
+
 # Run the conformance suite against a node adapter kind
-meshflow conformance python          # or: native langgraph crewai autogen
+meshflow conformance python --level 5  # or: native langgraph crewai autogen
+
+# Print public JSON Schema contracts
+meshflow schema NodeOutput
 
 # Print workflow topology without running
 meshflow describe meshflow.yaml
@@ -571,6 +707,33 @@ The server returns a `RunResult` JSON object with output, cost, audit info, and 
 
 ---
 
+## OTLP export
+
+MeshFlow emits OpenTelemetry spans for governed agent steps, MCP calls, RAG
+retrievals, and DascGate decisions. Configure an OTLP collector with standard
+OpenTelemetry environment variables:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+```
+
+Or pass the endpoint directly:
+
+```python
+from meshflow import Mesh
+
+mesh = Mesh(
+    telemetry_otlp_endpoint="http://localhost:4318",
+    telemetry_otlp_protocol="http/protobuf",
+)
+```
+
+Use `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` when you want to provide the full traces
+endpoint yourself, for example `http://localhost:4318/v1/traces`.
+
+---
+
 ## Cross-framework example (Sprint 1 proof)
 
 The `examples/cross_framework_demo.py` file is a runnable 4-node pipeline that proves the control-plane thesis end-to-end — no API key required:
@@ -648,7 +811,7 @@ cd meshflow
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-make test                 # run all 114 tests
+make test                 # run all 157 tests
 make check                # lint + typecheck + tests
 make run-quickstart       # simulated run, no API key needed
 make run-live             # real LLM run — requires ANTHROPIC_API_KEY in .env
@@ -708,9 +871,9 @@ meshflow/
   `Mesh.resume_workflow()` continue from exact state across process restarts
 - [x] **PostgreSQL ledger backend** — `postgres://` / `postgresql://` DSNs select
   an asyncpg backend behind the same `ReplayLedger` API
-- [ ] **S3 ledger archive backend** — long-term immutable export storage
+- [x] **S3 ledger archive backend** — long-term immutable export storage
 - [ ] **Web UI** — live run inspection, step-by-step replay, cost breakdown
-- [ ] **OTLP export** — push traces to Grafana, Jaeger, or Datadog
+- [x] **OTLP export** — push traces to Grafana, Jaeger, or Datadog
 - [ ] **Run SBOM** — signed software bill of materials for every governed run
 - [ ] **Conformance registry** — public leaderboard of certified framework adapters
 

@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meshflow
+  labels:
+    app: meshflow
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: meshflow
+  template:
+    metadata:
+      labels:
+        app: meshflow
+    spec:
+      containers:
+        - name: meshflow
+          image: meshflow:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MESHFLOW_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: meshflow-secrets
+                  key: api-keys
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: meshflow-secrets
+                  key: anthropic-api-key
+                  optional: true
+          args:
+            - meshflow
+            - serve
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --ledger
+            - /data/runs.db
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: meshflow-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meshflow
+spec:
+  selector:
+    app: meshflow
+  ports:
+    - port: 80
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: meshflow-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: meshflow
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: meshflow
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

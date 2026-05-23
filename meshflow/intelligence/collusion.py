@@ -8,13 +8,13 @@ Limitation (documented per design): text-level detection is probabilistic.
 Linear probes on model activations achieve 0.90–1.00 AUROC — activation-level
 analysis is recommended for confirmation in high-stakes contexts.
 """
+
 from __future__ import annotations
 
 import math
 import statistics
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 
 @dataclass
@@ -35,8 +35,8 @@ class CollusionAlert:
 class CommunicationRecord:
     sender: str
     receiver: str
-    agreed: bool          # did receiver agree with sender's position?
-    topic_hash: str       # hash of topic for grouping
+    agreed: bool  # did receiver agree with sender's position?
+    topic_hash: str  # hash of topic for grouping
 
 
 class CommunicationPatternAnalyzer:
@@ -47,7 +47,7 @@ class CommunicationPatternAnalyzer:
     """
 
     CA_THRESHOLD = 1.8
-    BASELINE_AGREEMENT = 0.55    # expected honest agreement rate between agents
+    BASELINE_AGREEMENT = 0.55  # expected honest agreement rate between agents
 
     def __init__(self) -> None:
         self._records: list[CommunicationRecord] = []
@@ -101,7 +101,7 @@ class ObjectiveDivergenceTracker:
     Tracks alignment scores per agent and computes cross-agent slope correlation.
     """
 
-    SLOPE_THRESHOLD = -0.15       # negative = drifting away from objective
+    SLOPE_THRESHOLD = -0.15  # negative = drifting away from objective
     CORRELATION_THRESHOLD = 0.75  # Pearson r across agents must be this correlated
 
     def __init__(self) -> None:
@@ -137,9 +137,8 @@ class ObjectiveDivergenceTracker:
         negative_slopes = [s for s in slopes.values() if s < self.SLOPE_THRESHOLD]
         correlation = len(negative_slopes) / len(agents)
 
-        is_alert = (
-            correlation >= self.CORRELATION_THRESHOLD
-            and any(s < self.SLOPE_THRESHOLD for s in slopes.values())
+        is_alert = correlation >= self.CORRELATION_THRESHOLD and any(
+            s < self.SLOPE_THRESHOLD for s in slopes.values()
         )
 
         return CollusionAlert(
@@ -166,15 +165,23 @@ class SteganographicChannelDetector:
 
     SCHELLING_WORDS = {
         # High-coordination-signal words agents might use as shared signals
-        "always", "never", "exactly", "precisely", "critical",
-        "urgent", "immediately", "confirm", "acknowledged", "proceed",
+        "always",
+        "never",
+        "exactly",
+        "precisely",
+        "critical",
+        "urgent",
+        "immediately",
+        "confirm",
+        "acknowledged",
+        "proceed",
     }
     LENGTH_CORRELATION_THRESHOLD = 0.80
     WORD_CORRELATION_THRESHOLD = 0.75
 
     def __init__(self) -> None:
-        self._lengths: dict[str, list[int]] = {}       # agent_id → output lengths
-        self._schelling: dict[str, list[float]] = {}   # agent_id → schelling density
+        self._lengths: dict[str, list[int]] = {}  # agent_id → output lengths
+        self._schelling: dict[str, list[float]] = {}  # agent_id → schelling density
 
     def record_output(self, agent_id: str, text: str) -> None:
         self._lengths.setdefault(agent_id, []).append(len(text))
@@ -209,17 +216,18 @@ class SteganographicChannelDetector:
                 len_corr > self.LENGTH_CORRELATION_THRESHOLD
                 or word_corr > self.WORD_CORRELATION_THRESHOLD
             )
-            alerts.append(CollusionAlert(
-                detector="SteganographicChannelDetector",
-                agents=[a, b],
-                score=score,
-                threshold=max(self.LENGTH_CORRELATION_THRESHOLD, self.WORD_CORRELATION_THRESHOLD),
-                details=(
-                    f"len_corr={len_corr:.3f}, word_corr={word_corr:.3f}, "
-                    f"pair=({a},{b})"
-                ),
-                is_alert=is_alert,
-            ))
+            alerts.append(
+                CollusionAlert(
+                    detector="SteganographicChannelDetector",
+                    agents=[a, b],
+                    score=score,
+                    threshold=max(
+                        self.LENGTH_CORRELATION_THRESHOLD, self.WORD_CORRELATION_THRESHOLD
+                    ),
+                    details=(f"len_corr={len_corr:.3f}, word_corr={word_corr:.3f}, pair=({a},{b})"),
+                    is_alert=is_alert,
+                )
+            )
         return alerts
 
 
@@ -254,7 +262,9 @@ class CollusionAuditor:
         if drift_alert.is_alert:
             alerts.append(drift_alert)
 
-        pairs = [(agents[i], agents[j]) for i in range(len(agents)) for j in range(i+1, len(agents))]
+        pairs = [
+            (agents[i], agents[j]) for i in range(len(agents)) for j in range(i + 1, len(agents))
+        ]
         steg_alerts = self._steg.analyse(pairs)
         alerts.extend(a for a in steg_alerts if a.is_alert)
 

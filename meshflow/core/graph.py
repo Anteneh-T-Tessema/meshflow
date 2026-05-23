@@ -4,20 +4,20 @@ Every state transition is checkpointed. Failures resume from the last
 checkpoint, never from the start. Human-in-loop pauses serialize
 the complete graph state to storage and resume days later if needed.
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
-import time
-import uuid
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
 from meshflow.core.schemas import (
-    AgentState, CheckpointRecord, RunStatus,
+    AgentState,
+    CheckpointRecord,
+    RunStatus,
 )
 
 
@@ -90,13 +90,17 @@ class StateGraph:
     # ── Checkpoint ────────────────────────────────────────────────────────────
 
     def _checkpoint(self, graph_state: GraphState) -> CheckpointRecord:
-        content = json.dumps({
-            "run_id": self.run_id,
-            "step": graph_state.step,
-            "current_node": graph_state.current_node,
-            "data": graph_state.data,
-            "completed_nodes": graph_state.completed_nodes,
-        }, sort_keys=True, default=str)
+        content = json.dumps(
+            {
+                "run_id": self.run_id,
+                "step": graph_state.step,
+                "current_node": graph_state.current_node,
+                "data": graph_state.data,
+                "completed_nodes": graph_state.completed_nodes,
+            },
+            sort_keys=True,
+            default=str,
+        )
         sha = hashlib.sha256(content.encode()).hexdigest()
         cp = CheckpointRecord(
             run_id=self.run_id,
@@ -210,7 +214,7 @@ class StateGraph:
             except Exception:
                 if attempt == node.retries:
                     return None
-                await asyncio.sleep(2 ** attempt)   # exponential back-off
+                await asyncio.sleep(2**attempt)  # exponential back-off
         return None
 
     def _route(self, state: GraphState) -> str | None:
@@ -229,11 +233,17 @@ class StateGraph:
     ) -> list[dict[str, Any]]:
         """Run the same node in parallel over multiple data slices."""
         node = self._nodes[node_id]
-        tasks = [self._execute_node(node, GraphState(
-            run_id=f"{self.run_id}:branch:{i}",
-            current_node=node_id,
-            data=d,
-        )) for i, d in enumerate(branch_data)]
+        tasks = [
+            self._execute_node(
+                node,
+                GraphState(
+                    run_id=f"{self.run_id}:branch:{i}",
+                    current_node=node_id,
+                    data=d,
+                ),
+            )
+            for i, d in enumerate(branch_data)
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return [r if isinstance(r, dict) else {} for r in results]
 

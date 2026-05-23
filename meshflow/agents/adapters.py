@@ -10,13 +10,14 @@ Usage:
     agent = from_autogen(autogen_agent)
     agent = from_langgraph(lg_runnable, role=AgentRole.RESEARCHER)
 """
+
 from __future__ import annotations
 
 import uuid
 from typing import Any
 
 from meshflow.agents.base import AgentConfig, BaseAgent
-from meshflow.core.schemas import AgentRole, Evidence, Policy
+from meshflow.core.schemas import AgentRole, Policy
 
 
 class _WrappedExternalAgent(BaseAgent):
@@ -41,7 +42,7 @@ class _WrappedExternalAgent(BaseAgent):
                 "framework": self._framework,
                 "agent_id": self.agent_id,
                 "stated_confidence": 0.75,
-                "tokens": 0,   # external agents don't report MeshFlow token counts
+                "tokens": 0,  # external agents don't report MeshFlow token counts
                 "cost_usd": 0.0,
             }
         except Exception as e:
@@ -56,7 +57,9 @@ class _WrappedExternalAgent(BaseAgent):
             }
 
     async def _invoke(self, task: str, context: dict[str, Any]) -> Any:
-        import asyncio, inspect
+        import asyncio
+        import inspect
+
         if inspect.iscoroutinefunction(self._run_fn):
             return await self._run_fn(task, context)
         loop = asyncio.get_event_loop()
@@ -65,6 +68,7 @@ class _WrappedExternalAgent(BaseAgent):
 
 # ── Public adapter functions ──────────────────────────────────────────────────
 
+
 def from_crewai(
     crew_agent: Any,
     role: AgentRole = AgentRole.EXECUTOR,
@@ -72,8 +76,11 @@ def from_crewai(
 ) -> BaseAgent:
     """Wrap a CrewAI Agent as a MeshFlow agent.
 
-    CrewAI agents expose an .execute_task(task) method.
-    We wrap it in an async callable that MeshFlow's step() can drive.
+    Compatible with CrewAI v0.1–0.80+.
+
+    Uses a minimal single-task Crew kickoff so the agent actually executes
+    rather than calling execute_task() directly (which changed signature in
+    CrewAI ≥ 0.70 and requires a proper Task object with expected_output).
     """
     if policy is None:
         policy = Policy()
@@ -83,15 +90,32 @@ def from_crewai(
     model_name = str(model) if model else "claude-sonnet-4-6"
 
     def run_fn(task: str, context: dict[str, Any]) -> str:
-        # CrewAI task execution — simplified bridge
-        from dataclasses import dataclass
+        # Strategy 1: modern CrewAI (≥ 0.70) — create a proper Task + mini Crew
         try:
-            # CrewAI Task object
+            from crewai import Task as CrewTask, Crew as CrewCrew  # type: ignore[import]
+            t = CrewTask(
+                description=task,
+                expected_output="Provide a comprehensive response to the task.",
+                agent=crew_agent,
+            )
+            mini_crew = CrewCrew(agents=[crew_agent], tasks=[t], verbose=False)
+            result = mini_crew.kickoff()
+            return str(getattr(result, "raw", result))
+        except Exception:
+            pass
+
+        # Strategy 2: older CrewAI — execute_task with string
+        try:
+            return str(crew_agent.execute_task(task))
+        except Exception:
+            pass
+
+        # Strategy 3: execute_task with fake Task object (oldest versions)
+        try:
             task_obj = type("Task", (), {"description": task, "context": context})()
-            return crew_agent.execute_task(task_obj)
-        except TypeError:
-            # Fallback for different CrewAI versions
-            return crew_agent.execute_task(task)
+            return str(crew_agent.execute_task(task_obj))
+        except Exception as e:
+            return f"CrewAI execution error: {e}"
 
     config = AgentConfig(
         agent_id=str(agent_id)[:12],
@@ -107,9 +131,10 @@ def from_autogen(
     role: AgentRole = AgentRole.EXECUTOR,
     policy: Policy | None = None,
 ) -> BaseAgent:
-    """Wrap an AutoGen ConversableAgent as a MeshFlow agent.
+    """Wrap an AutoGen agent as a MeshFlow agent.
 
-    AutoGen agents respond via .generate_reply(messages).
+    Supports AutoGen v0.2/v0.3 (generate_reply) and v0.4 (on_messages).
+    Version is detected at call time via duck-typing — no hard import required.
     """
     if policy is None:
         policy = Policy()
@@ -118,9 +143,9 @@ def from_autogen(
     model_name = "claude-sonnet-4-6"
 
     async def run_fn(task: str, context: dict[str, Any]) -> str:
-        messages = [{"role": "user", "content": task}]
-        reply = autogen_agent.generate_reply(messages=messages)
-        return str(reply) if reply else ""
+        from meshflow.integrations.autogen import invoke_autogen_agent
+        output, _tokens, _cost = await invoke_autogen_agent(autogen_agent, task, context)
+        return output
 
     config = AgentConfig(
         agent_id=str(agent_id)[:12],
@@ -148,20 +173,16 @@ def from_langgraph(
 
     async def run_fn(task: str, context: dict[str, Any]) -> str:
         combined = {"input": task, **context}
-        import inspect
         if hasattr(runnable, "ainvoke"):
             result = await runnable.ainvoke(combined)
         elif hasattr(runnable, "invoke"):
             import asyncio
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, runnable.invoke, combined
-            )
+
+            result = await asyncio.get_event_loop().run_in_executor(None, runnable.invoke, combined)
         else:
             result = str(runnable)
-        # LangGraph returns dicts, AIMessages, or strings
-        if isinstance(result, dict):
-            return result.get("output", result.get("answer", str(result)))
-        return str(result)
+        from meshflow.integrations.langgraph import _extract_lg_output
+        return _extract_lg_output(result)
 
     config = AgentConfig(
         agent_id=aid,

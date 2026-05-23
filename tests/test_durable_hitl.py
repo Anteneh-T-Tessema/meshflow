@@ -11,6 +11,7 @@ These tests prove that:
   8. A workflow with multiple sequential HITL gates can pause and resume twice
   9. Mesh.resume_workflow() is the right external entry point
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -30,6 +31,7 @@ from meshflow.core.schemas import HumanInLoopConfig, RiskTier
 
 
 # ── Shared fixtures ───────────────────────────────────────────────────────────
+
 
 def _hitl_policy() -> Policy:
     """Policy that pauses before IRREVERSIBLE nodes."""
@@ -63,6 +65,7 @@ def _echo(nid: str, ran: list | None = None, risk: RiskTier = RiskTier.READ_ONLY
             tokens_used=5,
             structured={f"{nid}_ran": True},
         )
+
     return MeshNode(id=nid, kind=NodeKind.PYTHON, risk_profile=risk, _runner=runner)
 
 
@@ -72,6 +75,7 @@ def _hitl_node(nid: str) -> MeshNode:
 
 
 # ── 1. Checkpoint is saved on pause ──────────────────────────────────────────
+
 
 class TestCheckpointSavedOnPause:
     def test_checkpoint_exists_after_pause(self):
@@ -121,7 +125,7 @@ class TestCheckpointSavedOnPause:
 
         asyncio.run(wf.run("load data", runtime))
         checkpoint = asyncio.run(ledger.load_checkpoint_data(run_id))
-
+        assert checkpoint is not None
         assert checkpoint["context"]["data_ready"] is True
         assert checkpoint["context"]["record_count"] == 42
         assert "setup" in checkpoint["completed_nodes"]
@@ -145,12 +149,13 @@ class TestCheckpointSavedOnPause:
 
         asyncio.run(wf.run("score task", runtime))
         checkpoint = asyncio.run(ledger.load_checkpoint_data(run_id))
-
+        assert checkpoint is not None
         assert "scorer" in checkpoint["node_outputs"]
         assert checkpoint["node_outputs"]["scorer"]["confidence"] == pytest.approx(0.95)
 
 
 # ── 2. Resume continues execution ─────────────────────────────────────────────
+
 
 class TestResumeExecution:
     def test_resume_approved_completes_workflow(self):
@@ -193,14 +198,18 @@ class TestResumeExecution:
             .add_node(_echo("publish", ran))
             .add_node(_echo("notify_failure", ran))
             .add_edge("setup", "gate")
-            .add_edge("gate", "publish",        condition="approved == True")
+            .add_edge("gate", "publish", condition="approved == True")
             .add_edge("gate", "notify_failure", condition="approved == False")
         )
 
         asyncio.run(wf.run("deploy", _runtime(run_id, ledger)))
         r2 = asyncio.run(
-            wf.resume(run_id, HumanDecision(approved=False, comment="Not ready"),
-                      ledger, _runtime(run_id, ledger))
+            wf.resume(
+                run_id,
+                HumanDecision(approved=False, comment="Not ready"),
+                ledger,
+                _runtime(run_id, ledger),
+            )
         )
 
         assert r2.completed is True
@@ -228,9 +237,12 @@ class TestResumeExecution:
 
         asyncio.run(wf.run("task", _runtime(run_id, ledger)))
         asyncio.run(
-            wf.resume(run_id,
-                      HumanDecision(approved=True, comment="All good", decided_by="alice"),
-                      ledger, _runtime(run_id, ledger))
+            wf.resume(
+                run_id,
+                HumanDecision(approved=True, comment="All good", decided_by="alice"),
+                ledger,
+                _runtime(run_id, ledger),
+            )
         )
 
         assert received.get("human_decision") is True
@@ -255,8 +267,7 @@ class TestResumeExecution:
         assert asyncio.run(ledger.load_checkpoint_data(run_id)) is not None
 
         asyncio.run(
-            wf.resume(run_id, HumanDecision(approved=True), ledger,
-                      _runtime(run_id, ledger))
+            wf.resume(run_id, HumanDecision(approved=True), ledger, _runtime(run_id, ledger))
         )
         assert asyncio.run(ledger.load_checkpoint_data(run_id)) is None
 
@@ -267,12 +278,17 @@ class TestResumeExecution:
 
         with pytest.raises(ValueError, match="No checkpoint found"):
             asyncio.run(
-                wf.resume("nonexistent-run", HumanDecision(approved=True),
-                          ledger, _runtime("nonexistent-run", ledger))
+                wf.resume(
+                    "nonexistent-run",
+                    HumanDecision(approved=True),
+                    ledger,
+                    _runtime("nonexistent-run", ledger),
+                )
             )
 
 
 # ── 3. Ledger checkpoint API ───────────────────────────────────────────────────
+
 
 class TestLedgerCheckpointAPI:
     def test_save_and_load_checkpoint(self):
@@ -299,6 +315,7 @@ class TestLedgerCheckpointAPI:
         asyncio.run(ledger.save_checkpoint("x", {"v": 1}))
         asyncio.run(ledger.save_checkpoint("x", {"v": 2}))
         loaded = asyncio.run(ledger.load_checkpoint_data("x"))
+        assert loaded is not None
         assert loaded["v"] == 2
 
     def test_list_paused_runs(self):
@@ -313,10 +330,13 @@ class TestLedgerCheckpointAPI:
 
 # ── 4. Mesh.resume_workflow() entry point ─────────────────────────────────────
 
+
 class TestMeshResumeWorkflow:
     def test_mesh_resume_workflow_completes(self):
         """Mesh.resume_workflow() is the public API for resuming paused runs."""
-        import tempfile, os
+        import tempfile
+        import os
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -336,8 +356,7 @@ class TestMeshResumeWorkflow:
             assert r1.paused_nodes == ["gate"]
 
             r2 = asyncio.run(
-                mesh.resume_workflow(wf, r1.run_id,
-                                     HumanDecision(approved=True), db_path)
+                mesh.resume_workflow(wf, r1.run_id, HumanDecision(approved=True), db_path)
             )
             assert r2.completed is True
             assert "publish" in ran
@@ -346,21 +365,23 @@ class TestMeshResumeWorkflow:
 
     def test_mesh_resume_invalid_id_raises(self):
         """Mesh.resume_workflow() propagates ValueError for unknown run_id."""
-        import tempfile, os
+        import tempfile
+        import os
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
             wf = WorkflowDefinition("x", policy=_hitl_policy())
             with pytest.raises(ValueError):
                 asyncio.run(
-                    Mesh().resume_workflow(wf, "bad-id",
-                                          HumanDecision(approved=True), db_path)
+                    Mesh().resume_workflow(wf, "bad-id", HumanDecision(approved=True), db_path)
                 )
         finally:
             os.unlink(db_path)
 
 
 # ── 5. End-to-end: multi-hop pipeline with HITL gate ─────────────────────────
+
 
 class TestEndToEndDurableHITL:
     def test_full_pipeline_pause_resume(self):
@@ -371,8 +392,9 @@ class TestEndToEndDurableHITL:
 
         async def research(inp: NodeInput) -> NodeOutput:
             ran.append("research")
-            return NodeOutput(content="findings", tokens_used=20,
-                              structured={"summary": "Q2 up 12%"})
+            return NodeOutput(
+                content="findings", tokens_used=20, structured={"summary": "Q2 up 12%"}
+            )
 
         wf = (
             WorkflowDefinition("e2e", policy=_hitl_policy())
@@ -393,8 +415,12 @@ class TestEndToEndDurableHITL:
 
         # Phase 2: human approves; workflow continues
         r2 = asyncio.run(
-            wf.resume(run_id, HumanDecision(approved=True, comment="Ship it"),
-                      ledger, _runtime(run_id, ledger))
+            wf.resume(
+                run_id,
+                HumanDecision(approved=True, comment="Ship it"),
+                ledger,
+                _runtime(run_id, ledger),
+            )
         )
         assert r2.completed is True
         assert "publish" in ran
@@ -403,6 +429,6 @@ class TestEndToEndDurableHITL:
         all_steps = asyncio.run(ledger.get_run(run_id))
         node_ids = {s["node_id"] for s in all_steps}
         assert "research" in node_ids
-        assert "approval" in node_ids   # human decision step
+        assert "approval" in node_ids  # human decision step
         assert "publish" in node_ids
         assert "notify" in node_ids

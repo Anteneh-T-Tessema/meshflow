@@ -4,50 +4,81 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meshflow"
-version = "0.7.0"
-description = "The control plane for multi-agent systems — govern, orchestrate, audit, and standardize LangGraph, CrewAI, AutoGen and native agents under one policy layer"
+version = "0.18.0"
+description = "The golden standard of multi-agent orchestration — typed state graphs, pre-built agents, GroupChat, governed workflows, eval framework, SwarmTRM neural consensus engine, and the only framework built for regulated industries"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "MeshFlow Contributors" }]
-keywords = ["agents", "llm", "multi-agent", "orchestration", "ai"]
+keywords = ["agents", "llm", "multi-agent", "orchestration", "ai", "governance", "hipaa", "compliance"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+
+# ── Mandatory runtime dependencies (kept minimal) ─────────────────────────────
 dependencies = [
     "anthropic>=0.40.0",
-    "openai>=1.50.0",
-    "pydantic>=2.7.0",
+    "aiohttp>=3.9.0",
     "httpx>=0.27.0",
-    "aiofiles>=23.2.1",
-    "cryptography>=42.0.0",
-    "opentelemetry-api>=1.24.0",
-    "opentelemetry-sdk>=1.24.0",
-    "opentelemetry-exporter-otlp>=1.24.0",
-    "numpy>=1.26.0",
-    "scipy>=1.13.0",
-    "tiktoken>=0.7.0",
-    "asyncpg>=0.29.0",
     "aiosqlite>=0.20.0",
     "pyyaml>=6.0.1",
     "rich>=13.7.0",
-    "structlog>=24.1.0",
-    "tenacity>=8.3.0",
-    "cachetools>=5.3.3",
 ]
 
 [project.optional-dependencies]
-forensics = ["meshflow-forensic>=0.1.0"]
-full = ["meshflow[forensics]"]
+
+# LLM provider extras — install the one(s) you need
+openai    = ["openai>=1.50.0"]
+gemini    = ["google-generativeai>=0.7.0"]
+bedrock   = ["boto3>=1.34.0"]
+azure     = ["openai>=1.50.0"]          # Azure uses the openai SDK in Azure mode
+
+# Vector memory + RAG (zero-dep TF-IDF works without this; numpy gives better quality)
+rag       = ["numpy>=1.26.0"]
+
+# PostgreSQL ledger backend
+postgres  = ["asyncpg>=0.29.0"]
+
+# S3 archive backend
+s3        = ["boto3>=1.34.0"]
+
+# Streamlit dashboard
+dashboard = ["streamlit>=1.35.0", "pandas>=2.0.0"]
+
+# OpenTelemetry distributed tracing
+otel      = [
+    "opentelemetry-api>=1.24.0",
+    "opentelemetry-sdk>=1.24.0",
+    "opentelemetry-exporter-otlp>=1.24.0",
+]
+
+# MCP gateway
+mcp       = ["pydantic>=2.7.0"]
+
+# SwarmTRM neural consensus engine (7M-param RecursiveUnit + 53 domain verifiers)
+swarm     = ["torch>=2.0.0", "pydantic>=2.7.0"]
+
+# Everything except dev tooling
+full      = [
+    "meshflow[openai,gemini,bedrock,rag,postgres,s3,otel,mcp,swarm]",
+]
+
+# Development tooling
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
+    "numpy>=1.26.0",   # needed for RAG tests
+    "pydantic>=2.7.0", # needed for tool schema tests
+    "openai>=1.50.0",  # needed for OpenAI provider tests
 ]
 
 [project.scripts]
@@ -56,6 +87,10 @@ meshflow = "meshflow.cli.main:main"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "live: tests that call real LLM APIs — skipped unless ANTHROPIC_API_KEY is set",
+    "slow: tests that do multiple LLM round-trips — skipped unless MESHFLOW_LIVE_SLOW=1",
+]
 
 [tool.ruff]
 line-length = 100
@@ -64,3 +99,20 @@ target-version = "py311"
 [tool.mypy]
 python_version = "3.11"
 strict = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "examples.*"]
+check_untyped_defs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+warn_return_any = false
+
+# Streamlit dashboard uses @st.cache_data which has no type stubs — relax strict mode
+[[tool.mypy.overrides]]
+module = ["dashboard.*"]
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+warn_return_any = false

@@ -7,7 +7,6 @@ import asyncio
 import os
 
 from meshflow import Mesh, Policy
-from meshflow.core.schemas import AgentRole
 
 
 def check_api_key() -> None:

@@ -8,49 +8,49 @@ Key decisions:
 - Water usage scales with compute intensity
 - Jobs can be deferred to low-carbon windows within a deadline
 """
+
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
 # Carbon intensity estimates (gCO2eq/kWh) by cloud region
 # Source: electricityMap averages, 2025
 CARBON_INTENSITY: dict[str, float] = {
-    "us-east-1":        400.0,
-    "us-west-2":        120.0,   # PNW hydro
-    "eu-west-1":        230.0,   # Ireland wind mix
-    "eu-central-1":     380.0,   # Germany coal + renewables
-    "ap-southeast-1":   580.0,   # Singapore
-    "ap-northeast-1":   500.0,   # Japan
-    "ca-central-1":      80.0,   # Quebec hydro
-    "default":          350.0,
+    "us-east-1": 400.0,
+    "us-west-2": 120.0,  # PNW hydro
+    "eu-west-1": 230.0,  # Ireland wind mix
+    "eu-central-1": 380.0,  # Germany coal + renewables
+    "ap-southeast-1": 580.0,  # Singapore
+    "ap-northeast-1": 500.0,  # Japan
+    "ca-central-1": 80.0,  # Quebec hydro
+    "default": 350.0,
 }
 
 # Water usage effectiveness per region (L/kWh)
 WATER_INTENSITY: dict[str, float] = {
-    "us-east-1":   1.8,
-    "us-west-2":   0.4,
-    "eu-west-1":   0.6,
+    "us-east-1": 1.8,
+    "us-west-2": 0.4,
+    "eu-west-1": 0.6,
     "eu-central-1": 1.2,
-    "default":      1.5,
+    "default": 1.5,
 }
 
 # Approximate energy per token by model tier (mWh/1k tokens)
 ENERGY_PER_1K_TOKENS: dict[str, float] = {
-    "haiku":   0.003,
-    "sonnet":  0.012,
-    "opus":    0.045,
+    "haiku": 0.003,
+    "sonnet": 0.012,
+    "opus": 0.045,
     "default": 0.020,
 }
 
 
 @dataclass
 class EnvironmentalCost:
-    carbon_g: float        # gCO2eq
-    water_ml: float        # millilitres
-    energy_mwh: float      # milliwatt-hours
+    carbon_g: float  # gCO2eq
+    water_ml: float  # millilitres
+    energy_mwh: float  # milliwatt-hours
     region: str
     model_tier: str
     tokens: int
@@ -59,6 +59,7 @@ class EnvironmentalCost:
 @dataclass
 class SchedulingWindow:
     """A time window with lower carbon intensity — for deferrable tasks."""
+
     start_epoch: float
     end_epoch: float
     region: str
@@ -84,7 +85,7 @@ class CarbonCalculator:
         # Convert mWh to kWh for intensity multiplication
         energy_kwh = energy_mwh / 1_000_000
         carbon_g = energy_kwh * carbon_intensity * 1000  # grams
-        water_ml = energy_kwh * water_intensity * 1000   # millilitres
+        water_ml = energy_kwh * water_intensity * 1000  # millilitres
 
         return EnvironmentalCost(
             carbon_g=carbon_g,

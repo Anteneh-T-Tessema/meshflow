@@ -1,0 +1,53 @@
+services:
+  meshflow:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      MESHFLOW_API_KEYS: ${MESHFLOW_API_KEYS:-}
+      MESHFLOW_CORS_ORIGINS: ${MESHFLOW_CORS_ORIGINS:-*}
+      MESHFLOW_WEBHOOK_SECRET: ${MESHFLOW_WEBHOOK_SECRET:-change-me}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - meshflow_data:/app/data
+    command: meshflow serve --host 0.0.0.0 --port 8000 --ledger /app/data/runs.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mesh
+      POSTGRES_PASSWORD: mesh
+      POSTGRES_DB: mesh
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mesh"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  meshflow-postgres:
+    build: .
+    ports:
+      - "8001:8000"
+    environment:
+      MESHFLOW_API_KEYS: ${MESHFLOW_API_KEYS:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    command: meshflow serve --host 0.0.0.0 --port 8000 --ledger postgresql://mesh:mesh@postgres/mesh
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - postgres
+
+volumes:
+  meshflow_data:
+  postgres_data:

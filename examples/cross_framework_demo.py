@@ -28,7 +28,7 @@ from meshflow import (
     ReplayLedger,
     WorkflowDefinition,
 )
-from meshflow.core.node import NodeInput, NodeKind, NodeOutput
+from meshflow.core.node import NodeKind, NodeOutput
 from meshflow.core.schemas import HumanInLoopConfig, RiskTier
 
 
@@ -278,7 +278,7 @@ def _print_header() -> None:
 def _print_step(node_id: str, kind: str, ok: bool, uncertainty: float,
                 cost_usd: float, tokens: int, duration_ms: float,
                 block_reason: str = "") -> None:
-    status  = GREEN("✓ ok") if ok else RED(f"✗ blocked")
+    status  = GREEN("✓ ok") if ok else RED("✗ blocked")
     kind_lbl = _KIND_LABEL.get(kind, kind)
     print(
         f"  {CYAN(node_id):<30} "
@@ -319,7 +319,7 @@ async def main(replay: bool = False) -> None:
     ledger    = ReplayLedger(ledger_db)
     wf        = build_workflow(auto_approve=True)
 
-    print(BOLD(f"  Task:"))
+    print(BOLD("  Task:"))
     print(f"    {task}")
     print()
     print(BOLD("  Governed execution starting..."))

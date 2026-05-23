@@ -7,24 +7,26 @@ Inspired by dasc-core (PyPI v0.1.1) — extended with:
   - Cross-agent TaintGraph
   - SQLite ledger (upgradeable to Postgres)
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import sqlite3
-import time
-import uuid
-from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any
 
 from meshflow.core.schemas import (
-    ActionVerdict, AgentRole, CompensationPlan, Evidence,
-    Intent, LedgerEntry, Policy, RiskTier,
+    ActionVerdict,
+    CompensationPlan,
+    Intent,
+    LedgerEntry,
+    Policy,
+    RiskTier,
 )
 
 
 # ── AutoRiskClassifier — fixes the self-declaration flaw ─────────────────────
+
 
 class AutoRiskClassifier:
     """Overrides agent-declared risk tiers — agents cannot lie about their own risk.
@@ -37,24 +39,54 @@ class AutoRiskClassifier:
     """
 
     _TIER4_KEYWORDS = {
-        "delete", "drop", "destroy", "purge", "wipe", "format",
-        "deploy", "publish", "send_payment", "transfer_funds",
-        "rm -rf", "truncate", "deactivate_account",
+        "delete",
+        "drop",
+        "destroy",
+        "purge",
+        "wipe",
+        "format",
+        "deploy",
+        "publish",
+        "send_payment",
+        "transfer_funds",
+        "rm -rf",
+        "truncate",
+        "deactivate_account",
     }
     _TIER3_KEYWORDS = {
-        "write", "update", "create", "insert", "patch", "post",
-        "upload", "send", "email", "notify", "request",
+        "write",
+        "update",
+        "create",
+        "insert",
+        "patch",
+        "post",
+        "upload",
+        "send",
+        "email",
+        "notify",
+        "request",
     }
     _TIER2_KEYWORDS = {
-        "compute", "transform", "aggregate", "cache", "store_temp",
+        "compute",
+        "transform",
+        "aggregate",
+        "cache",
+        "store_temp",
     }
     _SENSITIVE_PAYLOAD_KEYS = {
-        "password", "secret", "token", "api_key", "credential",
-        "ssn", "credit_card", "private_key", "auth",
+        "password",
+        "secret",
+        "token",
+        "api_key",
+        "credential",
+        "ssn",
+        "credit_card",
+        "private_key",
+        "auth",
     }
 
     def __init__(self) -> None:
-        self._failure_rates: dict[str, float] = {}   # agent_id → failure rate
+        self._failure_rates: dict[str, float] = {}  # agent_id → failure rate
 
     def record_outcome(self, agent_id: str, success: bool) -> None:
         prev = self._failure_rates.get(agent_id, 0.0)
@@ -99,6 +131,7 @@ class AutoRiskClassifier:
 
 # ── TaintGraph — cross-agent taint propagation ────────────────────────────────
 
+
 class TaintGraph:
     """Tracks IFC taint propagation across agents.
 
@@ -107,7 +140,7 @@ class TaintGraph:
     """
 
     def __init__(self) -> None:
-        self._tainted: set[str] = set()   # agent_ids with active taint
+        self._tainted: set[str] = set()  # agent_ids with active taint
 
     def mark_tainted(self, agent_id: str) -> None:
         self._tainted.add(agent_id)
@@ -127,6 +160,7 @@ class TaintGraph:
 
 
 # ── Compensation executor ─────────────────────────────────────────────────────
+
 
 class CompensationExecutor:
     """Executes declared compensation plans — dasc-core declares but never runs them.
@@ -149,6 +183,7 @@ class CompensationExecutor:
 
 
 # ── Ledger ────────────────────────────────────────────────────────────────────
+
 
 class AuditLedger:
     """Hash-chained append-only ledger for every gate decision.
@@ -182,31 +217,44 @@ class AuditLedger:
 
     def append(self, entry: LedgerEntry) -> None:
         entry.prev_hash = self._last_hash
-        content = json.dumps({
-            "entry_id": entry.entry_id,
-            "run_id": entry.run_id,
-            "intent_id": entry.intent_id,
-            "action": entry.action,
-            "verdict": entry.verdict.value,
-            "timestamp": entry.timestamp.isoformat(),
-            "prev_hash": entry.prev_hash,
-        }, sort_keys=True)
+        content = json.dumps(
+            {
+                "entry_id": entry.entry_id,
+                "run_id": entry.run_id,
+                "intent_id": entry.intent_id,
+                "action": entry.action,
+                "verdict": entry.verdict.value,
+                "timestamp": entry.timestamp.isoformat(),
+                "prev_hash": entry.prev_hash,
+            },
+            sort_keys=True,
+        )
         entry.entry_hash = hashlib.sha256(content.encode()).hexdigest()
         self._last_hash = entry.entry_hash
 
-        self._conn.execute("""
+        self._conn.execute(
+            """
             INSERT INTO ledger VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (
-            entry.entry_id, entry.run_id, entry.intent_id,
-            entry.agent_id, entry.agent_did, entry.action,
-            int(entry.effective_tier), entry.verdict.value,
-            entry.reason, entry.timestamp.isoformat(),
-            entry.prev_hash, entry.entry_hash,
-        ))
+        """,
+            (
+                entry.entry_id,
+                entry.run_id,
+                entry.intent_id,
+                entry.agent_id,
+                entry.agent_did,
+                entry.action,
+                int(entry.effective_tier),
+                entry.verdict.value,
+                entry.reason,
+                entry.timestamp.isoformat(),
+                entry.prev_hash,
+                entry.entry_hash,
+            ),
+        )
         self._conn.commit()
 
     def count(self) -> int:
-        return self._conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0]
+        return int(self._conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0])
 
     def verify_chain(self) -> bool:
         """Verify hash chain integrity — detects any tampering."""
@@ -224,6 +272,7 @@ class AuditLedger:
 
 
 # ── Main Gate ─────────────────────────────────────────────────────────────────
+
 
 class DascGate:
     """Deterministic evaluation kernel — same input always produces same verdict.

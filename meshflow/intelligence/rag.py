@@ -1,267 +1,302 @@
-"""L4.1 — RAG Integration: hybrid retrieval with RAGAS evaluation and corrective loop.
+"""Semantic RAG (Retrieval-Augmented Generation) pipeline.
 
-Every retrieved chunk is typed as a dasc-core Evidence object so the IFC taint
-check automatically evaluates source trust before allowing downstream use.
+DocumentStore ingests, chunks, and indexes documents using the same
+NumpyCosineIndex / EmbeddingProvider abstraction as MEM1Store, so the
+entire system can share one embedding provider and zero-dependency
+TF-IDF embeddings work out of the box.
 
-Key design decisions:
-- Hybrid retrieval: vector (semantic) + BM25 (keyword) + reciprocal rank fusion
-- RAGAS-style quality scoring on every retrieval call
-- Bounded corrective loop (max 2 retries) when faithfulness < threshold
-- Web-sourced content is always trust_level="untrusted" — blocks Tier 3+ actions
+Usage::
+
+    from meshflow.intelligence.rag import DocumentStore, RAGNode
+
+    store = DocumentStore()
+    await store.ingest(["Patient presented with...", "Lab results show..."])
+
+    # As a standalone retriever
+    chunks = await store.retrieve("What were the lab results?", top_k=3)
+
+    # As a MeshNode inside a WorkflowDefinition
+    rag_node = RAGNode(store=store, node_id="rag", top_k=5)
+    wf.add_node(rag_node)
 """
+
 from __future__ import annotations
 
-import hashlib
-import math
-import time
+import asyncio
+import dataclasses
+import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from meshflow.core.schemas import Evidence, RAGResult
+from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
+from meshflow.intelligence.mem1 import EmbeddingProvider, NumpyCosineIndex, TFIDFEmbeddings
 
 
 @dataclass
-class Chunk:
-    """A single retrieved text chunk with provenance."""
+class RetrievedChunk:
     text: str
-    source: str
-    source_type: str      # "internal", "web", "database", "document"
-    score: float = 0.0
-    chunk_id: str = ""
-
-    def to_evidence(self) -> Evidence:
-        trust = "trusted" if self.source_type in ("internal", "database") else "untrusted"
-        return Evidence(
-            content=self.text,
-            source=self.source,
-            trust_level=trust,
-            source_hash=hashlib.sha256(self.text.encode()).hexdigest()[:16],
-        )
+    doc_id: str
+    chunk_index: int
+    score: float
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class ChunkStore:
-    """In-memory chunk store — swap for a vector DB in production."""
-    chunks: list[Chunk] = field(default_factory=list)
-
-    def add(self, text: str, source: str, source_type: str = "internal") -> None:
-        cid = hashlib.md5(text.encode()).hexdigest()[:8]
-        self.chunks.append(Chunk(text=text, source=source, source_type=source_type, chunk_id=cid))
-
-    def __len__(self) -> int:
-        return len(self.chunks)
+def _chunk_fixed(text: str, chunk_size: int = 512, overlap: int = 64) -> list[str]:
+    """Split text into fixed-size word-count chunks with overlap."""
+    words = text.split()
+    chunks: list[str] = []
+    i = 0
+    while i < len(words):
+        chunks.append(" ".join(words[i : i + chunk_size]))
+        i += chunk_size - overlap
+    return chunks or [text]
 
 
-class VectorRetriever:
-    """TF-IDF based semantic retrieval — use a real embedding model in production."""
-
-    def retrieve(self, query: str, chunks: list[Chunk], top_k: int = 5) -> list[Chunk]:
-        if not chunks:
-            return []
-        q_words = set(query.lower().split())
-        scored = []
-        for chunk in chunks:
-            c_words = chunk.text.lower().split()
-            c_set = set(c_words)
-            # Cosine-like overlap
-            overlap = len(q_words & c_set)
-            idf_boost = math.log1p(len(c_words))
-            score = overlap * idf_boost / max(math.sqrt(len(q_words) * len(c_set)), 1)
-            scored.append((score, chunk))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        results = []
-        for score, chunk in scored[:top_k]:
-            chunk.score = score
-            results.append(chunk)
-        return results
+def _chunk_sentences(text: str, max_chars: int = 1000) -> list[str]:
+    """Split on sentence boundaries, merging short sentences."""
+    raw = re.split(r"(?<=[.!?])\s+", text.strip())
+    chunks: list[str] = []
+    current = ""
+    for sentence in raw:
+        if len(current) + len(sentence) + 1 > max_chars and current:
+            chunks.append(current.strip())
+            current = sentence
+        else:
+            current += (" " if current else "") + sentence
+    if current:
+        chunks.append(current.strip())
+    return chunks or [text]
 
 
-class BM25Retriever:
-    """BM25 keyword retrieval — k1=1.5, b=0.75 (standard params)."""
+class DocumentStore:
+    """Embed, index, and retrieve documents with semantic similarity.
 
-    K1 = 1.5
-    B  = 0.75
-
-    def retrieve(self, query: str, chunks: list[Chunk], top_k: int = 5) -> list[Chunk]:
-        if not chunks:
-            return []
-        q_terms = query.lower().split()
-        corpus = [c.text.lower().split() for c in chunks]
-        avgdl = sum(len(d) for d in corpus) / max(len(corpus), 1)
-
-        scored = []
-        for i, (doc, chunk) in enumerate(zip(corpus, chunks)):
-            score = 0.0
-            doc_len = len(doc)
-            for term in q_terms:
-                tf = doc.count(term)
-                if tf == 0:
-                    continue
-                idf = math.log((len(corpus) + 1) / (sum(1 for d in corpus if term in d) + 0.5))
-                tf_norm = (tf * (self.K1 + 1)) / (
-                    tf + self.K1 * (1 - self.B + self.B * doc_len / avgdl)
-                )
-                score += idf * tf_norm
-            scored.append((score, chunk))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        results = []
-        for score, chunk in scored[:top_k]:
-            chunk.score = score
-            results.append(chunk)
-        return results
-
-
-class ReciprocakRankFusion:
-    """Merge vector and BM25 results via Reciprocal Rank Fusion (RRF, k=60)."""
-
-    K = 60
-
-    def fuse(
-        self,
-        vector_results: list[Chunk],
-        bm25_results: list[Chunk],
-    ) -> list[Chunk]:
-        scores: dict[str, float] = {}
-        chunks: dict[str, Chunk] = {}
-
-        for rank, chunk in enumerate(vector_results):
-            cid = chunk.chunk_id or id(chunk)
-            key = str(cid)
-            scores[key] = scores.get(key, 0) + 1 / (self.K + rank + 1)
-            chunks[key] = chunk
-
-        for rank, chunk in enumerate(bm25_results):
-            cid = chunk.chunk_id or id(chunk)
-            key = str(cid)
-            scores[key] = scores.get(key, 0) + 1 / (self.K + rank + 1)
-            chunks[key] = chunk
-
-        fused = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        results = []
-        for key, score in fused:
-            chunk = chunks[key]
-            chunk.score = score
-            results.append(chunk)
-        return results
-
-
-class RAGASEvaluator:
-    """RAGAS-style quality metrics without an external LLM call.
-
-    Uses token overlap as a proxy for faithfulness and relevance.
-    In production: replace with actual LLM-based RAGAS evaluation.
+    Chunking strategy: "fixed" (word-count windows) or "sentence" (sentence boundaries).
+    EmbeddingProvider: TFIDFEmbeddings by default (zero external dependencies).
+    Pass AnthropicEmbeddings or OpenAIEmbeddings for production-quality retrieval.
     """
 
-    def faithfulness(self, answer: str, chunks: list[Chunk]) -> float:
-        if not chunks or not answer:
-            return 0.0
-        answer_words = set(answer.lower().split())
-        context_words = set()
-        for chunk in chunks:
-            context_words.update(chunk.text.lower().split())
-        if not answer_words:
-            return 0.0
-        return len(answer_words & context_words) / len(answer_words)
+    def __init__(
+        self,
+        embedding_provider: EmbeddingProvider | None = None,
+        chunk_strategy: str = "fixed",
+        chunk_size: int = 512,
+        chunk_overlap: int = 64,
+    ) -> None:
+        self._embed: EmbeddingProvider = embedding_provider or TFIDFEmbeddings()
+        self._chunk_strategy = chunk_strategy
+        self._chunk_size = chunk_size
+        self._chunk_overlap = chunk_overlap
+        self._index = NumpyCosineIndex()
+        self._chunks: dict[str, RetrievedChunk] = {}
 
-    def answer_relevance(self, query: str, answer: str) -> float:
-        if not query or not answer:
-            return 0.0
-        q_words = set(query.lower().split())
-        a_words = set(answer.lower().split())
-        union = q_words | a_words
-        return len(q_words & a_words) / max(len(union), 1)
+    def _split(self, text: str) -> list[str]:
+        if self._chunk_strategy == "sentence":
+            return _chunk_sentences(text)
+        return _chunk_fixed(text, self._chunk_size, self._chunk_overlap)
 
-    def context_precision(self, query: str, chunks: list[Chunk]) -> float:
+    async def ingest(
+        self,
+        docs: list[str],
+        metadata: list[dict[str, Any]] | None = None,
+    ) -> int:
+        """Chunk, embed, and index documents. Returns number of chunks indexed."""
+        meta = metadata or [{}] * len(docs)
+        all_chunks: list[tuple[str, str, int, dict[str, Any]]] = []
+
+        for doc_idx, (doc, m) in enumerate(zip(docs, meta)):
+            doc_id = m.get("doc_id", f"doc_{doc_idx}")
+            for chunk_idx, chunk_text in enumerate(self._split(doc)):
+                key = f"{doc_id}__chunk_{chunk_idx}"
+                all_chunks.append((key, chunk_text, chunk_idx, {**m, "doc_id": doc_id}))
+
+        if not all_chunks:
+            return 0
+
+        texts = [c[1] for c in all_chunks]
+        embeddings = await self._embed.embed(texts)
+
+        for (key, text, chunk_idx, m), emb in zip(all_chunks, embeddings):
+            doc_id = m.get("doc_id", "doc_0")
+            self._chunks[key] = RetrievedChunk(
+                text=text,
+                doc_id=doc_id,
+                chunk_index=chunk_idx,
+                score=0.0,
+                metadata=m,
+            )
+            self._index.add(key, emb)
+
+        # Freeze vocabulary so query embeddings use the same dimension as stored vectors.
+        if hasattr(self._embed, "freeze"):
+            self._embed.freeze()
+
+        return len(all_chunks)
+
+    async def retrieve(self, query: str, top_k: int = 5) -> list[RetrievedChunk]:
+        """Return top-k chunks most semantically similar to the query."""
+        if not self._chunks:
+            return []
+        embeddings = await self._embed.embed([query])
+        if not embeddings:
+            return []
+        hits = self._index.search(embeddings[0], top_k)
+        results: list[RetrievedChunk] = []
+        for key, score in hits:
+            chunk = self._chunks.get(key)
+            if chunk:
+                results.append(dataclasses.replace(chunk, score=score))
+        return results
+
+    async def retrieve_text(self, query: str, top_k: int = 5) -> str:
+        """Retrieve and join chunk texts as a formatted context block."""
+        chunks = await self.retrieve(query, top_k)
         if not chunks:
-            return 0.0
-        q_words = set(query.lower().split())
-        relevant = sum(
-            1 for c in chunks
-            if len(q_words & set(c.text.lower().split())) > 0
+            return ""
+        parts = [
+            f"[Source: {c.doc_id}, chunk {c.chunk_index}, score={c.score:.2f}]\n{c.text}"
+            for c in chunks
+        ]
+        return "\n\n---\n\n".join(parts)
+
+
+class RAGNode(MeshNode):
+    """A MeshNode that retrieves relevant context and prepends it to the task.
+
+    Plugs into any WorkflowDefinition. The enriched task is passed as output
+    content so downstream nodes receive it in the workflow context.
+
+    Example::
+
+        store = DocumentStore()
+        await store.ingest(contract_texts)
+
+        wf.add_node(RAGNode(store=store, node_id="retriever", top_k=5))
+        wf.add_node(reviewer_node)
+        wf.add_edge("retriever", "reviewer")
+    """
+
+    def __init__(
+        self,
+        store: DocumentStore,
+        node_id: str = "",
+        top_k: int = 5,
+        context_prefix: str = "Retrieved context:\n",
+    ) -> None:
+        super().__init__(
+            id=node_id or f"rag_{uuid.uuid4().hex[:6]}",
+            kind=NodeKind.PYTHON,
+            capabilities=["retrieve"],
         )
-        return relevant / len(chunks)
+        self._store = store
+        self._top_k = top_k
+        self._prefix = context_prefix
+
+    async def run(self, node_input: NodeInput) -> NodeOutput:
+        context_text = await self._store.retrieve_text(node_input.task, self._top_k)
+        if context_text:
+            enriched = f"{self._prefix}\n{context_text}\n\n---\n\nQuery: {node_input.task}"
+        else:
+            enriched = node_input.task
+        return NodeOutput(
+            content=enriched,
+            confidence=1.0,
+            structured={"rag_context": context_text, "original_task": node_input.task},
+        )
+
+
+# ── Synchronous facade ────────────────────────────────────────────────────────
+
+
+@dataclass
+class Evidence:
+    """A retrieved chunk annotated with a trust level based on its source."""
+
+    content: str
+    source: str
+    score: float
+    trust_level: str  # "trusted" | "untrusted" | "external"
+
+
+@dataclass
+class RAGResult:
+    chunks: list[Evidence] = field(default_factory=list)
+    context_precision: float = 0.0
+
+    @property
+    def context(self) -> str:
+        return "\n\n".join(c.content for c in self.chunks)
 
 
 class RAGPipeline:
-    """Full hybrid RAG pipeline with evaluation and corrective loop.
+    """Synchronous façade over DocumentStore for use in non-async contexts and tests.
 
-    Every retrieved chunk is returned as an Evidence object, so the dasc-gate
-    IFC taint check works automatically — web sources are untrusted by default.
+    Documents are buffered and batch-ingested on the first retrieve() call so
+    that the TF-IDF embedding vocabulary is built from the full corpus at once,
+    guaranteeing consistent vector dimensions across all documents.
+
+    Trust levels: "trusted" for internal sources, "untrusted" for web URLs,
+    "external" for everything else.
     """
 
-    FAITHFULNESS_THRESHOLD = 0.40
-    MAX_CORRECTIVE_RETRIES = 2
+    def __init__(self) -> None:
+        self._source_types: dict[str, str] = {}  # doc_id → source_type
+        self._pending: list[tuple[str, str, str]] = []  # (text, doc_id, source)
+        self._store: DocumentStore | None = None
+        self._dirty = False
 
-    def __init__(self, store: ChunkStore | None = None) -> None:
-        self._store = store or ChunkStore()
-        self._vector = VectorRetriever()
-        self._bm25 = BM25Retriever()
-        self._fusion = ReciprocakRankFusion()
-        self._evaluator = RAGASEvaluator()
-
-    def add_document(self, text: str, source: str, source_type: str = "internal") -> None:
-        self._store.add(text, source, source_type)
-
-    def retrieve(
+    def add_document(
         self,
-        query: str,
-        top_k: int = 5,
-        answer: str = "",
-    ) -> RAGResult:
-        start = time.monotonic()
-        chunks = self._store.chunks
+        text: str,
+        source: str,
+        source_type: str = "internal",
+    ) -> None:
+        self._source_types[source] = source_type
+        self._pending.append((text, source, source))
+        self._dirty = True
 
-        if not chunks:
-            return RAGResult(
-                query=query,
-                chunks=[],
-                retrieval_score=0.0,
-                latency_ms=0.0,
+    def _build_store(self) -> DocumentStore:
+        store = DocumentStore()
+        if self._pending:
+            texts = [t for t, _, _ in self._pending]
+            meta = [{"doc_id": doc_id, "source": src} for _, doc_id, src in self._pending]
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(store.ingest(texts, meta))
+            finally:
+                loop.close()
+        self._dirty = False
+        return store
+
+    def retrieve(self, query: str, top_k: int = 5) -> RAGResult:
+        if self._dirty or self._store is None:
+            self._store = self._build_store()
+
+        loop = asyncio.new_event_loop()
+        try:
+            chunks = loop.run_until_complete(self._store.retrieve(query, top_k))
+        finally:
+            loop.close()
+
+        evidence: list[Evidence] = []
+        for chunk in chunks:
+            source = chunk.metadata.get("source", chunk.doc_id)
+            st = self._source_types.get(chunk.doc_id, "internal")
+            if st == "web" or str(source).startswith("http"):
+                trust = "untrusted"
+            elif st == "internal":
+                trust = "trusted"
+            else:
+                trust = "external"
+            evidence.append(
+                Evidence(
+                    content=chunk.text,
+                    source=source,
+                    score=chunk.score,
+                    trust_level=trust,
+                )
             )
 
-        # Hybrid retrieval
-        vector_hits = self._vector.retrieve(query, chunks, top_k=top_k * 2)
-        bm25_hits   = self._bm25.retrieve(query, chunks, top_k=top_k * 2)
-        fused       = self._fusion.fuse(vector_hits, bm25_hits)[:top_k]
-
-        # RAGAS evaluation
-        faithfulness     = self._evaluator.faithfulness(answer, fused)
-        answer_relevance = self._evaluator.answer_relevance(query, answer)
-        context_precision = self._evaluator.context_precision(query, fused)
-
-        # Corrective loop — if faithfulness too low, broaden search window.
-        # search_k expands for retrieval but the final result is always capped at top_k.
-        corrective = False
-        search_k = top_k
-        if faithfulness < self.FAITHFULNESS_THRESHOLD and len(chunks) > search_k:
-            for _ in range(self.MAX_CORRECTIVE_RETRIES):
-                search_k = min(search_k * 2, len(chunks))
-                wider = self._fusion.fuse(
-                    self._vector.retrieve(query, chunks, search_k),
-                    self._bm25.retrieve(query, chunks, search_k),
-                )
-                new_faith = self._evaluator.faithfulness(answer, wider[:top_k])
-                if new_faith >= self.FAITHFULNESS_THRESHOLD:
-                    fused = wider[:top_k]
-                    faithfulness = new_faith
-                    corrective = True
-                    break
-
-        evidence = [chunk.to_evidence() for chunk in fused]
-        latency = (time.monotonic() - start) * 1000
-
-        return RAGResult(
-            query=query,
-            chunks=evidence,
-            retrieval_score=faithfulness,
-            answer_relevance=answer_relevance,
-            context_precision=context_precision,
-            corrective_applied=corrective,
-            latency_ms=latency,
-        )
-
-    def context_string(self, result: RAGResult) -> str:
-        return "\n\n".join(e.content for e in result.chunks)
-
-    def store_size(self) -> int:
-        return len(self._store)
+        precision = sum(e.score for e in evidence) / len(evidence) if evidence else 0.0
+        return RAGResult(chunks=evidence, context_precision=precision)

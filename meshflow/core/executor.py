@@ -19,18 +19,21 @@ Order of operations per step:
   13. Environmental cost      — charge carbon/water budget
   14. Behavioural monitoring  — update baseline for anomaly detection
 """
+
 from __future__ import annotations
 
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from meshflow.agents.base import BaseAgent
 from meshflow.core.policy import BudgetExceededError, CircuitOpenError, PolicyEngine
 from meshflow.core.schemas import (
-    ActionVerdict, AgentRole, Evidence, Intent, Message,
-    Policy, RiskTier, UncertaintyScore,
+    ActionVerdict,
+    Evidence,
+    Intent,
+    Message,
+    UncertaintyScore,
 )
 from meshflow.efficiency.environmental import EnvironmentalOptimizer
 from meshflow.intelligence.collusion import CollusionAuditor
@@ -44,6 +47,7 @@ from meshflow.security.identity import AgentIdentityProvider
 @dataclass
 class StepOutcome:
     """Result of a governed agent step."""
+
     ok: bool
     data: dict[str, Any]
     agent_id: str
@@ -53,7 +57,7 @@ class StepOutcome:
     carbon_g: float = 0.0
     duration_ms: float = 0.0
     uncertainty: UncertaintyScore | None = None
-    blocked_by: str = ""       # which layer blocked this step
+    blocked_by: str = ""  # which layer blocked this step
     paused_for_human: bool = False
     human_context: dict[str, Any] | None = None
     dasc_verdict: str = "commit"
@@ -102,16 +106,23 @@ class GovernedStepExecutor:
         # ── 1. Identity check ─────────────────────────────────────────────────
         if not self._identity.is_active(agent.agent_id):
             return StepOutcome(
-                ok=False, data={}, agent_id=agent.agent_id, role=agent.role.value,
-                blocked_by="identity", human_context={"reason": "DID revoked"},
+                ok=False,
+                data={},
+                agent_id=agent.agent_id,
+                role=agent.role.value,
+                blocked_by="identity",
+                human_context={"reason": "DID revoked"},
             )
 
         # ── 2. Circuit breaker ────────────────────────────────────────────────
         try:
             self._policy.pre_step(agent.agent_id)
-        except (CircuitOpenError, BudgetExceededError) as e:
+        except (CircuitOpenError, BudgetExceededError):
             return StepOutcome(
-                ok=False, data={}, agent_id=agent.agent_id, role=agent.role.value,
+                ok=False,
+                data={},
+                agent_id=agent.agent_id,
+                role=agent.role.value,
                 blocked_by="circuit_breaker",
             )
 
@@ -125,7 +136,10 @@ class GovernedStepExecutor:
         allowed, block_reason = self._guardian.evaluate_message(probe_msg)
         if not allowed:
             return StepOutcome(
-                ok=False, data={}, agent_id=agent.agent_id, role=agent.role.value,
+                ok=False,
+                data={},
+                agent_id=agent.agent_id,
+                role=agent.role.value,
                 blocked_by=f"guardian:{block_reason}",
             )
 
@@ -164,20 +178,29 @@ class GovernedStepExecutor:
         if adaptive["action"] == "abort":
             self._record_telemetry(agent, tokens, cost_usd, duration_ms, False)
             return StepOutcome(
-                ok=False, data=result, agent_id=agent.agent_id, role=agent.role.value,
+                ok=False,
+                data=result,
+                agent_id=agent.agent_id,
+                role=agent.role.value,
                 blocked_by=f"uncertainty_abort:{adaptive['reason']}",
                 uncertainty=uncertainty_score,
             )
         if adaptive["action"] == "escalate_human":
             paused = True
-            human_ctx = {"reason": adaptive["reason"], "agent": agent.agent_id, "score": uncertainty_score.composite}
+            human_ctx = {
+                "reason": adaptive["reason"],
+                "agent": agent.agent_id,
+                "score": uncertainty_score.composite,
+            }
             result["__pause_for_human__"] = True
             result["__human_context__"] = human_ctx
 
         # ── 8. Intent evaluation (DascGate) ───────────────────────────────────
+        # Evaluate for every step using the agent's role as the intent action.
+        # Explicit _intent_action from the result overrides the default.
         dasc_verdict = "commit"
-        intent_action = result.get("_intent_action")
-        if intent_action and self._policy.policy.deterministic_gate:
+        intent_action = result.get("_intent_action") or f"agent_step:{agent.role.value}"
+        if self._policy.policy.deterministic_gate:
             evidence = result.get("evidence", [])
             intent = Intent(
                 action=intent_action,
@@ -190,13 +213,14 @@ class GovernedStepExecutor:
                     for e in (evidence if isinstance(evidence, list) else [])
                 ),
             )
-            guardian_ok, _ = self._guardian.evaluate_intent(
-                intent, result.get("_tools_used", [])
-            )
+            guardian_ok, _ = self._guardian.evaluate_intent(intent, result.get("_tools_used", []))
             if not guardian_ok:
                 self._record_telemetry(agent, tokens, cost_usd, duration_ms, False)
                 return StepOutcome(
-                    ok=False, data=result, agent_id=agent.agent_id, role=agent.role.value,
+                    ok=False,
+                    data=result,
+                    agent_id=agent.agent_id,
+                    role=agent.role.value,
                     blocked_by=f"guardian_intent:{intent_action}",
                     uncertainty=uncertainty_score,
                 )
@@ -205,7 +229,10 @@ class GovernedStepExecutor:
             if verdict == ActionVerdict.REJECT:
                 self._record_telemetry(agent, tokens, cost_usd, duration_ms, False)
                 return StepOutcome(
-                    ok=False, data=result, agent_id=agent.agent_id, role=agent.role.value,
+                    ok=False,
+                    data=result,
+                    agent_id=agent.agent_id,
+                    role=agent.role.value,
                     blocked_by=f"dasc_reject:{intent_action}",
                     uncertainty=uncertainty_score,
                     dasc_verdict=dasc_verdict,

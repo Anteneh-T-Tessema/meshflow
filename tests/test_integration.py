@@ -12,6 +12,7 @@ The tests prove that:
   6. Mesh.run_workflow() is the right external entry point
   7. Streaming (Mesh.stream) emits events in order
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,9 +33,12 @@ from meshflow.core.schemas import HumanInLoopConfig, RiskTier
 
 # ── Shared fixtures ───────────────────────────────────────────────────────────
 
-def _node(node_id: str, kind: NodeKind, content: str, tokens: int = 50,
-          structured: dict | None = None) -> MeshNode:
+
+def _node(
+    node_id: str, kind: NodeKind, content: str, tokens: int = 50, structured: dict | None = None
+) -> MeshNode:
     """Build a deterministic test node."""
+
     async def runner(inp: NodeInput) -> NodeOutput:
         return NodeOutput(
             content=f"{content} | task={inp.task[:30]}",
@@ -42,12 +46,14 @@ def _node(node_id: str, kind: NodeKind, content: str, tokens: int = 50,
             tokens_used=tokens,
             confidence=0.85,
         )
+
     return MeshNode(id=node_id, kind=kind, risk_profile=RiskTier.READ_ONLY, _runner=runner)
 
 
 def _failing_node(node_id: str, kind: NodeKind = NodeKind.PYTHON) -> MeshNode:
     async def runner(inp: NodeInput) -> NodeOutput:
         raise RuntimeError("deliberate_failure")
+
     return MeshNode(id=node_id, kind=kind, _runner=runner)
 
 
@@ -56,6 +62,7 @@ def _make_ledger() -> ReplayLedger:
 
 
 # ── 1. Context propagation ────────────────────────────────────────────────────
+
 
 class TestContextPropagation:
     def test_structured_output_merges_into_context(self):
@@ -66,13 +73,12 @@ class TestContextPropagation:
             outputs.append(dict(inp.context))
             return NodeOutput(content="b_done", tokens_used=10)
 
-        node_a = _node("A", NodeKind.CREWAI, "a_out",
-                        structured={"market_size": "4.2B", "cagr": "64%"})
+        node_a = _node(
+            "A", NodeKind.CREWAI, "a_out", structured={"market_size": "4.2B", "cagr": "64%"}
+        )
         node_b = MeshNode(id="B", kind=NodeKind.LANGGRAPH, _runner=node_b_runner)
 
-        wf = (WorkflowDefinition("ctx_test")
-              .add_node(node_a).add_node(node_b)
-              .add_edge("A", "B"))
+        wf = WorkflowDefinition("ctx_test").add_node(node_a).add_node(node_b).add_edge("A", "B")
 
         runtime = StepRuntime(policy=Policy(), run_id="ctx-run")
         asyncio.run(wf.run("propagation test", runtime))
@@ -92,9 +98,12 @@ class TestContextPropagation:
         node_a = _node("producer", NodeKind.PYTHON, "hello world")
         node_b = MeshNode(id="consumer", kind=NodeKind.PYTHON, _runner=node_b_runner)
 
-        wf = (WorkflowDefinition("content_ctx")
-              .add_node(node_a).add_node(node_b)
-              .add_edge("producer", "consumer"))
+        wf = (
+            WorkflowDefinition("content_ctx")
+            .add_node(node_a)
+            .add_node(node_b)
+            .add_edge("producer", "consumer")
+        )
 
         runtime = StepRuntime(policy=Policy(), run_id="content-ctx")
         asyncio.run(wf.run("test", runtime))
@@ -125,15 +134,19 @@ class TestContextPropagation:
 
 # ── 2. All node kinds execute through StepRuntime ────────────────────────────
 
+
 class TestNodeKindExecution:
-    @pytest.mark.parametrize("kind", [
-        NodeKind.CREWAI,
-        NodeKind.LANGGRAPH,
-        NodeKind.AUTOGEN,
-        NodeKind.PYTHON,
-        NodeKind.NATIVE,
-        NodeKind.HTTP,
-    ])
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            NodeKind.CREWAI,
+            NodeKind.LANGGRAPH,
+            NodeKind.AUTOGEN,
+            NodeKind.PYTHON,
+            NodeKind.NATIVE,
+            NodeKind.HTTP,
+        ],
+    )
     def test_every_kind_executes(self, kind: NodeKind):
         node = _node(f"node_{kind.value}", kind, f"{kind.value}_output")
         runtime = StepRuntime(policy=Policy(), run_id=f"kind-{kind.value}")
@@ -168,6 +181,7 @@ class TestNodeKindExecution:
 
 # ── 3. Governance fires at the right points ────────────────────────────────────
 
+
 class TestGovernanceFiring:
     def test_guardian_blocks_injection_before_node_executes(self):
         ran: list[bool] = []
@@ -193,15 +207,18 @@ class TestGovernanceFiring:
         assert len(ran) == 0  # runner was never called
 
     def test_hitl_pause_stops_pipeline(self):
-        pol = Policy(human_in_loop=HumanInLoopConfig(
-            enabled=True, tier_threshold=RiskTier.READ_ONLY
-        ))
+        pol = Policy(
+            human_in_loop=HumanInLoopConfig(enabled=True, tier_threshold=RiskTier.READ_ONLY)
+        )
         node_a = _node("A", NodeKind.PYTHON, "a_out")
         node_b = _node("B", NodeKind.PYTHON, "b_out")
 
-        wf = (WorkflowDefinition("hitl_stop", policy=pol)
-              .add_node(node_a).add_node(node_b)
-              .add_edge("A", "B"))
+        wf = (
+            WorkflowDefinition("hitl_stop", policy=pol)
+            .add_node(node_a)
+            .add_node(node_b)
+            .add_edge("A", "B")
+        )
 
         runtime = StepRuntime(policy=pol, run_id="hitl-pause")
         result = asyncio.run(wf.run("task", runtime))
@@ -215,9 +232,14 @@ class TestGovernanceFiring:
         node_b = _failing_node("B")
         node_c = _node("C", NodeKind.PYTHON, "should not run")
 
-        wf = (WorkflowDefinition("fail_stop")
-              .add_node(node_a).add_node(node_b).add_node(node_c)
-              .add_edge("A", "B").add_edge("B", "C"))
+        wf = (
+            WorkflowDefinition("fail_stop")
+            .add_node(node_a)
+            .add_node(node_b)
+            .add_node(node_c)
+            .add_edge("A", "B")
+            .add_edge("B", "C")
+        )
 
         runtime = StepRuntime(policy=Policy(), run_id="fail-stop")
         result = asyncio.run(wf.run("task", runtime))
@@ -245,6 +267,7 @@ class TestGovernanceFiring:
 
 # ── 4. Ledger records all steps correctly ─────────────────────────────────────
 
+
 class TestLedgerRecords:
     def test_four_node_pipeline_writes_four_records(self):
         ledger = _make_ledger()
@@ -253,7 +276,7 @@ class TestLedgerRecords:
         for i, n in enumerate(nodes):
             wf.add_node(n)
             if i > 0:
-                wf.add_edge(f"n{i-1}", f"n{i}")
+                wf.add_edge(f"n{i - 1}", f"n{i}")
 
         runtime = StepRuntime(policy=Policy(), run_id="four-nodes", ledger=ledger)
         asyncio.run(wf.run("task", runtime))
@@ -302,12 +325,15 @@ class TestLedgerRecords:
 
 # ── 5. WorkflowResult correctness ─────────────────────────────────────────────
 
+
 class TestWorkflowResult:
     def test_completed_true_when_all_nodes_succeed(self):
-        wf = (WorkflowDefinition("success")
-              .add_node(_node("A", NodeKind.CREWAI, "a"))
-              .add_node(_node("B", NodeKind.LANGGRAPH, "b"))
-              .add_edge("A", "B"))
+        wf = (
+            WorkflowDefinition("success")
+            .add_node(_node("A", NodeKind.CREWAI, "a"))
+            .add_node(_node("B", NodeKind.LANGGRAPH, "b"))
+            .add_edge("A", "B")
+        )
         runtime = StepRuntime(policy=Policy(), run_id="wf-success")
         result = asyncio.run(wf.run("task", runtime))
         assert result.completed is True
@@ -315,20 +341,25 @@ class TestWorkflowResult:
         assert result.paused_nodes == []
 
     def test_output_is_last_successful_content(self):
-        wf = (WorkflowDefinition("last_out")
-              .add_node(_node("A", NodeKind.PYTHON, "first"))
-              .add_node(_node("B", NodeKind.PYTHON, "final_answer"))
-              .add_edge("A", "B"))
+        wf = (
+            WorkflowDefinition("last_out")
+            .add_node(_node("A", NodeKind.PYTHON, "first"))
+            .add_node(_node("B", NodeKind.PYTHON, "final_answer"))
+            .add_edge("A", "B")
+        )
         runtime = StepRuntime(policy=Policy(), run_id="wf-last")
         result = asyncio.run(wf.run("x", runtime))
         assert "final_answer" in result.output
 
     def test_total_tokens_aggregated(self):
-        wf = (WorkflowDefinition("tokens")
-              .add_node(_node("A", NodeKind.CREWAI, "x", tokens=200))
-              .add_node(_node("B", NodeKind.LANGGRAPH, "y", tokens=150))
-              .add_node(_node("C", NodeKind.PYTHON, "z", tokens=75))
-              .add_edge("A", "B").add_edge("B", "C"))
+        wf = (
+            WorkflowDefinition("tokens")
+            .add_node(_node("A", NodeKind.CREWAI, "x", tokens=200))
+            .add_node(_node("B", NodeKind.LANGGRAPH, "y", tokens=150))
+            .add_node(_node("C", NodeKind.PYTHON, "z", tokens=75))
+            .add_edge("A", "B")
+            .add_edge("B", "C")
+        )
         runtime = StepRuntime(policy=Policy(), run_id="wf-tokens")
         result = asyncio.run(wf.run("x", runtime))
         assert result.total_tokens == 425
@@ -340,11 +371,14 @@ class TestWorkflowResult:
         assert result.workflow_name == "my_named_pipeline"
 
     def test_step_count_matches_nodes_executed(self):
-        wf = (WorkflowDefinition("step_count")
-              .add_node(_node("A", NodeKind.PYTHON, "a"))
-              .add_node(_node("B", NodeKind.PYTHON, "b"))
-              .add_node(_node("C", NodeKind.PYTHON, "c"))
-              .add_edge("A", "B").add_edge("B", "C"))
+        wf = (
+            WorkflowDefinition("step_count")
+            .add_node(_node("A", NodeKind.PYTHON, "a"))
+            .add_node(_node("B", NodeKind.PYTHON, "b"))
+            .add_node(_node("C", NodeKind.PYTHON, "c"))
+            .add_edge("A", "B")
+            .add_edge("B", "C")
+        )
         runtime = StepRuntime(policy=Policy(), run_id="step-count")
         result = asyncio.run(wf.run("x", runtime))
         assert len(result.steps) == 3
@@ -352,9 +386,11 @@ class TestWorkflowResult:
 
 # ── 6. Mesh.run_workflow() entry point ────────────────────────────────────────
 
+
 class TestMeshRunWorkflow:
     def test_run_workflow_returns_workflow_result(self):
         from meshflow.core.workflow import WorkflowResult
+
         wf = WorkflowDefinition("mesh_wf").add_node(_node("n", NodeKind.PYTHON, "done"))
         result = asyncio.run(Mesh().run_workflow(wf, task="test task"))
         assert isinstance(result, WorkflowResult)
@@ -378,25 +414,26 @@ class TestMeshRunWorkflow:
             async def runner(inp: NodeInput) -> NodeOutput:
                 seen_kinds.append(kind)
                 return NodeOutput(content=f"{kind}_done", tokens_used=50)
+
             return runner
 
         async def build_and_run():
             nodes = [
-                MeshNode(id="crew",  kind=NodeKind.CREWAI,
-                         _runner=await recorder("crewai")),
-                MeshNode(id="graph", kind=NodeKind.LANGGRAPH,
-                         _runner=await recorder("langgraph")),
-                MeshNode(id="human", kind=NodeKind.HUMAN,
-                         _runner=await recorder("human")),
-                MeshNode(id="pyth",  kind=NodeKind.PYTHON,
-                         _runner=await recorder("python")),
+                MeshNode(id="crew", kind=NodeKind.CREWAI, _runner=await recorder("crewai")),
+                MeshNode(id="graph", kind=NodeKind.LANGGRAPH, _runner=await recorder("langgraph")),
+                MeshNode(id="human", kind=NodeKind.HUMAN, _runner=await recorder("human")),
+                MeshNode(id="pyth", kind=NodeKind.PYTHON, _runner=await recorder("python")),
             ]
-            wf = (WorkflowDefinition("four_kinds")
-                  .add_node(nodes[0]).add_node(nodes[1])
-                  .add_node(nodes[2]).add_node(nodes[3])
-                  .add_edge("crew", "graph")
-                  .add_edge("graph", "human")
-                  .add_edge("human", "pyth"))
+            wf = (
+                WorkflowDefinition("four_kinds")
+                .add_node(nodes[0])
+                .add_node(nodes[1])
+                .add_node(nodes[2])
+                .add_node(nodes[3])
+                .add_edge("crew", "graph")
+                .add_edge("graph", "human")
+                .add_edge("human", "pyth")
+            )
             return await Mesh().run_workflow(wf, task="cross-framework test")
 
         result = asyncio.run(build_and_run())
@@ -405,6 +442,7 @@ class TestMeshRunWorkflow:
 
 
 # ── 7. Streaming API ──────────────────────────────────────────────────────────
+
 
 class TestStreamingAPI:
     def test_stream_emits_step_complete_events(self):
@@ -440,11 +478,12 @@ class TestStreamingAPI:
 
         events = asyncio.run(collect())
         run_ids = {e.run_id for e in events}
-        assert len(run_ids) == 1          # all events share the same run_id
+        assert len(run_ids) == 1  # all events share the same run_id
         assert list(run_ids)[0] != ""
 
 
 # ── 8. Full cross-framework demo pipeline (the thesis proof) ──────────────────
+
 
 class TestCrossFrameworkPipeline:
     def test_crewai_to_langgraph_to_human_to_python(self):
@@ -465,25 +504,27 @@ class TestCrossFrameworkPipeline:
                     structured={**extra_structured, f"{label}_done": True},
                     tokens_used=100,
                 )
+
             return runner
 
         async def build_and_run():
-            crew_runner = await make_runner("crewai",    {"research_data": "42"})
-            graph_runner= await make_runner("langgraph", {"validated": True})
-            human_fn    = lambda task: "approved"   # noqa: E731
-            py_runner   = await make_runner("python",    {"summary_done": True})
+            crew_runner = await make_runner("crewai", {"research_data": "42"})
+            graph_runner = await make_runner("langgraph", {"validated": True})
+            human_fn = lambda task: "approved"  # noqa: E731
+            py_runner = await make_runner("python", {"summary_done": True})
 
-            crew_node   = MeshNode(id="crew",  kind=NodeKind.CREWAI,    _runner=crew_runner)
-            graph_node  = MeshNode(id="graph", kind=NodeKind.LANGGRAPH, _runner=graph_runner)
-            human_node  = MeshNode.human_approval("human", prompt_fn=human_fn)
-            python_node = MeshNode(id="pyth",  kind=NodeKind.PYTHON,    _runner=py_runner)
+            crew_node = MeshNode(id="crew", kind=NodeKind.CREWAI, _runner=crew_runner)
+            graph_node = MeshNode(id="graph", kind=NodeKind.LANGGRAPH, _runner=graph_runner)
+            human_node = MeshNode.human_approval("human", prompt_fn=human_fn)
+            python_node = MeshNode(id="pyth", kind=NodeKind.PYTHON, _runner=py_runner)
 
             wf = (
-                WorkflowDefinition("thesis_proof",
-                                   policy=Policy(budget_usd=5.0))
-                .add_node(crew_node).add_node(graph_node)
-                .add_node(human_node).add_node(python_node)
-                .add_edge("crew",  "graph")
+                WorkflowDefinition("thesis_proof", policy=Policy(budget_usd=5.0))
+                .add_node(crew_node)
+                .add_node(graph_node)
+                .add_node(human_node)
+                .add_node(python_node)
+                .add_edge("crew", "graph")
                 .add_edge("graph", "human")
                 .add_edge("human", "pyth")
             )
@@ -508,25 +549,34 @@ class TestCrossFrameworkPipeline:
 
 # ── Fan-out / fan-in parallel execution ──────────────────────────────────────
 
+
 class TestFanOutFanIn:
     """Prove that independent nodes in the same topological level run concurrently."""
 
     def _make_runtime(self) -> StepRuntime:
         from meshflow.core.ledger import ReplayLedger as RL
-        pol = Policy(budget_usd=10.0, max_steps=50, enable_guardian=False,
-                     enable_uncertainty=False, enable_collusion_audit=False)
+
+        pol = Policy(
+            budget_usd=10.0,
+            max_steps=50,
+            enable_guardian=False,
+            enable_uncertainty=False,
+            enable_collusion_audit=False,
+        )
         ledger = RL(":memory:")
         return StepRuntime(policy=pol, run_id="test-fanout", ledger=ledger)
 
-    def _make_node(self, nid: str, structured: dict | None = None,
-                   extra_log: list | None = None) -> MeshNode:
+    def _make_node(
+        self, nid: str, structured: dict | None = None, extra_log: list | None = None
+    ) -> MeshNode:
         """Node whose runner takes NodeInput directly (no from_callable wrapping)."""
         log = extra_log
+
         async def runner(inp: NodeInput) -> NodeOutput:
             if log is not None:
                 log.append(nid)
-            return NodeOutput(content=f"{nid}-result", tokens_used=10,
-                              structured=structured or {})
+            return NodeOutput(content=f"{nid}-result", tokens_used=10, structured=structured or {})
+
         return MeshNode(id=nid, kind=NodeKind.PYTHON, _runner=runner)
 
     def test_diamond_runs_all_four_nodes(self):
@@ -549,7 +599,7 @@ class TestFanOutFanIn:
 
         assert result.completed is True
         assert len(result.steps) == 4
-        assert execution_log[0] == "A"   # A is always first
+        assert execution_log[0] == "A"  # A is always first
         assert execution_log[-1] == "D"  # D is always last
         assert set(execution_log[1:3]) == {"B", "C"}  # B and C in between
 
@@ -626,7 +676,7 @@ class TestFanOutFanIn:
         result = asyncio.run(wf.run("fan task", self._make_runtime()))
 
         assert result.completed is True
-        assert len(result.steps) == 6          # root + 5 branches
+        assert len(result.steps) == 6  # root + 5 branches
         assert set(ran) == {f"b{i}" for i in range(5)}
 
     def test_blocked_branch_stops_downstream(self):
@@ -652,12 +702,17 @@ class TestFanOutFanIn:
             return NodeOutput(content="downstream", tokens_used=5)
 
         guardian = Guardian()
-        pol = Policy(budget_usd=10.0, max_steps=50, enable_guardian=True,
-                     enable_uncertainty=False, enable_collusion_audit=False)
+        pol = Policy(
+            budget_usd=10.0,
+            max_steps=50,
+            enable_guardian=True,
+            enable_uncertainty=False,
+            enable_collusion_audit=False,
+        )
         from meshflow.core.ledger import ReplayLedger as RL
+
         ledger = RL(":memory:")
-        runtime = StepRuntime(policy=pol, run_id="block-test", ledger=ledger,
-                              guardian=guardian)
+        runtime = StepRuntime(policy=pol, run_id="block-test", ledger=ledger, guardian=guardian)
 
         wf = (
             WorkflowDefinition("block-test")
@@ -688,13 +743,16 @@ class TestFanOutFanIn:
             .add_node(self._make_node("D", extra_log=ran))
             .add_node(self._make_node("E", extra_log=ran))
             .add_node(self._make_node("F", extra_log=ran))
-            .add_edge("A", "B").add_edge("A", "C")
-            .add_edge("B", "D").add_edge("C", "E")
-            .add_edge("D", "F").add_edge("E", "F")
+            .add_edge("A", "B")
+            .add_edge("A", "C")
+            .add_edge("B", "D")
+            .add_edge("C", "E")
+            .add_edge("D", "F")
+            .add_edge("E", "F")
         )
 
         levels = wf._topological_levels()
-        assert len(levels) == 4   # [A], [B,C], [D,E], [F]
+        assert len(levels) == 4  # [A], [B,C], [D,E], [F]
 
         result = asyncio.run(wf.run("three levels", self._make_runtime()))
 
@@ -708,26 +766,35 @@ class TestFanOutFanIn:
 
 # ── Conditional edge routing ──────────────────────────────────────────────────
 
+
 class TestConditionalEdgeRouting:
     """Prove that edge conditions gate which nodes run at runtime."""
 
     def _runtime(self, run_id: str = "cond-test") -> StepRuntime:
         from meshflow.core.ledger import ReplayLedger as RL
-        pol = Policy(budget_usd=10.0, max_steps=50, enable_guardian=False,
-                     enable_uncertainty=False, enable_collusion_audit=False)
+
+        pol = Policy(
+            budget_usd=10.0,
+            max_steps=50,
+            enable_guardian=False,
+            enable_uncertainty=False,
+            enable_collusion_audit=False,
+        )
         return StepRuntime(policy=pol, run_id=run_id, ledger=RL(":memory:"))
 
     def _conf_node(self, nid: str, confidence: float) -> MeshNode:
         """Node that emits a fixed confidence score."""
+
         async def runner(inp: NodeInput) -> NodeOutput:
-            return NodeOutput(content=f"{nid}-out", tokens_used=5,
-                              confidence=confidence)
+            return NodeOutput(content=f"{nid}-out", tokens_used=5, confidence=confidence)
+
         return MeshNode(id=nid, kind=NodeKind.PYTHON, _runner=runner)
 
     def _echo_node(self, nid: str, ran: list) -> MeshNode:
         async def runner(inp: NodeInput) -> NodeOutput:
             ran.append(nid)
             return NodeOutput(content=f"{nid}-out", tokens_used=5)
+
         return MeshNode(id=nid, kind=NodeKind.PYTHON, _runner=runner)
 
     def test_high_confidence_takes_fast_path(self):
@@ -739,7 +806,7 @@ class TestConditionalEdgeRouting:
             .add_node(self._conf_node("validator", confidence=0.9))
             .add_node(self._echo_node("approval", ran))
             .add_node(self._echo_node("publisher", ran))
-            .add_edge("validator", "approval",  condition="confidence < 0.8")
+            .add_edge("validator", "approval", condition="confidence < 0.8")
             .add_edge("validator", "publisher", condition="confidence >= 0.8")
         )
 
@@ -759,7 +826,7 @@ class TestConditionalEdgeRouting:
             .add_node(self._conf_node("validator", confidence=0.5))
             .add_node(self._echo_node("approval", ran))
             .add_node(self._echo_node("publisher", ran))
-            .add_edge("validator", "approval",  condition="confidence < 0.8")
+            .add_edge("validator", "approval", condition="confidence < 0.8")
             .add_edge("validator", "publisher", condition="confidence >= 0.8")
         )
 
@@ -778,7 +845,7 @@ class TestConditionalEdgeRouting:
             WorkflowDefinition("unconditional")
             .add_node(self._echo_node("A", ran))
             .add_node(self._echo_node("B", ran))
-            .add_edge("A", "B")   # no condition
+            .add_edge("A", "B")  # no condition
         )
 
         result = asyncio.run(wf.run("test", self._runtime()))
@@ -792,8 +859,7 @@ class TestConditionalEdgeRouting:
         ran: list[str] = []
 
         async def scorer(inp: NodeInput) -> NodeOutput:
-            return NodeOutput(content="scored", tokens_used=5,
-                              structured={"risk_score": 0.9})
+            return NodeOutput(content="scored", tokens_used=5, structured={"risk_score": 0.9})
 
         wf = (
             WorkflowDefinition("structured-cond")
@@ -815,8 +881,7 @@ class TestConditionalEdgeRouting:
         ran: list[str] = []
 
         async def setter(inp: NodeInput) -> NodeOutput:
-            return NodeOutput(content="set", tokens_used=5,
-                              structured={"approved": True})
+            return NodeOutput(content="set", tokens_used=5, structured={"approved": True})
 
         wf = (
             WorkflowDefinition("ctx-cond")
@@ -824,10 +889,10 @@ class TestConditionalEdgeRouting:
             .add_node(self._echo_node("yes_branch", ran))
             .add_node(self._echo_node("no_branch", ran))
             .add_edge("setter", "yes_branch", condition="approved == True")
-            .add_edge("setter", "no_branch",  condition="approved == False")
+            .add_edge("setter", "no_branch", condition="approved == False")
         )
 
-        result = asyncio.run(wf.run("test", self._runtime()))
+        asyncio.run(wf.run("test", self._runtime()))
 
         assert "yes_branch" in ran
         assert "no_branch" not in ran
@@ -863,8 +928,8 @@ class TestConditionalEdgeRouting:
             .add_node(self._echo_node("mid", ran))
             .add_node(self._echo_node("low", ran))
             .add_edge("clf", "high", condition="confidence >= 0.8")
-            .add_edge("clf", "mid",  condition="0.5 <= confidence < 0.8")
-            .add_edge("clf", "low",  condition="confidence < 0.5")
+            .add_edge("clf", "mid", condition="0.5 <= confidence < 0.8")
+            .add_edge("clf", "low", condition="confidence < 0.5")
         )
 
         result = asyncio.run(wf.run("test", self._runtime()))
@@ -879,8 +944,8 @@ class TestConditionalEdgeRouting:
         wf = (
             WorkflowDefinition("propagate-skip")
             .add_node(self._conf_node("A", confidence=0.9))
-            .add_node(self._echo_node("B", ran))   # only reachable when confidence < 0.5
-            .add_node(self._echo_node("C", ran))   # only reachable from B
+            .add_node(self._echo_node("B", ran))  # only reachable when confidence < 0.5
+            .add_node(self._echo_node("C", ran))  # only reachable from B
             .add_edge("A", "B", condition="confidence < 0.5")
             .add_edge("B", "C")
         )
@@ -890,4 +955,4 @@ class TestConditionalEdgeRouting:
         assert ran == []
         assert "B" in result.skipped_nodes
         assert "C" in result.skipped_nodes
-        assert result.completed is True   # no blocked nodes — just routing
+        assert result.completed is True  # no blocked nodes — just routing

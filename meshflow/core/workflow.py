@@ -79,21 +79,25 @@ Linear (sequential) example::
 The YAML is the artifact you commit to git. It is reproducible and inspectable
 without running any code.
 """
+
 from __future__ import annotations
 
 import asyncio
 import datetime
 import time
 import uuid
-from collections import deque
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from meshflow.core.events import EventKind, WorkflowEvent, WorkflowEventBus, global_event_bus
 from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
 from meshflow.core.runtime import RuntimeOutcome, StepRecord, StepRuntime
-from meshflow.core.schemas import HumanInLoopConfig, Policy, RiskTier
+from meshflow.core.schemas import HumanInLoopConfig, Policy, RiskTier, policy_for_mode
+
+if TYPE_CHECKING:
+    from meshflow.core.ledger import ReplayLedger
 
 
 @dataclass
@@ -113,11 +117,26 @@ class HumanDecision:
     decided_by: str = "human"
 
 
+class MaxIterationsError(Exception):
+    """Raised when a loop edge exceeds its ``max_iterations`` limit."""
+
+
 @dataclass
 class WorkflowEdge:
     from_node: str
     to_node: str
-    condition: str = ""     # Python expression; empty = always fire
+    condition: str = ""  # Python expression; empty = always fire
+
+
+@dataclass
+class _LoopEdge:
+    """A back-edge that creates a cycle — excluded from topological sort."""
+
+    src: str
+    dst: str
+    condition: str = ""  # Python expression; empty = always loop
+    max_iterations: int = 10
+    _count: int = 0
 
 
 @dataclass
@@ -157,6 +176,7 @@ class WorkflowDefinition:
         self.policy = policy or Policy()
         self._nodes: dict[str, MeshNode] = {}
         self._edges: list[WorkflowEdge] = []
+        self._loop_edges: list[_LoopEdge] = []
         self._entry: str = ""
         self._terminal: list[str] = []
 
@@ -168,9 +188,7 @@ class WorkflowDefinition:
             self._entry = node.id
         return self
 
-    def add_edge(
-        self, from_node: str, to_node: str, condition: str = ""
-    ) -> "WorkflowDefinition":
+    def add_edge(self, from_node: str, to_node: str, condition: str = "") -> "WorkflowDefinition":
         self._edges.append(WorkflowEdge(from_node, to_node, condition))
         return self
 
@@ -180,6 +198,33 @@ class WorkflowDefinition:
 
     def set_terminal(self, *node_ids: str) -> "WorkflowDefinition":
         self._terminal = list(node_ids)
+        return self
+
+    def add_loop_edge(
+        self,
+        src: str,
+        dst: str,
+        condition: str = "",
+        max_iterations: int = 10,
+    ) -> "WorkflowDefinition":
+        """Add a back-edge that creates a cycle between src and dst.
+
+        After ``src`` completes, if ``condition`` evaluates True (or is empty),
+        ``dst`` is re-queued for execution up to ``max_iterations`` times.
+        The loop terminates when the condition is False or the limit is reached.
+
+        Example — generate → critique → refine loop::
+
+            wf.add_node(generator).add_node(critic)
+            wf.add_edge("generator", "critic")
+            wf.add_loop_edge("critic", "generator",
+                             condition="confidence < 0.9",
+                             max_iterations=5)
+            wf.set_terminal("critic")
+        """
+        self._loop_edges.append(
+            _LoopEdge(src=src, dst=dst, condition=condition, max_iterations=max_iterations)
+        )
         return self
 
     # ── Graph helpers ─────────────────────────────────────────────────────────
@@ -217,14 +262,22 @@ class WorkflowDefinition:
         node_out = prior.output if prior else None
         namespace: dict[str, Any] = {
             **{k: v for k, v in ctx.items() if not k.startswith("_")},
-            "output":     node_out,
-            "content":    node_out.content    if node_out else "",
+            "output": node_out,
+            "content": node_out.content if node_out else "",
             "confidence": node_out.confidence if node_out else 0.0,
             "structured": node_out.structured if node_out else {},
             "__builtins__": {
-                "True": True, "False": False, "None": None,
-                "bool": bool, "int": int, "float": float, "str": str,
-                "len": len, "abs": abs, "min": min, "max": max,
+                "True": True,
+                "False": False,
+                "None": None,
+                "bool": bool,
+                "int": int,
+                "float": float,
+                "str": str,
+                "len": len,
+                "abs": abs,
+                "min": min,
+                "max": max,
             },
         }
         try:
@@ -264,7 +317,7 @@ class WorkflowDefinition:
             any_fires = any(
                 self._condition_fires(e, ctx, step_outcomes)
                 for e in self._edges_to(node_id)
-                if e.from_node in completed   # skipped predecessors don't route forward
+                if e.from_node in completed  # skipped predecessors don't route forward
             )
             if any_fires:
                 ready.append(node_id)
@@ -311,6 +364,7 @@ class WorkflowDefinition:
         task: str,
         runtime: StepRuntime,
         context: dict[str, Any] | None = None,
+        event_bus: WorkflowEventBus | None = None,
     ) -> WorkflowResult:
         """Execute the workflow with full StepRuntime governance on every node.
 
@@ -318,11 +372,21 @@ class WorkflowDefinition:
         runtime. Nodes with no dependency between them run concurrently via
         asyncio.gather(). All governance (guardian, budget, HITL, ledger)
         fires per node regardless of parallelism or routing.
+
+        ``event_bus`` receives structured WorkflowEvents for every state
+        transition. Defaults to the process-wide ``global_event_bus``.
         """
+        bus = event_bus if event_bus is not None else global_event_bus
         run_id = runtime._run_id
         start = time.monotonic()
         ctx = dict(context or {})
         ctx["task"] = task
+
+        await bus.emit(WorkflowEvent(
+            kind=EventKind.WORKFLOW_START,
+            run_id=run_id,
+            data={"workflow": self.name, "task": task[:200]},
+        ))
 
         steps: list[RuntimeOutcome] = []
         blocked_nodes: list[str] = []
@@ -338,6 +402,15 @@ class WorkflowDefinition:
             level_nodes = [self._nodes[nid] for nid in ready if nid in self._nodes]
             if not level_nodes:
                 break
+
+            # Emit step_start for all nodes in this level
+            for nd in level_nodes:
+                await bus.emit(WorkflowEvent(
+                    kind=EventKind.STEP_START,
+                    run_id=run_id,
+                    node_id=nd.id,
+                    data={"kind": nd.kind.value},
+                ))
 
             # Snapshot context: all parallel nodes see the same input state.
             # Each gets its own copy so runtime can write back internal keys
@@ -360,6 +433,21 @@ class WorkflowDefinition:
                 steps.append(outcome)
                 if outcome.paused_for_human:
                     paused_nodes.append(node_id)
+                    await bus.emit(WorkflowEvent(
+                        kind=EventKind.STEP_PAUSED,
+                        run_id=run_id,
+                        node_id=node_id,
+                        data={
+                            "human_context": outcome.human_context or {},
+                            "uncertainty": outcome.record.uncertainty,
+                        },
+                    ))
+                    await bus.emit(WorkflowEvent(
+                        kind=EventKind.HITL_REQUIRED,
+                        run_id=run_id,
+                        node_id=node_id,
+                        data={"human_context": outcome.human_context or {}},
+                    ))
                     # Persist durable checkpoint so the workflow survives restarts
                     if hasattr(runtime, "_ledger") and runtime._ledger is not None:
                         await _save_checkpoint(
@@ -373,32 +461,86 @@ class WorkflowDefinition:
                             skipped=skipped_nodes[:],
                             step_outcomes=step_outcomes,
                         )
+                        await bus.emit(WorkflowEvent(
+                            kind=EventKind.CHECKPOINT_SAVED,
+                            run_id=run_id,
+                            node_id=node_id,
+                            data={"paused_at": node_id},
+                        ))
                 elif not outcome.ok:
                     blocked_nodes.append(node_id)
+                    await bus.emit(WorkflowEvent(
+                        kind=EventKind.STEP_BLOCKED,
+                        run_id=run_id,
+                        node_id=node_id,
+                        data={
+                            "blocked_by": outcome.blocked_by,
+                            "uncertainty": outcome.record.uncertainty,
+                        },
+                    ))
                 else:
                     completed.add(node_id)
+                    await bus.emit(WorkflowEvent(
+                        kind=EventKind.STEP_COMPLETE,
+                        run_id=run_id,
+                        node_id=node_id,
+                        data={
+                            "tokens": outcome.record.tokens_used,
+                            "cost_usd": outcome.record.cost_usd,
+                            "uncertainty": outcome.record.uncertainty,
+                            "content_preview": outcome.output.content[:120],
+                        },
+                    ))
                     if outcome.output.content:
                         ctx[f"{node_id}_output"] = outcome.output.content
                     if outcome.output.structured:
                         ctx.update(
-                            {k: v for k, v in outcome.output.structured.items()
-                             if not k.startswith("_")}
+                            {
+                                k: v
+                                for k, v in outcome.output.structured.items()
+                                if not k.startswith("_")
+                            }
                         )
 
             if blocked_nodes or paused_nodes:
                 break
 
+            # Check loop edges: if a completed src triggers a loop back to dst,
+            # remove dst from completed so it re-enters the ready queue.
+            for le in self._loop_edges:
+                if le.src in ready and le.src in completed:
+                    src_outcome = step_outcomes.get(le.src)
+                    fires = (
+                        self._condition_fires(
+                            WorkflowEdge(le.src, le.dst, le.condition),
+                            ctx,
+                            step_outcomes,
+                        )
+                        if le.condition
+                        else src_outcome is not None and src_outcome.ok
+                    )
+                    if fires:
+                        if le._count >= le.max_iterations:
+                            raise MaxIterationsError(
+                                f"Loop {le.src}→{le.dst} exceeded {le.max_iterations} iterations"
+                            )
+                        le._count += 1
+                        completed.discard(le.dst)
+
             # Propagate skips transitively until stable: if B is skipped, C
             # (which depends only on B) also becomes skipped without running.
-            ready, newly_skipped = self._compute_ready(
-                completed, skipped, ctx, step_outcomes
-            )
+            ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
             while newly_skipped:
+                for skipped_id in newly_skipped:
+                    await bus.emit(WorkflowEvent(
+                        kind=EventKind.STEP_SKIPPED,
+                        run_id=run_id,
+                        node_id=skipped_id,
+                        data={},
+                    ))
                 skipped.update(newly_skipped)
                 skipped_nodes.extend(newly_skipped)
-                ready, newly_skipped = self._compute_ready(
-                    completed, skipped, ctx, step_outcomes
-                )
+                ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
 
         final_output = ""
         for outcome in reversed(steps):
@@ -409,6 +551,25 @@ class WorkflowDefinition:
         total_cost = sum(s.record.cost_usd for s in steps)
         total_tokens = sum(s.record.tokens_used for s in steps)
         total_carbon = sum(s.record.carbon_gco2 for s in steps)
+        duration = round(time.monotonic() - start, 2)
+
+        terminal_kind = (
+            EventKind.WORKFLOW_FAILED
+            if (blocked_nodes and not paused_nodes)
+            else EventKind.WORKFLOW_COMPLETE
+        )
+        await bus.emit(WorkflowEvent(
+            kind=terminal_kind,
+            run_id=run_id,
+            data={
+                "completed": not blocked_nodes and not paused_nodes,
+                "total_cost_usd": round(total_cost, 6),
+                "total_tokens": total_tokens,
+                "duration_s": duration,
+                "blocked_nodes": blocked_nodes,
+                "paused_nodes": paused_nodes,
+            },
+        ))
 
         ledger_db = getattr(runtime._ledger, "_db_path", ":memory:")
 
@@ -421,7 +582,7 @@ class WorkflowDefinition:
             total_cost_usd=round(total_cost, 6),
             total_tokens=total_tokens,
             total_carbon_gco2=round(total_carbon, 4),
-            duration_s=round(time.monotonic() - start, 2),
+            duration_s=duration,
             blocked_nodes=blocked_nodes,
             paused_nodes=paused_nodes,
             skipped_nodes=skipped_nodes,
@@ -461,7 +622,6 @@ class WorkflowDefinition:
             )
             assert result.completed is True
         """
-        from meshflow.core.ledger import ReplayLedger  # avoid circular import
 
         checkpoint = await ledger.load_checkpoint_data(run_id)
         if checkpoint is None:
@@ -585,8 +745,11 @@ class WorkflowDefinition:
                         ctx[f"{node_id}_output"] = outcome.output.content
                     if outcome.output.structured:
                         ctx.update(
-                            {k: v for k, v in outcome.output.structured.items()
-                             if not k.startswith("_")}
+                            {
+                                k: v
+                                for k, v in outcome.output.structured.items()
+                                if not k.startswith("_")
+                            }
                         )
 
             if blocked_nodes or paused_nodes:
@@ -651,11 +814,17 @@ class WorkflowDefinition:
 
         # Policy
         pol_cfg = data.get("policy", {})
+        mode = pol_cfg.get("mode", "standard")
         hitl_tier_str = pol_cfg.get("human_approval_tier", "irreversible").upper()
-        hitl_tier = RiskTier[hitl_tier_str] if hitl_tier_str in RiskTier.__members__ else RiskTier.IRREVERSIBLE
+        hitl_tier = (
+            RiskTier[hitl_tier_str]
+            if hitl_tier_str in RiskTier.__members__
+            else RiskTier.IRREVERSIBLE
+        )
         hitl_enabled = hitl_tier_str != "NONE"
 
-        pol = Policy(
+        pol = policy_for_mode(
+            mode,
             budget_usd=pol_cfg.get("budget_usd", 1.0),
             budget_tokens=pol_cfg.get("budget_tokens", 500_000),
             timeout_s=pol_cfg.get("timeout_s", 300.0),
@@ -697,13 +866,25 @@ class WorkflowDefinition:
                     node = MeshNode(id=node_id, kind=kind, risk_profile=risk)
             elif kind == NodeKind.CREWAI:
                 crew = (node_registry or {}).get(ref)
-                node = MeshNode.from_crewai(node_id, crew) if crew else MeshNode(id=node_id, kind=kind, risk_profile=risk)
+                node = (
+                    MeshNode.from_crewai(node_id, crew)
+                    if crew
+                    else MeshNode(id=node_id, kind=kind, risk_profile=risk)
+                )
             elif kind == NodeKind.LANGGRAPH:
                 graph = (node_registry or {}).get(ref)
-                node = MeshNode.from_langgraph(node_id, graph) if graph else MeshNode(id=node_id, kind=kind, risk_profile=risk)
+                node = (
+                    MeshNode.from_langgraph(node_id, graph)
+                    if graph
+                    else MeshNode(id=node_id, kind=kind, risk_profile=risk)
+                )
             elif kind == NodeKind.AUTOGEN:
                 agent = (node_registry or {}).get(ref)
-                node = MeshNode.from_autogen(node_id, agent) if agent else MeshNode(id=node_id, kind=kind, risk_profile=risk)
+                node = (
+                    MeshNode.from_autogen(node_id, agent)
+                    if agent
+                    else MeshNode(id=node_id, kind=kind, risk_profile=risk)
+                )
             elif kind == NodeKind.HTTP:
                 url = node_cfg.get("url", "")
                 node = MeshNode.from_http(node_id, url, risk=risk)
@@ -749,8 +930,11 @@ class WorkflowDefinition:
                 for n in self._nodes.values()
             ],
             "edges": [
-                {"from": e.from_node, "to": e.to_node,
-                 **({"condition": e.condition} if e.condition else {})}
+                {
+                    "from": e.from_node,
+                    "to": e.to_node,
+                    **({"condition": e.condition} if e.condition else {}),
+                }
                 for e in self._edges
             ],
             "entry": self._entry,
@@ -764,6 +948,7 @@ class WorkflowDefinition:
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
 
 async def _save_checkpoint(
     ledger: Any,
@@ -787,17 +972,21 @@ async def _save_checkpoint(
         for nid, o in step_outcomes.items()
         if o.ok
     }
-    await ledger.save_checkpoint(run_id, {
-        "run_id": run_id,
-        "workflow_name": workflow_name,
-        "task": task,
-        "paused_at_node": paused_at_node,
-        "context": context,
-        "completed_nodes": list(completed),
-        "skipped_nodes": skipped,
-        "node_outputs": node_outputs,
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    })
+    await ledger.save_checkpoint(
+        run_id,
+        {
+            "run_id": run_id,
+            "workflow_name": workflow_name,
+            "task": task,
+            "workflow_yaml": context.get("workflow_yaml", ""),
+            "paused_at_node": paused_at_node,
+            "context": context,
+            "completed_nodes": list(completed),
+            "skipped_nodes": skipped,
+            "node_outputs": node_outputs,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        },
+    )
 
 
 def _rebuild_step_outcomes(
@@ -844,12 +1033,14 @@ def _rebuild_step_outcomes(
     return outcomes
 
 
-def _build_native_node(
-    node_id: str, node_cfg: dict[str, Any], pol: Policy
-) -> MeshNode:
+def _build_native_node(node_id: str, node_cfg: dict[str, Any], pol: Policy) -> MeshNode:
     """Construct a MeshFlow native agent node from YAML config."""
     from meshflow.agents.base import (
-        AgentConfig, CriticAgent, ExecutorAgent, PlannerAgent, ResearcherAgent,
+        AgentConfig,
+        CriticAgent,
+        ExecutorAgent,
+        PlannerAgent,
+        ResearcherAgent,
     )
     from meshflow.core.schemas import AgentRole
 
@@ -857,10 +1048,10 @@ def _build_native_node(
     model = node_cfg.get("model", pol.model_tier_map.get(AgentRole(role_str), "claude-sonnet-4-6"))
 
     role_map = {
-        "planner":    (PlannerAgent,    AgentRole.PLANNER),
+        "planner": (PlannerAgent, AgentRole.PLANNER),
         "researcher": (ResearcherAgent, AgentRole.RESEARCHER),
-        "executor":   (ExecutorAgent,   AgentRole.EXECUTOR),
-        "critic":     (CriticAgent,     AgentRole.CRITIC),
+        "executor": (ExecutorAgent, AgentRole.EXECUTOR),
+        "critic": (CriticAgent, AgentRole.CRITIC),
     }
     AgentCls, role = role_map.get(role_str, (ExecutorAgent, AgentRole.EXECUTOR))
     cfg = AgentConfig(role=role, model=model)

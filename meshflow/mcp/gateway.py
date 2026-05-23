@@ -7,12 +7,11 @@ with prompt injection payloads and credential harvesters. Every call is:
   - Budget-capped (per-turn cost ceiling)
   - Traced with full OTEL spans
 """
+
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
@@ -22,13 +21,14 @@ from meshflow.core.schemas import MCPToolCall
 @dataclass
 class ToolManifest:
     """Signed description of an MCP tool's expected behaviour."""
+
     tool_name: str
     server_uri: str
     description: str
-    max_cost_usd: float = 0.10         # per-call ceiling
+    max_cost_usd: float = 0.10  # per-call ceiling
     max_calls_per_minute: int = 10
     allowed_agent_roles: list[str] = field(default_factory=list)
-    signature: str = ""               # manifest signing key (simplified)
+    signature: str = ""  # manifest signing key (simplified)
     trusted: bool = False
 
     def validate_signature(self) -> bool:

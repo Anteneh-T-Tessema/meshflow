@@ -15,26 +15,27 @@ Node kinds:
   http      — External HTTP service (JSON in / JSON out)
   python    — Any Python callable (sync or async)
 """
+
 from __future__ import annotations
 
 import asyncio
 import inspect
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
 from meshflow.core.schemas import RiskTier
 
 
 class NodeKind(str, Enum):
-    NATIVE    = "native"
+    NATIVE = "native"
     LANGGRAPH = "langgraph"
-    CREWAI    = "crewai"
-    AUTOGEN   = "autogen"
-    MCP       = "mcp"
-    HUMAN     = "human"
-    HTTP      = "http"
-    PYTHON    = "python"
+    CREWAI = "crewai"
+    AUTOGEN = "autogen"
+    MCP = "mcp"
+    HUMAN = "human"
+    HTTP = "http"
+    PYTHON = "python"
 
 
 @dataclass
@@ -69,9 +70,7 @@ class MeshNode:
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
-    _runner: Callable[[NodeInput], Awaitable[NodeOutput]] | None = field(
-        default=None, repr=False
-    )
+    _runner: Callable[[NodeInput], Awaitable[NodeOutput]] | None = field(default=None, repr=False)
 
     async def run(self, node_input: NodeInput) -> NodeOutput:
         if self._runner is None:
@@ -113,7 +112,7 @@ class MeshNode:
     def from_callable(
         cls,
         node_id: str,
-        fn: Callable,
+        fn: Callable[..., Any],
         risk: RiskTier = RiskTier.READ_ONLY,
         capabilities: list[str] | None = None,
     ) -> "MeshNode":
@@ -130,9 +129,7 @@ class MeshNode:
             if isinstance(result, str):
                 return NodeOutput(content=result)
             if isinstance(result, dict):
-                return NodeOutput(
-                    content=result.get("output", str(result)), structured=result
-                )
+                return NodeOutput(content=result.get("output", str(result)), structured=result)
             return NodeOutput(content=str(result))
 
         return cls(
@@ -167,9 +164,7 @@ class MeshNode:
         """Wrap a LangGraph compiled StateGraph as a MeshNode."""
 
         async def runner(inp: NodeInput) -> NodeOutput:
-            result = await graph.ainvoke(
-                {"messages": [{"role": "user", "content": inp.task}]}
-            )
+            result = await graph.ainvoke({"messages": [{"role": "user", "content": inp.task}]})
             msgs = result.get("messages", [])
             content = msgs[-1].get("content", str(result)) if msgs else str(result)
             return NodeOutput(content=content)
@@ -183,23 +178,17 @@ class MeshNode:
         )
 
     @classmethod
-    def from_autogen(
-        cls, node_id: str, agent: Any, manager: Any = None
-    ) -> "MeshNode":
+    def from_autogen(cls, node_id: str, agent: Any, manager: Any = None) -> "MeshNode":
         """Wrap an AutoGen ConversableAgent (+ optional GroupChatManager) as a MeshNode."""
 
         async def runner(inp: NodeInput) -> NodeOutput:
             loop = asyncio.get_event_loop()
             if manager:
-                result = await loop.run_in_executor(
-                    None, lambda: manager.run(message=inp.task)
-                )
+                result = await loop.run_in_executor(None, lambda: manager.run(message=inp.task))
             else:
                 result = await loop.run_in_executor(
                     None,
-                    lambda: agent.generate_reply(
-                        messages=[{"content": inp.task, "role": "user"}]
-                    ),
+                    lambda: agent.generate_reply(messages=[{"content": inp.task, "role": "user"}]),
                 )
             return NodeOutput(content=str(result))
 
@@ -262,14 +251,12 @@ class MeshNode:
             )
             loop = asyncio.get_event_loop()
 
-            def _call() -> dict:
+            def _call() -> dict[str, Any]:
                 with urllib.request.urlopen(req, timeout=30) as resp:
-                    return json.loads(resp.read())
+                    return cast(dict[str, Any], json.loads(resp.read()))
 
             body = await loop.run_in_executor(None, _call)
-            return NodeOutput(
-                content=body.get("output", str(body)), structured=body
-            )
+            return NodeOutput(content=body.get("output", str(body)), structured=body)
 
         return cls(
             id=node_id,

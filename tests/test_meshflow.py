@@ -1,31 +1,41 @@
-"""MeshFlow test suite — 28 tests covering all nine layers."""
-import asyncio
-import json
+"""MeshFlow test suite covering all governance layers."""
+
+import time
+
 import pytest
 
+from meshflow.core.mesh import Mesh
 from meshflow.core.schemas import (
-    AgentRole, CircuitBreakerConfig, CompensationPlan, Evidence,
-    HumanInLoopConfig, Intent, Message, Policy, RiskTier,
+    CircuitBreakerConfig,
+    Evidence,
+    Intent,
+    Message,
+    Policy,
+    RiskTier,
 )
 from meshflow.core.policy import BudgetTracker, CircuitBreaker, PolicyEngine
 from meshflow.core.graph import GraphEdge, GraphNode, StateGraph
 from meshflow.security.guardian import Guardian, InjectionScanner
 from meshflow.security.identity import AgentIdentityProvider
-from meshflow.security.dasc_gate import AutoRiskClassifier, DascGate, TaintGraph
+from meshflow.security.dasc_gate import DascGate
 from meshflow.intelligence.uncertainty import (
-    CalibrationTracker, SemanticConsistencyScorer, UncertaintyEngine,
+    CalibrationTracker,
+    SemanticConsistencyScorer,
     UncertaintyPropagator,
 )
 from meshflow.intelligence.collusion import (
-    CollusionAuditor, CommunicationPatternAnalyzer,
+    CommunicationPatternAnalyzer,
 )
-from meshflow.intelligence.mem1 import MEM1Store, ObservationPurifier
+from meshflow.intelligence.mem1 import MEM1Store
 from meshflow.mcp.gateway import MCPGateway, ToolManifest
 from meshflow.efficiency.environmental import CarbonCalculator, EnvironmentalOptimizer
 from meshflow.efficiency.cross_run import CrossRunLearner, CrossRunStore, LearningQuery
+from meshflow.intelligence.rag import RAGPipeline
+from meshflow.observability.telemetry import MeshFlowTracer, SpanName
 
 
 # ── Policy Layer ──────────────────────────────────────────────────────────────
+
 
 def test_budget_tracker_charges_correctly():
     pol = Policy(budget_usd=1.0, budget_tokens=10_000)
@@ -37,6 +47,7 @@ def test_budget_tracker_charges_correctly():
 
 def test_budget_tracker_raises_on_overflow():
     from meshflow.core.policy import BudgetExceededError
+
     pol = Policy(budget_usd=0.10)
     tracker = BudgetTracker(policy=pol)
     with pytest.raises(BudgetExceededError):
@@ -44,7 +55,6 @@ def test_budget_tracker_raises_on_overflow():
 
 
 def test_circuit_breaker_opens_after_threshold():
-    from meshflow.core.policy import CircuitOpenError
     config = CircuitBreakerConfig(failure_threshold=3, failure_window_s=60)
     cb = CircuitBreaker(config)
     for _ in range(3):
@@ -57,10 +67,10 @@ def test_circuit_breaker_resets_after_success():
     cb = CircuitBreaker(config)
     for _ in range(2):
         cb.record_failure("agent-1")
-    import time; time.sleep(0.01)
-    assert cb.allow("agent-1")   # half-open probe
+    time.sleep(0.01)
+    assert cb.allow("agent-1")  # half-open probe
     cb.record_success("agent-1")
-    assert cb.allow("agent-1")   # back to closed
+    assert cb.allow("agent-1")  # back to closed
 
 
 def test_complexity_router_recommends_single_for_trivial():
@@ -75,12 +85,14 @@ def test_complexity_router_recommends_multi_for_complex():
     engine = PolicyEngine(pol, "test-run")
     rec = engine.check_complexity(
         "Analyse all quarterly financial reports and cross-reference with market trends "
-        "to produce a comprehensive risk assessment with regulatory implications", 3
+        "to produce a comprehensive risk assessment with regulatory implications",
+        3,
     )
     assert rec["recommendation"] == "multi_agent"
 
 
 # ── State Graph ───────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_graph_executes_sequential_nodes():
@@ -119,7 +131,11 @@ async def test_graph_checkpoints_on_every_step():
     graph.set_terminals("only")
 
     checkpoints = []
-    await graph.run({"task": "t"}, on_checkpoint=lambda cp: checkpoints.append(cp) or asyncio.sleep(0))
+
+    async def save_checkpoint(cp):
+        checkpoints.append(cp)
+
+    await graph.run({"task": "t"}, on_checkpoint=save_checkpoint)
     assert len(checkpoints) >= 1
 
 
@@ -143,6 +159,7 @@ async def test_graph_retries_on_failure():
 
 
 # ── Guardian ──────────────────────────────────────────────────────────────────
+
 
 def test_injection_scanner_detects_override():
     scanner = InjectionScanner()
@@ -179,10 +196,13 @@ def test_guardian_tool_chain_detects_dos():
     )
     allowed, reason = guardian.evaluate_intent(intent, ["search", "fetch", "crawl"])
     assert not allowed
-    assert "amplification" in reason.lower() or "limit" in reason.lower() or "danger" in reason.lower()
+    assert (
+        "amplification" in reason.lower() or "limit" in reason.lower() or "danger" in reason.lower()
+    )
 
 
 # ── Agent Identity ─────────────────────────────────────────────────────────────
+
 
 def test_identity_provisions_valid_did():
     provider = AgentIdentityProvider("run-1")
@@ -218,6 +238,7 @@ def test_identity_revoke_all_clears_keys():
 
 # ── dasc-gate ─────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_dasc_gate_overrides_self_declared_tier():
     pol = Policy()
@@ -227,10 +248,9 @@ async def test_dasc_gate_overrides_self_declared_tier():
         payload={"table": "users"},
         evidence=[],
         agent_id="executor",
-        risk_tier=RiskTier.READ_ONLY,   # self-declared — should be overridden
+        risk_tier=RiskTier.READ_ONLY,  # self-declared — should be overridden
     )
-    from meshflow.core.schemas import ActionVerdict
-    verdict = await gate.evaluate(intent)
+    await gate.evaluate(intent)
     # delete → IRREVERSIBLE → COMMIT (no HITL configured by default)
     assert intent.effective_tier == RiskTier.IRREVERSIBLE
 
@@ -247,6 +267,7 @@ async def test_dasc_gate_rejects_tainted_external_io():
         tainted=True,
     )
     from meshflow.core.schemas import ActionVerdict
+
     verdict = await gate.evaluate(intent)
     assert verdict == ActionVerdict.REJECT
 
@@ -269,10 +290,12 @@ async def test_dasc_gate_ledger_chain_is_valid():
 
 # ── Uncertainty ───────────────────────────────────────────────────────────────
 
+
 def test_uncertainty_propagation_multiplies():
     propagator = UncertaintyPropagator()
     result = propagator.propagate(upstream_calibrated=0.7, downstream_raw=0.9)
-    assert result < 0.9   # downstream limited by upstream
+    assert result < 0.9  # downstream limited by upstream
+
 
 def test_calibration_corrects_overconfidence():
     tracker = CalibrationTracker()
@@ -287,13 +310,14 @@ def test_consistency_score_detects_variance():
     outputs = [
         "The capital of France is Paris",
         "Paris is the capital city of France",
-        "The answer is definitely London",   # inconsistent
+        "The answer is definitely London",  # inconsistent
     ]
     result = scorer.score(outputs)
     assert result.score < 0.8
 
 
 # ── Collusion ─────────────────────────────────────────────────────────────────
+
 
 def test_collusion_ca_detects_high_agreement():
     analyzer = CommunicationPatternAnalyzer()
@@ -314,6 +338,7 @@ def test_collusion_normal_agreement_is_clean():
 
 # ── MEM1 ──────────────────────────────────────────────────────────────────────
 
+
 def test_mem1_write_and_read():
     store = MEM1Store("agent-1", max_tokens=10_000)
     store.write("key1", "The sky is blue")
@@ -327,11 +352,11 @@ def test_mem1_tamper_detection():
     # Tamper directly
     store._entries["key2"].content = "Tampered!"
     result = store.read("key2")
-    assert result is None   # tampered entry rejected
+    assert result is None  # tampered entry rejected
 
 
 def test_mem1_consolidates_on_overflow():
-    store = MEM1Store("agent-3", max_tokens=100)   # tiny budget
+    store = MEM1Store("agent-3", max_tokens=100)  # tiny budget
     for i in range(20):
         store.write(f"key{i}", f"Entry number {i} with some content to fill tokens")
     # Should have auto-consolidated — fewer entries than written
@@ -340,11 +365,14 @@ def test_mem1_consolidates_on_overflow():
 
 # ── MCP Gateway ───────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_mcp_gateway_blocks_unregistered_tool():
     gw = MCPGateway()
 
-    async def handler(name, params): return "result"
+    async def handler(name, params):
+        return "result"
+
     call = await gw.call("unknown_tool", {}, "agent-1", "executor", "trace-1", handler)
     assert call.blocked
     assert "registry" in call.block_reason
@@ -357,18 +385,21 @@ async def test_mcp_gateway_allows_registered_tool():
         tool_name="calculator",
         server_uri="mcp://math.local",
         description="Adds numbers",
-        max_cost_usd=0.01,    # below the gateway's default turn budget
+        max_cost_usd=0.01,  # below the gateway's default turn budget
         trusted=True,
     )
     gw.register_tool(manifest)
 
-    async def handler(name, params): return 42
+    async def handler(name, params):
+        return 42
+
     call = await gw.call("calculator", {"a": 1, "b": 2}, "agent-1", "executor", "trace-1", handler)
     assert not call.blocked
     assert call.result == 42
 
 
 # ── Environmental ─────────────────────────────────────────────────────────────
+
 
 def test_carbon_calculator_lower_in_pnw():
     calc = CarbonCalculator()
@@ -384,6 +415,7 @@ def test_environmental_optimizer_tracks_budget():
 
 
 # ── Cross-run Learning ────────────────────────────────────────────────────────
+
 
 def test_cross_run_learner_improves_with_data():
     store = CrossRunStore(":memory:")
@@ -401,18 +433,18 @@ def test_cross_run_learner_improves_with_data():
             carbon_g=0.1,
         )
 
-    rec = learner.recommend(LearningQuery(
-        task_description="research AI frameworks",
-        estimated_tokens=5000,
-        available_roles=["planner", "researcher", "executor"],
-    ))
+    rec = learner.recommend(
+        LearningQuery(
+            task_description="research AI frameworks",
+            estimated_tokens=5000,
+            available_roles=["planner", "researcher", "executor"],
+        )
+    )
     assert rec.confidence > 0.1
     assert rec.predicted_success_rate > 0.5
 
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
-
-from meshflow.intelligence.rag import ChunkStore, RAGPipeline
 
 
 def test_rag_returns_evidence_objects():
@@ -457,8 +489,6 @@ def test_rag_hybrid_retrieval_outperforms_single():
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────
 
-from meshflow.observability.telemetry import MeshFlowTracer, SpanName
-
 
 def test_tracer_records_agent_step():
     tracer = MeshFlowTracer()
@@ -475,6 +505,9 @@ def test_tracer_records_agent_step():
     spans = tracer.spans()
     assert spans[0].name == SpanName.AGENT_STEP
     assert spans[0].attributes["agent.tokens"] == 1200
+    otel_spans = tracer.otel_spans()
+    assert otel_spans[-1].name == SpanName.AGENT_STEP
+    assert otel_spans[-1].attributes["agent.success"] is True
 
 
 def test_tracer_records_mcp_blocked_call():
@@ -495,7 +528,7 @@ def test_tracer_records_mcp_blocked_call():
 def test_tracer_export_summary_counts_correctly():
     tracer = MeshFlowTracer()
     tracer.record_agent_step("r", "a1", "executor", 100, 0.001, 200, True)
-    tracer.record_agent_step("r", "a2", "critic",   200, 0.002, 300, True)
+    tracer.record_agent_step("r", "a2", "critic", 200, 0.002, 300, True)
     tracer.record_mcp_call("r", "search", "a1", 50, False)
     summary = tracer.export_summary()
     assert summary["total_spans"] == 3
@@ -511,3 +544,44 @@ def test_tracer_span_context_manager_records_error():
     except ValueError:
         pass
     # Should not raise — span records the error internally
+
+
+def test_tracer_reads_otlp_env(monkeypatch):
+    seen = {}
+
+    def fake_add_otlp(self, provider, endpoint, protocol):
+        seen["endpoint"] = endpoint
+        seen["protocol"] = protocol
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+    monkeypatch.setattr(MeshFlowTracer, "_add_otlp", fake_add_otlp)
+
+    tracer = MeshFlowTracer()
+
+    assert tracer.otlp_enabled is True
+    assert tracer.otlp_endpoint == "http://collector:4318"
+    assert tracer.otlp_protocol == "http/protobuf"
+    assert seen == {"endpoint": "http://collector:4318", "protocol": "http/protobuf"}
+
+
+def test_tracer_reports_unsupported_otlp_protocol():
+    tracer = MeshFlowTracer(
+        otlp_endpoint="http://collector:4318",
+        otlp_protocol="not-a-protocol",
+    )
+
+    assert tracer.otlp_enabled is False
+    assert tracer.otlp_error == "unsupported_otlp_protocol:not-a-protocol"
+
+
+def test_mesh_passes_otlp_config_to_tracer():
+    mesh = Mesh(
+        telemetry_otlp_endpoint="http://collector:4318",
+        telemetry_otlp_protocol="http/protobuf",
+    )
+
+    tracer = mesh._new_tracer()
+
+    assert tracer.otlp_endpoint == "http://collector:4318"
+    assert tracer.otlp_protocol == "http/protobuf"

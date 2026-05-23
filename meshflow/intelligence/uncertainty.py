@@ -1,12 +1,17 @@
 """L2.11 — Uncertainty Quantification: SAUP + UProp + calibration.
 
 Three interlocking mechanisms:
-1. SemanticConsistencyScorer — multi-angle consistency check
+1. SemanticConsistencyScorer — multi-angle consistency check (requires ≥2 outputs)
 2. UncertaintyPropagator — UProp multiplication across handoffs
 3. CalibrationTracker — corrects systematic overconfidence (EMA)
 
+Composite formula:
+  ≥2 outputs: 0.40 * propagated + 0.40 * consistency + 0.20 * calibrated
+   1 output:  0.60 * propagated + 0.40 * calibrated   (no consistency data)
+
 Adaptive response is graduated: warn → slow → verify → HITL → abort.
 """
+
 from __future__ import annotations
 
 import statistics
@@ -18,7 +23,7 @@ from meshflow.core.schemas import UncertaintyScore
 
 @dataclass
 class ConsistencyResult:
-    score: float          # 0–1, higher is more consistent
+    score: float  # 0–1, higher is more consistent
     num_queries: int
     variance: float
     low_consistency: bool
@@ -29,7 +34,7 @@ class CalibrationRecord:
     agent_id: str
     stated_confidences: list[float] = field(default_factory=list)
     actual_accuracies: list[float] = field(default_factory=list)
-    ema_bias: float = 0.0    # positive = overconfident
+    ema_bias: float = 0.0  # positive = overconfident
 
 
 class SemanticConsistencyScorer:
@@ -42,7 +47,11 @@ class SemanticConsistencyScorer:
 
     def score(self, outputs: list[str]) -> ConsistencyResult:
         if len(outputs) < 2:
-            return ConsistencyResult(score=1.0, num_queries=len(outputs), variance=0.0, low_consistency=False)
+            # No consistency data — return a sentinel with score=0.0 so the
+            # caller can detect this case and adjust the composite formula.
+            return ConsistencyResult(
+                score=0.0, num_queries=len(outputs), variance=0.0, low_consistency=False
+            )
 
         # Compute pairwise Jaccard similarity on token sets
         token_sets = [set(o.lower().split()) for o in outputs]
@@ -119,57 +128,20 @@ class CalibrationTracker:
         return r.ema_bias if r else 0.0
 
 
-class MixtureOfModelsRouter:
-    """Routes tasks to cheapest model tier that can handle them reliably.
-
-    Calibration history per task_type × model_tier drives routing decisions.
-    Avoids homogeneous model deployment — heterogeneous tiers improve both
-    quality and cost.
-    """
-
-    def __init__(self) -> None:
-        # task_type → {model_tier → [accuracy]}
-        self._accuracy: dict[str, dict[str, list[float]]] = {}
-
-    def record(self, task_type: str, model_tier: str, accuracy: float) -> None:
-        self._accuracy.setdefault(task_type, {}).setdefault(model_tier, []).append(accuracy)
-
-    def route(
-        self,
-        task_type: str,
-        available_tiers: list[str],
-        accuracy_threshold: float = 0.85,
-    ) -> str:
-        """Return cheapest tier that meets accuracy threshold, else most expensive."""
-        task_data = self._accuracy.get(task_type, {})
-        # Sort by assumed cost: haiku < sonnet < opus
-        tier_cost = {"haiku": 1, "sonnet": 2, "opus": 3}
-        sorted_tiers = sorted(
-            available_tiers,
-            key=lambda t: next((v for k, v in tier_cost.items() if k in t.lower()), 99),
-        )
-        for tier in sorted_tiers:
-            hist = task_data.get(tier, [])
-            if len(hist) >= 3 and statistics.mean(hist) >= accuracy_threshold:
-                return tier
-        return sorted_tiers[-1] if sorted_tiers else available_tiers[0]
-
-
 class UncertaintyEngine:
     """Coordinates all three uncertainty mechanisms for a single agent turn."""
 
-    WARN_THRESHOLD    = 0.70
-    SLOW_THRESHOLD    = 0.55
-    VERIFY_THRESHOLD  = 0.40
-    HITL_THRESHOLD    = 0.25
-    ABORT_THRESHOLD   = 0.10
+    WARN_THRESHOLD = 0.70
+    SLOW_THRESHOLD = 0.55
+    VERIFY_THRESHOLD = 0.40
+    HITL_THRESHOLD = 0.25
+    ABORT_THRESHOLD = 0.10
 
     def __init__(self) -> None:
         self._consistency = SemanticConsistencyScorer()
-        self._propagator  = UncertaintyPropagator()
+        self._propagator = UncertaintyPropagator()
         self._calibration = CalibrationTracker()
-        self._router      = MixtureOfModelsRouter()
-        self._chain: list[float] = []    # per-run confidence chain
+        self._chain: list[float] = []
 
     def evaluate(
         self,
@@ -191,12 +163,15 @@ class UncertaintyEngine:
         else:
             propagated = calibrated
 
-        # 4. Composite score (weighted average)
-        composite = (
-            0.4 * propagated
-            + 0.4 * consistency.score
-            + 0.2 * calibrated
-        )
+        # 4. Composite score
+        # When only 1 output is available there is no consistency signal.
+        # Use a two-factor formula so calibration is not diluted by a meaningless
+        # consistency score (which was previously always 1.0, inflating confidence).
+        if consistency.num_queries >= 2:
+            composite = 0.4 * propagated + 0.4 * consistency.score + 0.2 * calibrated
+        else:
+            composite = 0.6 * propagated + 0.4 * calibrated
+
         self._chain.append(composite)
 
         return UncertaintyScore(
@@ -216,7 +191,10 @@ class UncertaintyEngine:
         if c < self.HITL_THRESHOLD:
             return {"action": "escalate_human", "reason": f"Uncertainty requires human: {c:.2f}"}
         if c < self.VERIFY_THRESHOLD:
-            return {"action": "verify_with_critic", "reason": f"Uncertainty warrants critic: {c:.2f}"}
+            return {
+                "action": "verify_with_critic",
+                "reason": f"Uncertainty warrants critic: {c:.2f}",
+            }
         if c < self.SLOW_THRESHOLD:
             return {"action": "slow_down", "reason": f"Moderate uncertainty: {c:.2f}"}
         if c < self.WARN_THRESHOLD:

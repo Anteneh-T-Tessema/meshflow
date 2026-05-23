@@ -36,29 +36,35 @@ Every node — regardless of origin — passes through the StepRuntime kernel:
   execute   → node.run() | trace | checkpoint
   post_step → uncertainty | cost | ledger | memory | collusion | CAEP
 """
+
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
+from meshflow.core.events import WorkflowEventBus
 from meshflow.core.ledger import ReplayLedger
-from meshflow.core.node import MeshNode, NodeInput
 from meshflow.core.runtime import StepRuntime
 from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult
 from meshflow.agents.base import (
-    AgentConfig, BaseAgent, CriticAgent, ExecutorAgent,
-    PlannerAgent, ResearcherAgent,
+    AgentConfig,
+    BaseAgent,
+    CriticAgent,
+    ExecutorAgent,
+    PlannerAgent,
+    ResearcherAgent,
 )
 from meshflow.core.executor import GovernedStepExecutor, StepOutcome
-from meshflow.core.graph import GraphEdge, GraphNode, StateGraph
 from meshflow.core.policy import PolicyEngine
 from meshflow.core.schemas import (
-    AgentRole, AgentState, CheckpointRecord, Policy,
-    RunResult, RunStatus,
+    AgentRole,
+    Policy,
+    RunResult,
+    RunStatus,
+    policy_for_mode,
 )
 from meshflow.efficiency.cross_run import CrossRunLearner, CrossRunStore, LearningQuery
 from meshflow.efficiency.environmental import EnvironmentalOptimizer
@@ -74,7 +80,8 @@ from meshflow.security.identity import AgentIdentityProvider
 @dataclass
 class MeshEvent:
     """Streaming event emitted as each governed step completes."""
-    event_type: str          # "step_complete" | "step_blocked" | "paused" | "run_complete" | "error"
+
+    event_type: str  # "step_complete" | "step_blocked" | "paused" | "run_complete" | "error"
     agent_id: str
     role: str
     data: dict[str, Any]
@@ -112,12 +119,23 @@ class Mesh:
         mcp_tools: list[ToolManifest] | None = None,
         cross_run_db: str = ":memory:",
         telemetry_console: bool = False,
+        telemetry_otlp_endpoint: str = "",
+        telemetry_otlp_protocol: str = "",
+        compliance: str = "",
     ) -> None:
         self._custom_agents = agents or []
+        self._compliance_profile = None
+        if compliance:
+            from meshflow.core.compliance import compliance_profile
+            self._compliance_profile = compliance_profile(compliance)
+            if policy is None:
+                policy = self._compliance_profile.to_policy()
         self._policy = policy or Policy()
         self._mcp_tools = mcp_tools or []
         self._cross_run_db = cross_run_db
         self._telemetry_console = telemetry_console
+        self._telemetry_otlp_endpoint = telemetry_otlp_endpoint
+        self._telemetry_otlp_protocol = telemetry_otlp_protocol
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -135,7 +153,9 @@ class Mesh:
         # Reconstruct RunResult from the terminal run_complete event
         terminal = next((e for e in reversed(events) if e.event_type == "run_complete"), None)
         if terminal:
-            return terminal.data.get("_run_result", self._empty_result(task, events))
+            return cast(
+                RunResult, terminal.data.get("_run_result", self._empty_result(task, events))
+            )
         return self._empty_result(task, events)
 
     async def stream(
@@ -158,14 +178,14 @@ class Mesh:
 
         # ── Initialise all governance layers ──────────────────────────────────
         policy_engine = PolicyEngine(pol, run_id)
-        identity      = AgentIdentityProvider(run_id)
-        guardian      = Guardian(budget_usd=pol.budget_usd)
-        dasc_gate     = DascGate(pol, run_id)
-        uncertainty   = UncertaintyEngine()
-        collusion     = CollusionAuditor()
-        telemetry     = MeshFlowTracer(export_to_console=self._telemetry_console)
-        eco           = EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None
-        mcp           = MCPGateway(budget_usd_per_turn=pol.budget_usd / 20)
+        identity = AgentIdentityProvider(run_id)
+        guardian = Guardian(budget_usd=pol.budget_usd)
+        dasc_gate = DascGate(pol, run_id)
+        uncertainty = UncertaintyEngine()
+        collusion = CollusionAuditor()
+        telemetry = self._new_tracer()
+        eco = EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None
+        mcp = MCPGateway(budget_usd_per_turn=pol.budget_usd / 20)
         for tool in self._mcp_tools:
             mcp.register_tool(tool)
 
@@ -196,11 +216,13 @@ class Mesh:
         if pol.enable_cross_run_learning:
             store = CrossRunStore(self._cross_run_db)
             learner = CrossRunLearner(store)
-            rec = learner.recommend(LearningQuery(
-                task_description=task,
-                estimated_tokens=len(task.split()) * 10,
-                available_roles=[r.value for r in AgentRole],
-            ))
+            learner.recommend(
+                LearningQuery(
+                    task_description=task,
+                    estimated_tokens=len(task.split()) * 10,
+                    available_roles=[r.value for r in AgentRole],
+                )
+            )
 
         # ── Build agents and provision identities ─────────────────────────────
         agents = self._build_agents(pol)
@@ -268,7 +290,9 @@ class Mesh:
                 break
 
             # Critic logic: if critic fails, re-run executor (max 1 retry)
-            if outcome.role == AgentRole.CRITIC.value and not outcome.data.get("critic_passed", True):
+            if outcome.role == AgentRole.CRITIC.value and not outcome.data.get(
+                "critic_passed", True
+            ):
                 executor_agent = next((a for a in agents if a.role == AgentRole.EXECUTOR), None)
                 if executor_agent:
                     step += 1
@@ -420,11 +444,13 @@ class Mesh:
                 model: claude-sonnet-4-6
         """
         import yaml
+
         with open(path) as f:
             cfg = yaml.safe_load(f)
 
         pol_cfg = cfg.get("policy", {})
-        pol = Policy(
+        pol = policy_for_mode(
+            pol_cfg.get("mode", "standard"),
             budget_usd=pol_cfg.get("budget_usd", 1.0),
             budget_tokens=pol_cfg.get("budget_tokens", 500_000),
             timeout_s=pol_cfg.get("timeout_s", 300.0),
@@ -438,14 +464,14 @@ class Mesh:
 
         agents: list[BaseAgent] = []
         role_map = {
-            "planner":    PlannerAgent,
+            "planner": PlannerAgent,
             "researcher": ResearcherAgent,
-            "executor":   ExecutorAgent,
-            "critic":     CriticAgent,
+            "executor": ExecutorAgent,
+            "critic": CriticAgent,
         }
         for agent_cfg in cfg.get("agents", []):
             role_str = agent_cfg.get("role", "executor")
-            model    = agent_cfg.get("model", "claude-sonnet-4-6")
+            model = agent_cfg.get("model", "claude-sonnet-4-6")
             AgentClass = role_map.get(role_str, ExecutorAgent)
             role = AgentRole(role_str)
             config = AgentConfig(role=role, model=model)
@@ -460,10 +486,13 @@ class Mesh:
         workflow: "WorkflowDefinition",
         task: str = "",
         ledger_db: str = ":memory:",
+        event_bus: WorkflowEventBus | None = None,
     ) -> "WorkflowResult":
         """Run a WorkflowDefinition through the StepRuntime governance kernel.
 
         Every node — regardless of kind — passes through the full governed path.
+        Pass an ``event_bus`` to receive structured WorkflowEvents as the run
+        progresses (useful for dashboards, CLI watch, and SSE endpoints).
 
         Usage::
 
@@ -472,9 +501,16 @@ class Mesh:
                   .add_node(MeshNode.from_langgraph("validate", graph))
                   .add_edge("research", "validate"))
 
-            result = await Mesh(policy=Policy(budget_usd=2.0)).run_workflow(wf, "analyse Q2")
+            bus = WorkflowEventBus()
+            result = await Mesh(policy=Policy(budget_usd=2.0)).run_workflow(
+                wf, "analyse Q2", event_bus=bus
+            )
         """
-        pol = workflow.policy if workflow.policy.budget_usd < self._policy.budget_usd else self._policy
+        pol = (
+            workflow.policy
+            if workflow.policy.budget_usd < self._policy.budget_usd
+            else self._policy
+        )
         run_id = str(uuid.uuid4())
 
         ledger = ReplayLedger(ledger_db)
@@ -486,12 +522,12 @@ class Mesh:
             identity=AgentIdentityProvider(run_id),
             uncertainty=UncertaintyEngine() if pol.enable_uncertainty else None,
             collusion=CollusionAuditor() if pol.enable_collusion_audit else None,
-            telemetry=MeshFlowTracer(export_to_console=self._telemetry_console),
+            telemetry=self._new_tracer(),
             eco=EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None,
             ledger=ledger,
         )
 
-        return await workflow.run(task or f"Execute {workflow.name}", runtime)
+        return await workflow.run(task or f"Execute {workflow.name}", runtime, event_bus=event_bus)
 
     async def resume_workflow(
         self,
@@ -531,17 +567,21 @@ class Mesh:
         if checkpoint is None:
             raise ValueError(f"No paused workflow found for run_id={run_id!r}")
 
-        pol = workflow.policy if workflow.policy.budget_usd < self._policy.budget_usd else self._policy
+        pol = (
+            workflow.policy
+            if workflow.policy.budget_usd < self._policy.budget_usd
+            else self._policy
+        )
 
         runtime = StepRuntime(
             policy=pol,
-            run_id=run_id,   # preserve original run_id for ledger continuity
+            run_id=run_id,  # preserve original run_id for ledger continuity
             guardian=Guardian(budget_usd=pol.budget_usd) if pol.enable_guardian else None,
             dasc_gate=DascGate(pol, run_id) if pol.deterministic_gate else None,
             identity=AgentIdentityProvider(run_id),
             uncertainty=UncertaintyEngine() if pol.enable_uncertainty else None,
             collusion=CollusionAuditor() if pol.enable_collusion_audit else None,
-            telemetry=MeshFlowTracer(export_to_console=self._telemetry_console),
+            telemetry=self._new_tracer(),
             eco=EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None,
             ledger=ledger,
         )
@@ -550,24 +590,33 @@ class Mesh:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
+    def _new_tracer(self) -> MeshFlowTracer:
+        return MeshFlowTracer(
+            export_to_console=self._telemetry_console,
+            otlp_endpoint=self._telemetry_otlp_endpoint,
+            otlp_protocol=self._telemetry_otlp_protocol,
+        )
+
     def _build_agents(self, pol: Policy) -> list[BaseAgent]:
         if self._custom_agents:
             return list(self._custom_agents)
         return [
             PlannerAgent(
-                AgentConfig(role=AgentRole.PLANNER,     model=pol.model_tier_map[AgentRole.PLANNER]),
+                AgentConfig(role=AgentRole.PLANNER, model=pol.model_tier_map[AgentRole.PLANNER]),
                 pol,
             ),
             ResearcherAgent(
-                AgentConfig(role=AgentRole.RESEARCHER,  model=pol.model_tier_map[AgentRole.RESEARCHER]),
+                AgentConfig(
+                    role=AgentRole.RESEARCHER, model=pol.model_tier_map[AgentRole.RESEARCHER]
+                ),
                 pol,
             ),
             ExecutorAgent(
-                AgentConfig(role=AgentRole.EXECUTOR,    model=pol.model_tier_map[AgentRole.EXECUTOR]),
+                AgentConfig(role=AgentRole.EXECUTOR, model=pol.model_tier_map[AgentRole.EXECUTOR]),
                 pol,
             ),
             CriticAgent(
-                AgentConfig(role=AgentRole.CRITIC,      model=pol.model_tier_map[AgentRole.CRITIC]),
+                AgentConfig(role=AgentRole.CRITIC, model=pol.model_tier_map[AgentRole.CRITIC]),
                 pol,
             ),
         ]
@@ -595,11 +644,11 @@ class Mesh:
     def _capabilities_for_role(self, role: AgentRole) -> list[str]:
         caps = {
             AgentRole.ORCHESTRATOR: ["plan", "delegate", "evaluate", "terminate"],
-            AgentRole.PLANNER:      ["plan", "decompose"],
-            AgentRole.RESEARCHER:   ["search", "read", "synthesize"],
-            AgentRole.EXECUTOR:     ["write", "compute", "call_tool"],
-            AgentRole.CRITIC:       ["evaluate", "score"],
-            AgentRole.GUARDIAN:     ["monitor", "block", "alert"],
+            AgentRole.PLANNER: ["plan", "decompose"],
+            AgentRole.RESEARCHER: ["search", "read", "synthesize"],
+            AgentRole.EXECUTOR: ["write", "compute", "call_tool"],
+            AgentRole.CRITIC: ["evaluate", "score"],
+            AgentRole.GUARDIAN: ["monitor", "block", "alert"],
         }
         return caps.get(role, ["read"])
 

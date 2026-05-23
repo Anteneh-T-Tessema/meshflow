@@ -1,9 +1,17 @@
 """Ledger backend tests — SQLite default and PostgreSQL backend contract."""
+
 from __future__ import annotations
 
 import asyncio
 
-from meshflow.core.ledger import PostgresLedgerBackend, ReplayLedger, SQLiteLedgerBackend
+import pytest
+
+from meshflow.core.ledger import (
+    PostgresLedgerBackend,
+    ReplayLedger,
+    S3LedgerArchiveBackend,
+    SQLiteLedgerBackend,
+)
 from meshflow.core.runtime import StepRecord
 
 
@@ -52,6 +60,8 @@ class _FakeConn:
         return "OK"
 
     async def fetch(self, sql: str, *args: object) -> list[dict]:
+        if "schema_migrations" in sql:
+            return []  # no migrations applied yet
         if "GROUP BY run_id" in sql:
             return self.run_rows
         if "workflow_checkpoints" in sql:
@@ -72,6 +82,15 @@ class _FakePool:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _FakeS3Client:
+    def __init__(self) -> None:
+        self.objects: list[dict] = []
+
+    def put_object(self, **kwargs: object) -> dict:
+        self.objects.append(kwargs)
+        return {"ETag": '"fake"'}
 
 
 def test_replay_ledger_defaults_to_sqlite_backend():
@@ -97,25 +116,27 @@ def test_custom_backend_can_be_injected():
 
 def test_postgres_backend_writes_and_queries_with_same_contract():
     conn = _FakeConn()
-    conn.step_rows = [{
-        "id": 1,
-        "run_id": "run-pg",
-        "step_id": "step-1",
-        "node_id": "node-a",
-        "node_kind": "python",
-        "input_task": "task",
-        "output_content": "output",
-        "verdict": "commit",
-        "blocked": False,
-        "block_reason": "",
-        "uncertainty": 0.0,
-        "cost_usd": 0.01,
-        "tokens_used": 12,
-        "carbon_gco2": 0.001,
-        "duration_ms": 3.0,
-        "timestamp": "2026-05-21T00:00:00+00:00",
-        "metadata": '{"source": "test"}',
-    }]
+    conn.step_rows = [
+        {
+            "id": 1,
+            "run_id": "run-pg",
+            "step_id": "step-1",
+            "node_id": "node-a",
+            "node_kind": "python",
+            "input_task": "task",
+            "output_content": "output",
+            "verdict": "commit",
+            "blocked": False,
+            "block_reason": "",
+            "uncertainty": 0.0,
+            "cost_usd": 0.01,
+            "tokens_used": 12,
+            "carbon_gco2": 0.001,
+            "duration_ms": 3.0,
+            "timestamp": "2026-05-21T00:00:00+00:00",
+            "metadata": '{"source": "test"}',
+        }
+    ]
     conn.run_rows = [{"run_id": "run-pg"}]
     backend = PostgresLedgerBackend("postgresql://example/db", pool=_FakePool(conn))
 
@@ -152,3 +173,43 @@ def test_postgres_backend_close_closes_pool():
     asyncio.run(backend.close())
 
     assert pool.closed is True
+
+
+def test_s3_archive_backend_writes_immutable_json_export():
+    client = _FakeS3Client()
+    backend = S3LedgerArchiveBackend("s3://meshflow-archive/runs", client=client)
+
+    result = asyncio.run(backend.archive_json("run-1", '{"run_id": "run-1"}'))
+
+    assert result.uri == "s3://meshflow-archive/runs/run-1.json"
+    assert result.bytes_written == len(b'{"run_id": "run-1"}')
+    assert result.sha256
+    assert client.objects[0]["Bucket"] == "meshflow-archive"
+    assert client.objects[0]["Key"] == "runs/run-1.json"
+    assert client.objects[0]["ContentType"] == "application/json"
+    assert client.objects[0]["IfNoneMatch"] == "*"
+    assert client.objects[0]["Metadata"]["meshflow-run-id"] == "run-1"
+
+
+def test_replay_ledger_archives_run_to_s3_backend():
+    ledger = ReplayLedger(":memory:")
+    client = _FakeS3Client()
+    backend = S3LedgerArchiveBackend("s3://meshflow-archive/history", client=client)
+    asyncio.run(ledger.write(_record(run_id="run-archive", step_id="step-archive")))
+
+    result = asyncio.run(
+        ledger.archive_run("run-archive", "s3://meshflow-archive/history", backend=backend)
+    )
+
+    assert result.key == "history/run-archive.json"
+    body = client.objects[0]["Body"].decode("utf-8")
+    assert '"run_id": "run-archive"' in body
+    assert '"node_id": "node-a"' in body
+
+
+def test_replay_ledger_archive_rejects_unknown_run():
+    ledger = ReplayLedger(":memory:")
+    backend = S3LedgerArchiveBackend("s3://meshflow-archive/history", client=_FakeS3Client())
+
+    with pytest.raises(ValueError, match="unknown run_id"):
+        asyncio.run(ledger.archive_run("missing", "s3://meshflow-archive/history", backend=backend))

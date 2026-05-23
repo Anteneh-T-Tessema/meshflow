@@ -1,34 +1,62 @@
 """MeshFlow CLI — the control plane at your fingertips.
 
 Commands:
-  meshflow run       <yaml>            — run a workflow YAML to completion
-  meshflow stream    <yaml>            — stream governed events as they emit
-  meshflow replay    <run_id> [--db]   — replay / inspect a past run from ledger
-  meshflow conformance <kind>          — run the conformance suite for a node adapter
-  meshflow serve     [--host] [--port] — start the JSON HTTP runtime server
-  meshflow describe  <yaml>            — print workflow topology without running
+  meshflow init                        — scaffold a new governed agent project
+  meshflow new   <agent|team|tool> <name> — generate a new agent, team, or tool file
+  meshflow run   <yaml>               — run a workflow YAML to completion
+  meshflow stream <yaml>              — stream governed events as they emit
+  meshflow watch <run_id>             — tail live events for a run
+  meshflow logs  [--db] [--limit]     — show recent run history
+  meshflow replay <run_id> [--db]     — step-through debugger for a past run
+  meshflow approve <run_id> <node_id> — approve a paused HITL node
+  meshflow resume <run_id>            — resume a paused HITL run
+  meshflow conformance <kind>         — run the conformance suite
+  meshflow schema [name]              — print public JSON Schema contracts
+  meshflow serve [--host] [--port]    — start the JSON HTTP runtime server
+  meshflow describe <yaml>            — print workflow topology without running
 
 All commands respect the policy declared in the YAML.
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
 import sys
-import time
 import uuid
 from typing import Any
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="meshflow",
-        description="MeshFlow — control plane for multi-agent systems",
+        description="MeshFlow — build agents, form teams, govern everything.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    # init
+    p_init = sub.add_parser("init", help="Scaffold a new governed agent project")
+    p_init.add_argument("name", nargs="?", default=None, help="Project directory name")
+
+    # new
+    p_new = sub.add_parser("new", help="Generate a new agent, team, or tool file")
+    p_new.add_argument("kind", choices=["agent", "team", "tool"], help="What to create")
+    p_new.add_argument("name", help="Name for the new artifact")
+
+    # logs
+    p_logs = sub.add_parser("logs", help="Show recent run history")
+    p_logs.add_argument("--db", default="meshflow_runs.db", help="Ledger SQLite path")
+    p_logs.add_argument("--limit", type=int, default=20, help="Max runs to show")
+
+    # approve
+    p_approve = sub.add_parser("approve", help="Approve a paused HITL node")
+    p_approve.add_argument("run_id", help="Run ID")
+    p_approve.add_argument("node_id", help="Node ID to approve")
+    p_approve.add_argument("--db", default="meshflow_runs.db")
 
     # run
     p_run = sub.add_parser("run", help="Run a workflow YAML to completion")
@@ -47,6 +75,11 @@ def main() -> None:
     p_replay.add_argument("run_id", help="Run ID to replay")
     p_replay.add_argument("--db", default="meshflow_runs.db")
     p_replay.add_argument("--json", dest="as_json", action="store_true")
+    p_replay.add_argument(
+        "--archive-s3",
+        default="",
+        help="Archive the run export to an S3 URI, e.g. s3://bucket/meshflow",
+    )
 
     # conformance
     p_conf = sub.add_parser(
@@ -58,31 +91,358 @@ def main() -> None:
         choices=["native", "python", "http", "human", "crewai", "langgraph", "autogen"],
         help="Node kind to test",
     )
-    p_conf.add_argument("--level", type=int, default=3, help="Max conformance level (0-3)")
+    p_conf.add_argument("--level", type=int, default=5, help="Max conformance level (0-5)")
+
+    # schema
+    p_schema = sub.add_parser("schema", help="Print public JSON Schema contracts")
+    p_schema.add_argument(
+        "name",
+        nargs="?",
+        default="all",
+        help="Schema name: NodeInput, NodeOutput, MeshNode, Policy, RuntimeOutcome, or all",
+    )
 
     # serve
     p_serve = sub.add_parser("serve", help="Start the MeshFlow HTTP runtime server")
     p_serve.add_argument("--host", default="0.0.0.0")
     p_serve.add_argument("--port", type=int, default=8765)
+    p_serve.add_argument(
+        "--api-key", action="append", dest="api_keys", help="API key (repeat for multiple keys)"
+    )
+    p_serve.add_argument("--ledger", default="meshflow_runs.db")
+    p_serve.add_argument("--tls-cert", default="")
+    p_serve.add_argument("--tls-key", default="")
+
+    # dev
+    p_dev = sub.add_parser("dev", help="Start server in dev mode with colored output")
+    p_dev.add_argument("--host", default="127.0.0.1")
+    p_dev.add_argument("--port", type=int, default=8765)
+    p_dev.add_argument("--ledger", default=":memory:")
+
+    # trace
+    p_trace = sub.add_parser("trace", help="View a run trace in the terminal")
+    p_trace.add_argument("run_id", help="Run ID to inspect")
+    p_trace.add_argument("--db", default="meshflow_runs.db")
+    p_trace.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+    p_trace.add_argument("--export", default="", metavar="FILE", help="Export trace to file")
+
+    # runs
+    p_runs = sub.add_parser("runs", help="List recent runs (alias for logs)")
+    p_runs.add_argument("--db", default="meshflow_runs.db")
+    p_runs.add_argument("--limit", type=int, default=20)
+
+    # watch
+    p_watch = sub.add_parser("watch", help="Tail live events for a workflow run")
+    p_watch.add_argument("run_id", help="Run ID to watch")
+    p_watch.add_argument("--db", default="meshflow_runs.db")
+    p_watch.add_argument("--sse", action="store_true", help="Output as SSE (Server-Sent Events)")
+    p_watch.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Stop waiting after N seconds without a terminal event",
+    )
+
+    # resume
+    p_resume = sub.add_parser("resume", help="Resume a paused workflow run")
+    p_resume.add_argument("run_id", help="Run ID to resume")
+    p_resume.add_argument(
+        "--yaml",
+        default="",
+        help="Path to original workflow YAML if absent from checkpoint",
+    )
+    p_resume.add_argument("--db", default="meshflow_runs.db")
+    p_resume.add_argument("--reject", action="store_true", help="Reject instead of approve")
+    p_resume.add_argument("--comment", default="", help="Human reviewer comment")
+    p_resume.add_argument("--decided-by", default="cli", help="Reviewer identifier")
 
     # describe
     p_desc = sub.add_parser("describe", help="Print workflow topology")
     p_desc.add_argument("yaml")
 
+    # mcp-stdio — expose MeshFlow as an MCP server over stdio (for Claude Desktop)
+    p_mcp = sub.add_parser(
+        "mcp-stdio",
+        help="Start a stdio MCP server — connect Claude Desktop to governed MeshFlow agents",
+    )
+    p_mcp.add_argument("--config", default="", help="Path to meshflow.yaml (optional)")
+    p_mcp.add_argument("--policy", default="standard", help="Default governance policy")
+    p_mcp.add_argument(
+        "--print-config",
+        action="store_true",
+        help="Print the claude_desktop_config.json snippet and exit",
+    )
+
+    # eval
+    p_eval = sub.add_parser("eval", help="Run agent evaluations against an eval suite")
+    p_eval.add_argument("eval_file", help="Path to eval YAML file")
+    p_eval.add_argument("--agent", default="", help="Path to agent Python file (optional)")
+    p_eval.add_argument("--tags", nargs="*", default=[], help="Filter by tags")
+    p_eval.add_argument("--concurrency", type=int, default=4, help="Parallel scenarios")
+    p_eval.add_argument("--fail-under", type=float, default=0.0, help="Exit 1 if pass_rate < N")
+    p_eval.add_argument("--save-baseline", default="", metavar="PATH", help="Save result as golden baseline JSON")
+    p_eval.add_argument("--compare-baseline", default="", metavar="PATH", help="Compare against a golden baseline JSON")
+    p_eval.add_argument("--fail-on-regression", action="store_true", help="Exit 1 if regressions found vs baseline")
+    p_eval.add_argument("--db", default="meshflow_runs.db", help="Ledger path (for eval result storage)")
+    p_eval.add_argument("--save-to-ledger", action="store_true", help="Persist eval result in the ledger")
+
+    # eval history
+    p_eval_history = sub.add_parser("eval-history", help="List stored eval results from the ledger")
+    p_eval_history.add_argument("--db", default="meshflow_runs.db", help="Ledger path")
+    p_eval_history.add_argument("--suite", default="", help="Filter by suite name")
+    p_eval_history.add_argument("--json", dest="output_json", action="store_true", help="Output raw JSON")
+
+    # graph export
+    p_graph = sub.add_parser("graph", help="Export a run's execution graph as Mermaid or DOT")
+    p_graph.add_argument("--run-id", default="", metavar="RUN_ID", help="Run ID to export (omit to list runs)")
+    p_graph.add_argument("--format", default="mermaid", choices=["mermaid", "dot"], help="Output format")
+    p_graph.add_argument("--db", default="meshflow_runs.db", help="Ledger path")
+    p_graph.add_argument("--out", default="", help="Write to file instead of stdout")
+
+    # audit export
+    p_audit = sub.add_parser("audit", help="Audit trail management")
+    p_audit_sub = p_audit.add_subparsers(dest="audit_cmd", required=True)
+
+    p_audit_export = p_audit_sub.add_parser("export", help="Export audit trail as CSV or JSON")
+    p_audit_export.add_argument("--run-id", default="", dest="run_id", help="Run ID (omit for all runs)")
+    p_audit_export.add_argument("--format", default="json", choices=["json", "csv"], help="Output format")
+    p_audit_export.add_argument("--db", default="meshflow_runs.db", help="Ledger path")
+    p_audit_export.add_argument("--out", default="", help="Write to file instead of stdout")
+
+    # eval diff
+    p_eval_diff = sub.add_parser("eval-diff", help="Compare two eval baseline JSON files")
+    p_eval_diff.add_argument("baseline_a", help="Older baseline JSON path")
+    p_eval_diff.add_argument("baseline_b", help="Newer baseline JSON path")
+    p_eval_diff.add_argument("--fail-on-regression", action="store_true", help="Exit 1 if regressions found")
+
+    # plugins
+    p_plugins = sub.add_parser("plugins", help="Discover and inspect installed MeshFlow plugins")
+    p_plugins_sub = p_plugins.add_subparsers(dest="plugins_cmd", required=True)
+
+    p_plugins_list = p_plugins_sub.add_parser("list", help="List all installed plugins")
+    p_plugins_list.add_argument("--group", default=None, choices=["agent", "tool", "compliance", "ledger"], help="Filter by group")
+
+    p_plugins_verify = p_plugins_sub.add_parser("verify", help="Load and validate a plugin")
+    p_plugins_verify.add_argument("name", help="Plugin entry-point name")
+    p_plugins_verify.add_argument("--group", default="meshflow.agents", help="Entry-point group (default: meshflow.agents)")
+
+    p_plugins_info = p_plugins_sub.add_parser("info", help="Show details for a plugin")
+    p_plugins_info.add_argument("name", help="Plugin entry-point name")
+    p_plugins_info.add_argument("--group", default=None, choices=["agent", "tool", "compliance", "ledger"])
+
+    # compliance
+    p_compliance = sub.add_parser("compliance", help="Compliance reporting tools")
+    p_compliance_sub = p_compliance.add_subparsers(dest="compliance_cmd", required=True)
+
+    p_comp_report = p_compliance_sub.add_parser("report", help="Generate a compliance report from ledger data")
+    p_comp_report.add_argument(
+        "--framework", default="hipaa",
+        choices=["hipaa", "sox", "gdpr", "pci", "nerc"],
+        help="Compliance framework (default: hipaa)",
+    )
+    p_comp_report.add_argument("--run-id", default="", dest="run_id", help="Scope to a single run ID")
+    p_comp_report.add_argument("--db", default="meshflow_runs.db", help="Ledger SQLite path")
+    p_comp_report.add_argument("--format", default="text", choices=["text", "json"], help="Output format")
+    p_comp_report.add_argument("--out", default="", help="Write to file instead of stdout")
+
+    # webhooks
+    p_webhooks = sub.add_parser("webhooks", help="Manage outbound webhook alerts")
+    p_webhooks_sub = p_webhooks.add_subparsers(dest="webhooks_cmd", required=True)
+
+    p_wh_list = p_webhooks_sub.add_parser("list", help="List registered webhooks")
+    p_wh_list.add_argument("--server", default="http://localhost:8000", help="MeshFlow server URL")
+    p_wh_list.add_argument("--api-key", default="", dest="api_key")
+
+    p_wh_add = p_webhooks_sub.add_parser("add", help="Register a new webhook")
+    p_wh_add.add_argument("url", help="Target URL for webhook delivery")
+    p_wh_add.add_argument(
+        "--events", default="*",
+        help="Comma-separated event types (default: * for all)",
+    )
+    p_wh_add.add_argument("--secret", default="", help="HMAC signing secret")
+    p_wh_add.add_argument("--server", default="http://localhost:8000")
+    p_wh_add.add_argument("--api-key", default="", dest="api_key")
+
+    p_wh_remove = p_webhooks_sub.add_parser("remove", help="Remove a registered webhook by ID")
+    p_wh_remove.add_argument("id", help="Webhook ID to remove")
+    p_wh_remove.add_argument("--server", default="http://localhost:8000")
+    p_wh_remove.add_argument("--api-key", default="", dest="api_key")
+
+    p_bench = sub.add_parser("bench", help="Run performance benchmarks (no API key required)")
+    p_bench.add_argument(
+        "--concurrency", nargs="+", type=int, default=[10, 100, 1000],
+        help="Concurrency levels to test (default: 10 100 1000)",
+    )
+    p_bench.add_argument(
+        "--output", default=None,
+        help="Save results as JSON to this path",
+    )
+    p_bench.add_argument(
+        "--quick", action="store_true",
+        help="Fast smoke-check (concurrency 10 only)",
+    )
+
     args = parser.parse_args()
 
     dispatch = {
-        "run":         _cmd_run,
-        "stream":      _cmd_stream,
-        "replay":      _cmd_replay,
+        "init": _cmd_init,
+        "new": _cmd_new,
+        "logs": _cmd_logs,
+        "runs": _cmd_logs,  # alias
+        "approve": _cmd_approve,
+        "run": _cmd_run,
+        "stream": _cmd_stream,
+        "replay": _cmd_replay,
+        "trace": _cmd_trace,
         "conformance": _cmd_conformance,
-        "serve":       _cmd_serve,
-        "describe":    _cmd_describe,
+        "schema": _cmd_schema,
+        "serve": _cmd_serve,
+        "dev": _cmd_dev,
+        "describe": _cmd_describe,
+        "eval": _cmd_eval,
+        "eval-diff": _cmd_eval_diff,
+        "eval-history": _cmd_eval_history,
+        "graph": _cmd_graph,
+        "audit": _cmd_audit,
+        "plugins": _cmd_plugins,
+        "bench": _cmd_bench,
+        "watch": _cmd_watch,
+        "resume": _cmd_resume,
+        "mcp-stdio": _cmd_mcp_stdio,
+        "compliance": _cmd_compliance,
+        "webhooks": _cmd_webhooks,
     }
     dispatch[args.cmd](args)
 
 
+# ── init ─────────────────────────────────────────────────────────────────────
+
+
+def _cmd_init(args: argparse.Namespace) -> None:
+    from meshflow.cli.init import run_init
+
+    run_init(name=args.name)
+
+
+# ── new ───────────────────────────────────────────────────────────────────────
+
+
+def _cmd_new(args: argparse.Namespace) -> None:
+    from meshflow.cli.scaffold import run_new
+
+    run_new(kind=args.kind, name=args.name)
+
+
+# ── logs ──────────────────────────────────────────────────────────────────────
+
+
+def _cmd_logs(args: argparse.Namespace) -> None:
+    asyncio.run(_async_logs(args))
+
+
+async def _async_logs(args: argparse.Namespace) -> None:
+    import os
+    from meshflow.core.ledger import ReplayLedger
+
+    db = args.db
+    if not os.path.exists(db):
+        print(f"\n  No ledger found at '{db}'. Run a workflow first.\n")
+        return
+
+    ledger = ReplayLedger(db)
+    run_ids = await ledger.list_runs()
+    paused = {r["run_id"] for r in await ledger.list_paused_runs()}
+
+    if not run_ids:
+        print("\n  No runs recorded yet.\n")
+        return
+
+    run_ids = run_ids[: args.limit]
+
+    print()
+    print(f"  {'RUN ID':<38} {'NODES':<28} {'COST':>8}  {'TOKENS':>7}  {'DURATION':>9}  STATUS")
+    print(f"  {'─' * 38} {'─' * 28} {'─' * 8}  {'─' * 7}  {'─' * 9}  {'─' * 10}")
+
+    for run_id in run_ids:
+        summary = await ledger.run_summary(run_id)
+        if not summary:
+            continue
+        nodes_str = " → ".join(summary["nodes"][:4])
+        if len(summary["nodes"]) > 4:
+            nodes_str += f" +{len(summary['nodes']) - 4}"
+
+        blocked = summary["blocked_steps"] > 0
+        is_paused = run_id in paused
+        if is_paused:
+            status = "PAUSED"
+        elif blocked:
+            status = "FAILED"
+        else:
+            status = "completed"
+
+        cost = f"${summary['total_cost_usd']:.4f}"
+        tokens = str(summary["total_tokens"])
+        ts = summary["timestamps"].get("start", "")[:19].replace("T", " ")
+
+        duration_s = summary.get("duration_s", 0.0)
+        if duration_s is not None and duration_s > 0:
+            dur = f"{duration_s:.1f}s"
+        else:
+            dur = "—"
+
+        print(f"  {run_id:<38} {nodes_str:<28} {cost:>8}  {tokens:>7}  {dur:>9}  {status}")
+        if ts:
+            print(f"  {'':38} {ts}")
+
+    print()
+    if paused:
+        print(f"  {len(paused)} run(s) awaiting human approval.")
+        print("  Run: meshflow approve <run_id> <node_id>")
+        print()
+
+
+# ── approve ───────────────────────────────────────────────────────────────────
+
+
+def _cmd_approve(args: argparse.Namespace) -> None:
+    asyncio.run(_async_approve(args))
+
+
+async def _async_approve(args: argparse.Namespace) -> None:
+    import os
+    from meshflow.core.ledger import ReplayLedger
+
+    db = args.db
+    if not os.path.exists(db):
+        print(f"  ✗  Ledger not found at '{db}'.")
+        sys.exit(1)
+
+    ledger = ReplayLedger(db)
+    checkpoint = await ledger.load_checkpoint_data(args.run_id)
+    if checkpoint is None:
+        print(f"  ✗  No paused checkpoint found for run_id='{args.run_id}'.")
+        print("     Run 'meshflow logs' to see paused runs.")
+        sys.exit(1)
+
+    paused_node = checkpoint.get("paused_at_node", "")
+    if paused_node and paused_node != args.node_id:
+        print(f"  ✗  Run is paused at '{paused_node}', not '{args.node_id}'.")
+        print(f"     Run: meshflow approve {args.run_id} {paused_node}")
+        sys.exit(1)
+
+    checkpoint["approved_by"] = "cli"
+    checkpoint["approved_node"] = args.node_id
+    checkpoint["status"] = "approved"
+    await ledger.save_checkpoint(args.run_id, checkpoint)
+
+    print()
+    print(f"  ✓  Approved: run_id={args.run_id}  node={args.node_id}")
+    print("     The workflow can now resume from this checkpoint.")
+    print()
+
+
 # ── run ───────────────────────────────────────────────────────────────────────
+
 
 def _cmd_run(args: argparse.Namespace) -> None:
     asyncio.run(_async_run(args))
@@ -119,9 +479,9 @@ async def _async_run(args: argparse.Namespace) -> None:
     print(f"[meshflow] run_id={run_id}")
     print(f"[meshflow] workflow={wf.name}  nodes={len(wf._nodes)}  policy.budget=${pol.budget_usd}")
 
-    result = await wf.run(task, runtime)
+    result = await wf.run(task, runtime, context={"workflow_yaml": args.yaml})
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Status   : {'COMPLETED' if result.completed else 'FAILED'}")
     print(f"  Steps    : {len(result.steps)}")
     print(f"  Cost     : ${result.total_cost_usd:.6f}")
@@ -135,6 +495,7 @@ async def _async_run(args: argparse.Namespace) -> None:
 
 
 # ── stream ────────────────────────────────────────────────────────────────────
+
 
 def _cmd_stream(args: argparse.Namespace) -> None:
     asyncio.run(_async_stream(args))
@@ -174,6 +535,7 @@ async def _async_stream(args: argparse.Namespace) -> None:
         if not node:
             continue
         from meshflow.core.node import NodeInput
+
         outcome = await runtime.run(node, NodeInput(task=task, context=ctx.copy()), ctx)
 
         status = "blocked" if not outcome.ok else ("paused" if outcome.paused_for_human else "ok")
@@ -195,7 +557,178 @@ async def _async_stream(args: argparse.Namespace) -> None:
             break
 
 
+# ── watch ─────────────────────────────────────────────────────────────────────
+
+
+def _cmd_watch(args: argparse.Namespace) -> None:
+    asyncio.run(_async_watch(args))
+
+
+async def _async_watch(args: argparse.Namespace) -> None:
+    import os
+    from meshflow.core.ledger import ReplayLedger
+    from meshflow.core.events import EventKind, global_event_bus
+
+    terminal = {EventKind.WORKFLOW_COMPLETE, EventKind.WORKFLOW_FAILED}
+
+    async def _tail_bus() -> None:
+        saw_event = False
+        async for event in global_event_bus.subscribe(run_id=args.run_id, replay_history=True):
+            saw_event = True
+            if args.sse:
+                print(event.to_sse(), end="", flush=True)
+            else:
+                print(_format_watch_event(event), flush=True)
+            if event.kind in terminal:
+                break
+        if not saw_event:
+            print(f"[watch] no live events observed for run_id={args.run_id!r}")
+
+    async def _tail_ledger() -> None:
+        ledger = ReplayLedger(args.db)
+        seen: set[str] = set()
+        checkpoint_seen = False
+        while True:
+            steps = await ledger.get_run(args.run_id)
+            for step in steps:
+                step_id = step.get("step_id", "")
+                if step_id in seen:
+                    continue
+                seen.add(step_id)
+                print(_format_ledger_step(args.run_id, step), flush=True)
+            checkpoint = await ledger.load_checkpoint_data(args.run_id)
+            if checkpoint is not None and not checkpoint_seen:
+                checkpoint_seen = True
+                paused_at = checkpoint.get("paused_at_node", "")
+                print(f"[checkpoint_saved] run_id={args.run_id} node={paused_at}", flush=True)
+            await asyncio.sleep(0.25)
+
+    if args.timeout is None:
+        if global_event_bus.history(args.run_id):
+            await _tail_bus()
+        else:
+            if not os.path.exists(args.db) and args.db != ":memory:":
+                print(f"[watch] waiting for ledger at {args.db!r}", flush=True)
+            await _tail_ledger()
+        return
+
+    try:
+        async with asyncio.timeout(args.timeout):
+            if global_event_bus.history(args.run_id):
+                await _tail_bus()
+            else:
+                await _tail_ledger()
+    except TimeoutError:
+        print(f"[watch] timed out waiting for run_id={args.run_id!r}")
+
+
+def _format_watch_event(event: Any) -> str:
+    node = f" node={event.node_id}" if event.node_id else ""
+    data = ""
+    if event.data:
+        data = " " + json.dumps(event.data, sort_keys=True)
+    return f"[{event.kind.value}] run_id={event.run_id}{node}{data}"
+
+
+def _format_ledger_step(run_id: str, step: dict[str, Any]) -> str:
+    if step.get("blocked"):
+        kind = "step_blocked"
+    elif step.get("verdict") == "escalate":
+        kind = "step_paused"
+    else:
+        kind = "step_complete"
+    data = {
+        "cost_usd": step.get("cost_usd", 0.0),
+        "tokens": step.get("tokens_used", 0),
+        "uncertainty": step.get("uncertainty", 0.0),
+    }
+    reason = step.get("block_reason", "")
+    if reason:
+        data["blocked_by"] = reason
+    return (
+        f"[{kind}] run_id={run_id} node={step.get('node_id', '')} "
+        f"{json.dumps(data, sort_keys=True)}"
+    )
+
+
+# ── resume ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_resume(args: argparse.Namespace) -> None:
+    asyncio.run(_async_resume(args))
+
+
+async def _async_resume(args: argparse.Namespace) -> None:
+    import os
+    from meshflow.core.ledger import ReplayLedger
+    from meshflow.core.runtime import StepRuntime
+    from meshflow.core.workflow import HumanDecision, WorkflowDefinition
+    from meshflow.security.guardian import Guardian
+    from meshflow.security.dasc_gate import DascGate
+    from meshflow.security.identity import AgentIdentityProvider
+    from meshflow.intelligence.uncertainty import UncertaintyEngine
+    from meshflow.intelligence.collusion import CollusionAuditor
+
+    if not os.path.exists(args.db) and args.db != ":memory:":
+        print(f"  ✗  Ledger not found at '{args.db}'.")
+        sys.exit(1)
+
+    ledger = ReplayLedger(args.db)
+    checkpoint = await ledger.load_checkpoint_data(args.run_id)
+    if checkpoint is None:
+        print(f"  ✗  No paused checkpoint found for run_id='{args.run_id}'.")
+        print("     Run 'meshflow logs' to see paused runs.")
+        sys.exit(1)
+
+    yaml_path = args.yaml or checkpoint.get("workflow_yaml", "")
+    if not yaml_path:
+        print("  ✗  Checkpoint does not include the original workflow YAML path.")
+        print(f"     Run: meshflow resume {args.run_id} --yaml <workflow.yaml>")
+        sys.exit(1)
+    if not os.path.exists(yaml_path):
+        print(f"  ✗  Workflow YAML not found at '{yaml_path}'.")
+        print(f"     Run: meshflow resume {args.run_id} --yaml <workflow.yaml>")
+        sys.exit(1)
+
+    wf = WorkflowDefinition.from_yaml(yaml_path)
+    pol = wf.policy
+    runtime = StepRuntime(
+        policy=pol,
+        run_id=args.run_id,
+        guardian=Guardian(budget_usd=pol.budget_usd) if pol.enable_guardian else None,
+        dasc_gate=DascGate(pol, args.run_id) if pol.deterministic_gate else None,
+        identity=AgentIdentityProvider(args.run_id),
+        uncertainty=UncertaintyEngine() if pol.enable_uncertainty else None,
+        collusion=CollusionAuditor() if pol.enable_collusion_audit else None,
+        ledger=ledger,
+    )
+
+    decision = HumanDecision(
+        approved=not args.reject,
+        comment=args.comment,
+        decided_by=args.decided_by,
+    )
+    result = await wf.resume(args.run_id, decision, ledger, runtime)
+
+    status = "COMPLETED" if result.completed else ("PAUSED" if result.paused_nodes else "FAILED")
+    action = "rejected" if args.reject else "approved"
+    print()
+    print(f"  ✓  Resume {action}: run_id={args.run_id}")
+    print(f"  Status   : {status}")
+    print(f"  Steps    : {len(result.steps)}")
+    print(f"  Cost     : ${result.total_cost_usd:.6f}")
+    print(f"  Tokens   : {result.total_tokens}")
+    if result.paused_nodes:
+        print(f"  Paused   : {result.paused_nodes}")
+    if result.blocked_nodes:
+        print(f"  Blocked  : {result.blocked_nodes}")
+    if result.output:
+        print(f"\n  Output:\n{result.output[:1000]}")
+    print()
+
+
 # ── replay ────────────────────────────────────────────────────────────────────
+
 
 def _cmd_replay(args: argparse.Namespace) -> None:
     asyncio.run(_async_replay(args))
@@ -211,35 +744,88 @@ async def _async_replay(args: argparse.Namespace) -> None:
         print(f"[replay] run_id={args.run_id!r} not found in {args.db}")
         sys.exit(1)
 
+    raw = await ledger.export_run(args.run_id)
+    if args.archive_s3:
+        archive = await ledger.archive_run(args.run_id, args.archive_s3)
+        print(
+            f"[archive] wrote {archive.bytes_written} bytes to {archive.uri} "
+            f"sha256={archive.sha256}"
+        )
+
     if args.as_json:
-        raw = await ledger.export_run(args.run_id)
         print(raw)
         return
 
-    print(f"\n{'='*60}")
-    print(f"  Run      : {args.run_id}")
-    print(f"  Steps    : {summary['steps']}")
-    print(f"  Nodes    : {' -> '.join(summary['nodes'])}")
-    print(f"  Cost     : ${summary['total_cost_usd']:.6f}")
-    print(f"  Tokens   : {summary['total_tokens']}")
-    print(f"  Carbon   : {summary['total_carbon_gco2']:.4f} gCO2")
-    print(f"  Blocked  : {summary['blocked_steps']}")
-    print(f"  Start    : {summary['timestamps']['start']}")
-    print(f"  End      : {summary['timestamps']['end']}")
-    print(f"\n  Step-by-step:")
-
     steps = await ledger.get_run(args.run_id)
+    paused = await ledger.list_paused_runs()
+    is_paused = any(r["run_id"] == args.run_id for r in paused)
+
+    total_cost = sum(s.get("cost_usd", 0) for s in steps)
+    total_tok = sum(s.get("tokens_used", 0) for s in steps)
+    total_ms = sum(s.get("duration_ms", 0) for s in steps)
+    blocked_ct = sum(1 for s in steps if s.get("blocked"))
+
+    status_str = (
+        "PAUSED — awaiting approval" if is_paused else ("FAILED" if blocked_ct else "COMPLETED")
+    )
+
+    print()
+    print(f"  ┌{'─' * 58}┐")
+    print(f"  │  Replay — {args.run_id[:46]:<46}  │")
+    print(f"  ├{'─' * 58}┤")
+    print(f"  │  Status  : {status_str:<46}  │")
+    print(f"  │  Steps   : {len(steps):<46}  │")
+    print(f"  │  Cost    : ${total_cost:<44.5f}  │")
+    print(f"  │  Tokens  : {total_tok:<46}  │")
+    print(f"  │  Duration: {total_ms / 1000:<44.2f}s  │")
+    print(f"  └{'─' * 58}┘")
+    print()
+    print("  Step-by-step:")
+    print()
+
     for i, step in enumerate(steps, 1):
-        flag = "BLOCKED" if step["blocked"] else "ok"
+        node_id = step.get("node_id", "?")
+        kind = step.get("node_kind", "?")
+        blocked = step.get("blocked", False)
+        uncertain = step.get("uncertainty", 0.0)
+        cost = step.get("cost_usd", 0.0)
+        dur_ms = step.get("duration_ms", 0.0)
+        reason = step.get("block_reason", "") or ""
+        output = step.get("output", "") or ""
+
+        if blocked:
+            icon, _flag = "✗", "BLOCKED"
+        else:
+            icon, _flag = "✓", "ok"
+
+        connector = "└──" if i == len(steps) else "├──"
         print(
-            f"    [{i:02d}] {step['node_id']:<20} "
-            f"{step['node_kind']:<10} "
-            f"{flag:<8} "
-            f"uncertainty={step['uncertainty']:.2f}  "
-            f"{step['duration_ms']:.0f}ms"
+            f"  {connector} [{i:02d}] {icon}  {node_id:<22} {kind:<10} "
+            f"~{uncertain:.2f} conf  {dur_ms:.0f}ms  ${cost:.5f}"
         )
-        if step["blocked"] and step["block_reason"]:
-            print(f"         reason: {step['block_reason']}")
+        if output:
+            preview = output[:120].replace("\n", " ")
+            print(f"  │         output: {preview}")
+        if blocked and reason:
+            print(f"  │         reason: {reason}")
+        if i < len(steps):
+            print("  │")
+
+    print()
+    if is_paused:
+        checkpoint = await ledger.load_checkpoint_data(args.run_id)
+        paused_node = checkpoint.get("paused_at_node", "?") if checkpoint else "?"
+        print(f"  ⏸  Paused at node '{paused_node}' — awaiting human approval.")
+        print(f"     Run: meshflow approve {args.run_id} {paused_node}")
+        print()
+
+    if args.archive_s3:
+        archive = await ledger.archive_run(args.run_id, args.archive_s3)
+        print(
+            f"  [archive] wrote {archive.bytes_written} bytes to {archive.uri} "
+            f"sha256={archive.sha256}"
+        )
+        print()
 
 
 # ── conformance ───────────────────────────────────────────────────────────────
@@ -249,6 +835,8 @@ _CONFORMANCE_LEVELS = {
     1: "Reliable — handles exceptions, respects timeout, supports retry",
     2: "Governed — budget accounting, identity propagation, trace capture",
     3: "Auditable — ledger entries written, HITL pause/resume supported",
+    4: "Durable — checkpoint save/load primitives are verified",
+    5: "Certified — public contract schemas and report metadata are present",
 }
 
 
@@ -261,10 +849,10 @@ def _cmd_conformance(args: argparse.Namespace) -> None:
 
 async def _async_conformance(kind: str, max_level: int) -> list[dict[str, Any]]:
     """Run the MeshFlow conformance suite up to max_level."""
-    from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput, RiskTier
+    from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
     from meshflow.core.runtime import StepRuntime
     from meshflow.core.ledger import ReplayLedger
-    from meshflow.core.schemas import Policy
+    from meshflow.core.schemas import Policy, RiskTier
     from meshflow.security.guardian import Guardian
     from meshflow.security.identity import AgentIdentityProvider
     from meshflow.intelligence.uncertainty import UncertaintyEngine
@@ -315,13 +903,18 @@ async def _async_conformance(kind: str, max_level: int) -> list[dict[str, Any]]:
         try:
             outcome = await runtime.run(node, inp, {})
             passed = outcome.ok and bool(outcome.output.content)
-            results.append({
-                "level": 0, "check": "basic_execution",
-                "passed": passed,
-                "detail": outcome.output.content[:80] if passed else outcome.blocked_by,
-            })
+            results.append(
+                {
+                    "level": 0,
+                    "check": "basic_execution",
+                    "passed": passed,
+                    "detail": outcome.output.content[:80] if passed else outcome.blocked_by,
+                }
+            )
         except Exception as e:
-            results.append({"level": 0, "check": "basic_execution", "passed": False, "detail": str(e)})
+            results.append(
+                {"level": 0, "check": "basic_execution", "passed": False, "detail": str(e)}
+            )
 
     # ── Level 1: Exception handling ───────────────────────────────────────────
     if max_level >= 1:
@@ -331,13 +924,18 @@ async def _async_conformance(kind: str, max_level: int) -> list[dict[str, Any]]:
             outcome = await runtime.run(node_fail, inp, {})
             # A failing node should return ok=False, not raise
             passed = not outcome.ok and "node_exception" in outcome.blocked_by
-            results.append({
-                "level": 1, "check": "exception_handling",
-                "passed": passed,
-                "detail": outcome.blocked_by,
-            })
+            results.append(
+                {
+                    "level": 1,
+                    "check": "exception_handling",
+                    "passed": passed,
+                    "detail": outcome.blocked_by,
+                }
+            )
         except Exception as e:
-            results.append({"level": 1, "check": "exception_handling", "passed": False, "detail": str(e)})
+            results.append(
+                {"level": 1, "check": "exception_handling", "passed": False, "detail": str(e)}
+            )
 
     # ── Level 2: Identity propagation + trace capture ─────────────────────────
     if max_level >= 2:
@@ -347,13 +945,18 @@ async def _async_conformance(kind: str, max_level: int) -> list[dict[str, Any]]:
         try:
             outcome = await runtime.run(node, inp, {})
             did_provisioned = identity.is_provisioned(node.id)
-            results.append({
-                "level": 2, "check": "identity_propagation",
-                "passed": did_provisioned,
-                "detail": f"DID provisioned: {did_provisioned}",
-            })
+            results.append(
+                {
+                    "level": 2,
+                    "check": "identity_propagation",
+                    "passed": did_provisioned,
+                    "detail": f"DID provisioned: {did_provisioned}",
+                }
+            )
         except Exception as e:
-            results.append({"level": 2, "check": "identity_propagation", "passed": False, "detail": str(e)})
+            results.append(
+                {"level": 2, "check": "identity_propagation", "passed": False, "detail": str(e)}
+            )
 
     # ── Level 2b: Uncertainty scoring ─────────────────────────────────────────
     if max_level >= 2:
@@ -363,28 +966,36 @@ async def _async_conformance(kind: str, max_level: int) -> list[dict[str, Any]]:
         try:
             outcome = await runtime.run(node, inp, {})
             has_uncertainty = outcome.record.uncertainty >= 0.0
-            results.append({
-                "level": 2, "check": "uncertainty_scoring",
-                "passed": has_uncertainty,
-                "detail": f"uncertainty={outcome.record.uncertainty:.3f}",
-            })
+            results.append(
+                {
+                    "level": 2,
+                    "check": "uncertainty_scoring",
+                    "passed": has_uncertainty,
+                    "detail": f"uncertainty={outcome.record.uncertainty:.3f}",
+                }
+            )
         except Exception as e:
-            results.append({"level": 2, "check": "uncertainty_scoring", "passed": False, "detail": str(e)})
+            results.append(
+                {"level": 2, "check": "uncertainty_scoring", "passed": False, "detail": str(e)}
+            )
 
     # ── Level 3: Audit ledger ─────────────────────────────────────────────────
     if max_level >= 3:
-        runs = await ledger.list_runs()
         steps_for_run = await ledger.get_run(run_id)
         passed = len(steps_for_run) > 0
-        results.append({
-            "level": 3, "check": "audit_ledger_writes",
-            "passed": passed,
-            "detail": f"{len(steps_for_run)} records written",
-        })
+        results.append(
+            {
+                "level": 3,
+                "check": "audit_ledger_writes",
+                "passed": passed,
+                "detail": f"{len(steps_for_run)} records written",
+            }
+        )
 
     # ── Level 3b: HITL pause ──────────────────────────────────────────────────
     if max_level >= 3:
         from meshflow.core.schemas import HumanInLoopConfig
+
         hitl_pol = Policy(
             budget_usd=10.0,
             human_in_loop=HumanInLoopConfig(
@@ -401,13 +1012,67 @@ async def _async_conformance(kind: str, max_level: int) -> list[dict[str, Any]]:
         node.id = "conformance_hitl"
         try:
             outcome = await hitl_runtime.run(node, NodeInput(task="hitl test", context={}), {})
-            results.append({
-                "level": 3, "check": "hitl_pause",
-                "passed": outcome.paused_for_human,
-                "detail": f"paused={outcome.paused_for_human}  human_ctx={outcome.human_context}",
-            })
+            results.append(
+                {
+                    "level": 3,
+                    "check": "hitl_pause",
+                    "passed": outcome.paused_for_human,
+                    "detail": f"paused={outcome.paused_for_human}  human_ctx={outcome.human_context}",
+                }
+            )
         except Exception as e:
             results.append({"level": 3, "check": "hitl_pause", "passed": False, "detail": str(e)})
+
+    # ── Level 4: Durable checkpoint primitives ───────────────────────────────
+    if max_level >= 4:
+        checkpoint_id = f"{run_id}-checkpoint"
+        checkpoint_payload = {
+            "workflow_name": "conformance",
+            "paused_at_node": "conformance_hitl",
+            "context": {"task": "durability test"},
+            "completed_nodes": ["first"],
+            "skipped_nodes": [],
+        }
+        try:
+            await ledger.save_checkpoint(checkpoint_id, checkpoint_payload)
+            loaded = await ledger.load_checkpoint_data(checkpoint_id)
+            paused = await ledger.list_paused_runs()
+            passed = loaded == checkpoint_payload and any(
+                row["run_id"] == checkpoint_id for row in paused
+            )
+            results.append(
+                {
+                    "level": 4,
+                    "check": "checkpoint_roundtrip",
+                    "passed": passed,
+                    "detail": f"loaded={loaded is not None}",
+                }
+            )
+        except Exception as e:
+            results.append(
+                {"level": 4, "check": "checkpoint_roundtrip", "passed": False, "detail": str(e)}
+            )
+
+    # ── Level 5: Public contract schemas ─────────────────────────────────────
+    if max_level >= 5:
+        try:
+            from meshflow.core.contracts import core_contract_schemas
+
+            schemas = core_contract_schemas()
+            required = {"NodeInput", "NodeOutput", "MeshNode", "Policy", "RuntimeOutcome"}
+            passed = required <= set(schemas)
+            results.append(
+                {
+                    "level": 5,
+                    "check": "contract_schema_export",
+                    "passed": passed,
+                    "detail": ", ".join(sorted(schemas)),
+                }
+            )
+        except Exception as e:
+            results.append(
+                {"level": 5, "check": "contract_schema_export", "passed": False, "detail": str(e)}
+            )
 
     return results
 
@@ -417,9 +1082,9 @@ def _print_conformance_report(kind: str, results: list[dict[str, Any]]) -> None:
     total = len(results)
     max_level = max((r["level"] for r in results if r["passed"]), default=-1)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  MeshFlow Conformance Report — kind: {kind}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for level, desc in _CONFORMANCE_LEVELS.items():
         level_results = [r for r in results if r["level"] == level]
         if not level_results:
@@ -431,23 +1096,155 @@ def _print_conformance_report(kind: str, results: list[dict[str, Any]]) -> None:
             sym = "+" if r["passed"] else "-"
             print(f"    [{sym}] {r['check']:<30}  {r['detail']}")
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Score     : {passed}/{total} checks passed")
     conformance_level = max_level if max_level >= 0 else -1
-    print(f"  Level     : {'L' + str(conformance_level) if conformance_level >= 0 else 'non-conformant'}")
+    print(
+        f"  Level     : {'L' + str(conformance_level) if conformance_level >= 0 else 'non-conformant'}"
+    )
     print(f"  Verdict   : {'CONFORMANT' if passed == total else 'NON-CONFORMANT'}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
+
+
+# ── trace ─────────────────────────────────────────────────────────────────────
+
+
+def _cmd_trace(args: argparse.Namespace) -> None:
+    asyncio.run(_async_trace(args))
+
+
+async def _async_trace(args: argparse.Namespace) -> None:
+    import os
+    from meshflow.core.ledger import ReplayLedger
+
+    if not os.path.exists(args.db) and args.db != ":memory:":
+        print(f"  No ledger found at '{args.db}'.")
+        sys.exit(1)
+
+    ledger = ReplayLedger(args.db)
+    steps = await ledger.get_run(args.run_id)
+    if not steps:
+        print(f"  run_id='{args.run_id}' not found in {args.db}")
+        sys.exit(1)
+
+    summary = await ledger.run_summary(args.run_id)
+    chain = await ledger.verify_chain(args.run_id)
+
+    if args.as_json or args.export:
+        payload = json.dumps(
+            {
+                "run_id": args.run_id,
+                "summary": summary,
+                "chain_valid": chain["valid"],
+                "steps": steps,
+            },
+            indent=2,
+        )
+        if args.export:
+            with open(args.export, "w") as f:
+                f.write(payload)
+            print(f"  Exported {len(steps)} steps to {args.export}")
+        else:
+            print(payload)
+        return
+
+    # Rich terminal table
+    print()
+    print(f"  Trace: {args.run_id}")
+    print(
+        f"  Steps: {summary['steps']}   Cost: ${summary['total_cost_usd']:.5f}   "
+        f"Tokens: {summary['total_tokens']}   "
+        f"Chain: {'VALID' if chain['valid'] else 'INVALID'}"
+    )
+    print()
+    print(
+        f"  {'#':<3} {'NODE':<22} {'KIND':<10} {'VERDICT':<9} {'UNCERT':>6}  "
+        f"{'TOKENS':>6}  {'COST':>8}  {'MS':>6}  STATUS"
+    )
+    print(
+        f"  {'─' * 3} {'─' * 22} {'─' * 10} {'─' * 9} {'─' * 6}  {'─' * 6}  {'─' * 8}  {'─' * 6}  {'─' * 8}"
+    )
+
+    for i, step in enumerate(steps, 1):
+        blocked = step.get("blocked", False)
+        verdict = step.get("verdict", "commit")
+        status = "BLOCKED" if blocked else ("PAUSED" if verdict == "escalate" else "ok")
+        print(
+            f"  {i:<3} {step.get('node_id', '?'):<22} {step.get('node_kind', '?'):<10} "
+            f"{verdict:<9} {step.get('uncertainty', 0):.3f}  "
+            f"{step.get('tokens_used', 0):>6}  "
+            f"${step.get('cost_usd', 0):.5f}  "
+            f"{step.get('duration_ms', 0):>6.0f}  {status}"
+        )
+        reason = step.get("block_reason", "")
+        if reason:
+            print(f"  {'':3} {'  reason: ' + reason}")
+        output = step.get("output_content", "") or ""
+        if output:
+            print(f"  {'':3}   output: {output[:100].replace(chr(10), ' ')}")
+        if i < len(steps):
+            print()
+
+    if not chain["valid"]:
+        print("\n  CHAIN INTEGRITY ERRORS:")
+        for err in chain["errors"]:
+            print(f"    ! {err}")
+    print()
 
 
 # ── serve ─────────────────────────────────────────────────────────────────────
 
+
 def _cmd_serve(args: argparse.Namespace) -> None:
+    from meshflow.runtime.server import serve, _load_api_keys
+
+    keys: set[str] = set(args.api_keys) if getattr(args, "api_keys", None) else _load_api_keys()
+    serve(
+        host=args.host,
+        port=args.port,
+        api_keys=keys,
+        ledger_path=getattr(args, "ledger", "meshflow_runs.db"),
+        tls_cert=getattr(args, "tls_cert", ""),
+        tls_key=getattr(args, "tls_key", ""),
+    )
+
+
+def _cmd_dev(args: argparse.Namespace) -> None:
+    """Start the server in dev mode: no auth, in-memory ledger, colored output."""
+    print("\n  MeshFlow DEV mode")
+    print(f"  URL:    http://{args.host}:{args.port}")
+    print("  Ledger: in-memory (ephemeral)")
+    print("  Auth:   DISABLED (dev mode)")
+    print("  Press Ctrl+C to stop\n")
     from meshflow.runtime.server import serve
-    print(f"[meshflow] starting HTTP runtime on {args.host}:{args.port}")
-    serve(host=args.host, port=args.port)
+
+    serve(
+        host=args.host,
+        port=args.port,
+        api_keys=set(),
+        ledger_path=getattr(args, "ledger", ":memory:"),
+    )
+
+
+# ── schema ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_schema(args: argparse.Namespace) -> None:
+    from meshflow.core.contracts import core_contract_schemas
+
+    schemas = core_contract_schemas()
+    if args.name == "all":
+        print(json.dumps(schemas, indent=2))
+        return
+    schema = schemas.get(args.name)
+    if schema is None:
+        print(f"[schema] unknown schema {args.name!r}; choose one of: {', '.join(sorted(schemas))}")
+        sys.exit(1)
+    print(json.dumps(schema, indent=2))
 
 
 # ── describe ──────────────────────────────────────────────────────────────────
+
 
 def _cmd_describe(args: argparse.Namespace) -> None:
     from meshflow.core.workflow import WorkflowDefinition
@@ -455,3 +1252,474 @@ def _cmd_describe(args: argparse.Namespace) -> None:
     wf = WorkflowDefinition.from_yaml(args.yaml)
     desc = wf.describe()
     print(json.dumps(desc, indent=2))
+
+
+# ── mcp-stdio ────────────────────────────────────────────────────────────────
+
+
+def _cmd_mcp_stdio(args: argparse.Namespace) -> None:
+    """Start a governed MeshFlow stdio MCP server for Claude Desktop."""
+    import os
+    import shutil
+
+    if getattr(args, "print_config", False):
+        exe = shutil.which("meshflow") or "meshflow"
+        config_arg = f'", "--config", "{args.config}"' if args.config else ""
+        snippet = {
+            "mcpServers": {
+                "meshflow": {
+                    "command": exe,
+                    "args": ["mcp-stdio", "--policy", args.policy] + (
+                        ["--config", args.config] if args.config else []
+                    ),
+                    "env": {"ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"},
+                }
+            }
+        }
+        print(json.dumps(snippet, indent=2))
+        print("\nAdd this to ~/Library/Application Support/Claude/claude_desktop_config.json")
+        return
+
+    from meshflow.mcp.server import MCPServer, from_config
+
+    if args.config and os.path.exists(args.config):
+        srv = from_config(args.config, policy=args.policy)
+        msg = f"MeshFlow MCP stdio server (config: {args.config}, policy: {args.policy})"
+    else:
+        srv = MCPServer(policy=args.policy)
+        msg = f"MeshFlow MCP stdio server (policy: {args.policy})"
+
+    # Write startup message to stderr so Claude Desktop can see it
+    # (stdout is reserved for JSON-RPC)
+    print(msg, file=sys.stderr)
+
+    asyncio.run(srv.run_stdio())
+
+
+# ── eval ──────────────────────────────────────────────────────────────────────
+
+
+def _cmd_eval(args: argparse.Namespace) -> None:
+    asyncio.run(_async_eval(args))
+
+
+async def _async_eval(args: argparse.Namespace) -> None:
+    from meshflow.eval import EvalBaseline, EvalSuite
+
+    suite = EvalSuite.from_yaml(args.eval_file)
+
+    if args.tags:
+        suite = suite.filter(args.tags)
+
+    # If --agent provided, import it and find the agent
+    agent: Any = None
+    if args.agent:
+        import importlib.util, os
+
+        spec = importlib.util.spec_from_file_location("_eval_agent", args.agent)
+        if spec and spec.loader:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            agent = getattr(mod, "agent", None) or getattr(mod, "AGENT", None)
+            if agent is None:
+                print(f"  [eval] No 'agent' or 'AGENT' variable found in {args.agent}")
+                sys.exit(1)
+
+    if agent is None:
+        from meshflow.agents.library import ResearchAgent
+        agent = ResearchAgent(policy="dev")
+
+    result = await suite.run(agent, concurrency=args.concurrency)
+    print(result.report(verbose=True))
+
+    # Save to ledger
+    if getattr(args, "save_to_ledger", False):
+        from meshflow.core.ledger import ReplayLedger
+        ledger = ReplayLedger(args.db)
+        key = await ledger.save_eval_result(result)
+        print(f"  [eval] Saved to ledger: {key}")
+
+    # Save baseline
+    if getattr(args, "save_baseline", ""):
+        baseline = EvalBaseline.from_result(result)
+        baseline.save(args.save_baseline)
+        print(f"  [eval] Baseline saved → {args.save_baseline}")
+
+    # Compare against baseline
+    if getattr(args, "compare_baseline", ""):
+        import os
+        if not os.path.exists(args.compare_baseline):
+            print(f"  [eval] Baseline not found: {args.compare_baseline}")
+            sys.exit(1)
+        old = EvalBaseline.load(args.compare_baseline)
+        new = EvalBaseline.from_result(result)
+        diff = old.diff(new)
+        print(diff.report())
+        if getattr(args, "fail_on_regression", False) and diff.has_regressions:
+            print(f"  [eval] FAILED: {len(diff.regressions)} regression(s) detected")
+            sys.exit(1)
+
+    if args.fail_under > 0 and result.pass_rate < args.fail_under:
+        print(f"  [eval] FAILED: pass_rate {result.pass_rate:.1%} < threshold {args.fail_under:.1%}")
+        sys.exit(1)
+
+
+def _cmd_eval_diff(args: argparse.Namespace) -> None:
+    """Compare two eval baseline JSON files and print a regression report."""
+    import os
+    from meshflow.eval import EvalBaseline
+
+    for path in (args.baseline_a, args.baseline_b):
+        if not os.path.exists(path):
+            print(f"  [eval-diff] File not found: {path}")
+            sys.exit(1)
+
+    old = EvalBaseline.load(args.baseline_a)
+    new = EvalBaseline.load(args.baseline_b)
+    diff = old.diff(new)
+    print(diff.report())
+
+    if getattr(args, "fail_on_regression", False) and diff.has_regressions:
+        sys.exit(1)
+
+
+# ── eval history ─────────────────────────────────────────────────────────────
+
+
+def _cmd_eval_history(args: argparse.Namespace) -> None:
+    """List stored eval results from the ledger."""
+    asyncio.run(_async_eval_history(args))
+
+
+async def _async_eval_history(args: argparse.Namespace) -> None:
+    from meshflow.core.ledger import ReplayLedger
+
+    ledger = ReplayLedger(args.db)
+    suite_filter = args.suite.strip() or None
+    results = await ledger.list_eval_results(suite_name=suite_filter)
+
+    if getattr(args, "output_json", False):
+        print(json.dumps(results, indent=2))
+        return
+
+    if not results:
+        print("\n  No stored eval results found.")
+        if suite_filter:
+            print(f"  (filtered by suite: {suite_filter!r})")
+        print()
+        return
+
+    print()
+    print(f"  {'SUITE':<24} {'PASS RATE':>10} {'SCORE':>8} {'SCENARIOS':>10}  TIMESTAMP")
+    print(f"  {'─'*24} {'─'*10} {'─'*8} {'─'*10}  {'─'*20}")
+    for r in results:
+        suite_name = r.get("suite_name", "?")
+        pass_rate = r.get("pass_rate", 0.0)
+        score = r.get("weighted_score", r.get("score", 0.0))
+        n = r.get("total_scenarios", len(r.get("scenarios", [])))
+        ts = r.get("timestamp", "")[:19]
+        print(f"  {suite_name:<24} {pass_rate:>9.1%} {score:>8.3f} {n:>10}  {ts}")
+    print(f"\n  {len(results)} result(s) found.\n")
+
+
+# ── graph export ─────────────────────────────────────────────────────────────
+
+
+def _cmd_graph(args: argparse.Namespace) -> None:
+    asyncio.run(_async_graph(args))
+
+
+async def _async_graph(args: argparse.Namespace) -> None:
+    from meshflow.core.graph_export import steps_to_mermaid, steps_to_dot
+    from meshflow.core.ledger import ReplayLedger
+
+    ledger = ReplayLedger(args.db)
+    run_id = getattr(args, "run_id", "").strip()
+
+    if not run_id:
+        runs = await ledger.list_runs()
+        if not runs:
+            print("\n  No runs in ledger.\n")
+            return
+        print(f"\n  Available run IDs (use --run-id <id>):\n")
+        for r in runs[-20:]:
+            print(f"    {r}")
+        print()
+        return
+
+    steps = await ledger.get_run(run_id)
+    if not steps:
+        print(f"\n  Run {run_id!r} not found or has no steps.\n")
+        sys.exit(1)
+
+    fmt = getattr(args, "format", "mermaid")
+    content = steps_to_mermaid(steps, run_id) if fmt == "mermaid" else steps_to_dot(steps, run_id)
+
+    out_path = getattr(args, "out", "").strip()
+    if out_path:
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"  Written to {out_path}")
+    else:
+        print(content)
+
+
+# ── audit export ──────────────────────────────────────────────────────────────
+
+
+def _cmd_audit(args: argparse.Namespace) -> None:
+    cmd = args.audit_cmd
+    if cmd == "export":
+        asyncio.run(_async_audit_export(args))
+
+
+async def _async_audit_export(args: argparse.Namespace) -> None:
+    from meshflow.core.ledger import ReplayLedger
+
+    ledger = ReplayLedger(args.db)
+    run_id = getattr(args, "run_id", "").strip()
+    fmt = getattr(args, "format", "json")
+    out_path = getattr(args, "out", "").strip()
+
+    if not run_id:
+        # Export summary of all runs
+        runs = await ledger.list_runs()
+        summaries = []
+        for rid in runs:
+            try:
+                summaries.append(await ledger.run_summary(rid))
+            except Exception:
+                pass
+        content = json.dumps({"runs": summaries}, indent=2)
+    elif fmt == "csv":
+        content = await ledger.export_run_csv(run_id)
+        if not content:
+            print(f"\n  Run {run_id!r} not found.\n")
+            sys.exit(1)
+    else:
+        content = await ledger.export_run(run_id)
+
+    if out_path:
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"  Written to {out_path}")
+    else:
+        print(content)
+
+
+# ── plugins ───────────────────────────────────────────────────────────────────
+
+
+def _cmd_plugins(args: argparse.Namespace) -> None:
+    from meshflow.plugins import discover_plugins, verify_plugin
+
+    cmd = args.plugins_cmd
+
+    if cmd == "list":
+        plugins = discover_plugins(group=getattr(args, "group", None))
+        if not plugins:
+            print("\n  No MeshFlow plugins installed.")
+            print("  Install a plugin package that declares entry_points in the")
+            print("  'meshflow.agents', 'meshflow.tools', 'meshflow.compliance',")
+            print("  or 'meshflow.ledger' groups.\n")
+            return
+
+        print()
+        print(f"  {'NAME':<24} {'GROUP':<12} {'VERSION':<10} {'PACKAGE':<24}  DESCRIPTION")
+        print(f"  {'─'*24} {'─'*12} {'─'*10} {'─'*24}  {'─'*30}")
+        for p in plugins:
+            desc = (p.description or "")[:40]
+            print(
+                f"  {p.name:<24} {p.group:<12} {p.version:<10} {p.dist_name:<24}  {desc}"
+            )
+        print()
+
+    elif cmd == "verify":
+        group = getattr(args, "group", "meshflow.agents") or "meshflow.agents"
+        ok, msg = verify_plugin(args.name, group)
+        status = "✓  OK" if ok else "✗  FAIL"
+        print(f"\n  [{status}] {args.name}  ({group})")
+        print(f"  {msg}\n")
+        sys.exit(0 if ok else 1)
+
+    elif cmd == "info":
+        group_filter = getattr(args, "group", None)
+        plugins = discover_plugins(group=group_filter)
+        matches = [p for p in plugins if p.name == args.name]
+        if not matches:
+            print(f"\n  Plugin {args.name!r} not found.")
+            sys.exit(1)
+        p = matches[0]
+        print()
+        print(f"  Name        : {p.name}")
+        print(f"  Group       : {p.group}  ({p.ep_group})")
+        print(f"  Module      : {p.module}")
+        print(f"  Package     : {p.dist_name}  v{p.version}")
+        print(f"  Description : {p.description or '—'}")
+
+        ok, msg = verify_plugin(p.name, p.ep_group)
+        print(f"  Load check  : {'OK' if ok else 'FAIL'}  —  {msg}")
+        print()
+
+
+# ── bench ─────────────────────────────────────────────────────────────────────
+
+
+def _cmd_bench(args: argparse.Namespace) -> None:
+    """Run the performance benchmark suite (no API key required)."""
+    import importlib.util
+    import os as _os
+
+    # Locate bench_core.py relative to this package
+    bench_path = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+        "benchmarks",
+        "bench_core.py",
+    )
+
+    if not _os.path.exists(bench_path):
+        print(f"  [bench] Benchmark script not found at {bench_path}")
+        print("         Install from source (git clone) to get the benchmarks/ directory.")
+        sys.exit(1)
+
+    spec = importlib.util.spec_from_file_location("bench_core", bench_path)
+    if spec is None or spec.loader is None:
+        print("  [bench] Failed to load bench_core.py")
+        sys.exit(1)
+
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["bench_core"] = mod  # must be registered before exec on Python 3.14+
+    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+    concurrencies = [10] if args.quick else args.concurrency
+    import meshflow
+    print(f"MeshFlow v{meshflow.__version__} — performance benchmarks")
+    print(f"  concurrency levels : {concurrencies}")
+    print(f"  Python {sys.version.split()[0]}")
+    print()
+
+    asyncio.run(mod._main(concurrencies, args.output))
+    print("\nDone.")
+
+
+# ── compliance ────────────────────────────────────────────────────────────────
+
+
+def _cmd_compliance(args: argparse.Namespace) -> None:
+    if args.compliance_cmd == "report":
+        asyncio.run(_async_compliance_report(args))
+
+
+async def _async_compliance_report(args: argparse.Namespace) -> None:
+    import os
+    from meshflow.core.ledger import ReplayLedger
+    from meshflow.compliance.reporter import ComplianceReporter
+
+    db = args.db
+    if not os.path.exists(db):
+        print(f"\n  No ledger found at '{db}'. Run a workflow first.\n")
+        sys.exit(1)
+
+    ledger = ReplayLedger(db)
+    run_id = args.run_id
+
+    if run_id:
+        steps = await ledger.get_run(run_id) or []
+        run_ids = [run_id]
+    else:
+        all_runs = await ledger.list_runs()
+        steps = []
+        for rid in all_runs[-50:]:
+            run_steps = await ledger.get_run(rid) or []
+            steps.extend(run_steps)
+        run_ids = all_runs[-50:]
+
+    reporter = ComplianceReporter()
+    report = reporter.generate(args.framework, steps, run_ids=run_ids)
+
+    if args.format == "json":
+        output = report.to_json()
+    else:
+        output = report.to_text()
+
+    if args.out:
+        with open(args.out, "w") as fh:
+            fh.write(output)
+        print(f"  Compliance report written to {args.out}")
+    else:
+        print(output)
+
+
+# ── webhooks ──────────────────────────────────────────────────────────────────
+
+
+def _cmd_webhooks(args: argparse.Namespace) -> None:
+    import urllib.request
+
+    def _headers(api_key: str) -> dict[str, str]:
+        h = {"Content-Type": "application/json"}
+        if api_key:
+            h["Authorization"] = f"Bearer {api_key}"
+        return h
+
+    server = args.server.rstrip("/")
+    api_key = getattr(args, "api_key", "")
+
+    if args.webhooks_cmd == "list":
+        req = urllib.request.Request(f"{server}/webhooks", headers=_headers(api_key))
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+        except Exception as exc:
+            print(f"  Error: {exc}")
+            sys.exit(1)
+        hooks = data.get("webhooks", [])
+        stats = data.get("stats", {})
+        if not hooks:
+            print("  No webhooks registered.")
+            return
+        print(f"\n  Registered webhooks ({len(hooks)}):")
+        print(f"  {'ID':<36}  {'Events':<30}  {'URL'}")
+        print(f"  {'─' * 36}  {'─' * 30}  {'─' * 40}")
+        for h in hooks:
+            print(
+                f"  {h.get('id', ''):<36}  "
+                f"{', '.join(h.get('events', [])):<30}  "
+                f"{h.get('url', '')}"
+            )
+        print(
+            f"\n  Deliveries: {stats.get('total_deliveries', 0)}  "
+            f"Failures: {stats.get('total_failures', 0)}\n"
+        )
+
+    elif args.webhooks_cmd == "add":
+        events = [e.strip() for e in args.events.split(",") if e.strip()]
+        body = json.dumps({"url": args.url, "events": events, "secret": args.secret}).encode()
+        req = urllib.request.Request(
+            f"{server}/webhooks", data=body, headers=_headers(api_key), method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+        except Exception as exc:
+            print(f"  Error: {exc}")
+            sys.exit(1)
+        if "error" in data:
+            print(f"  Registration failed: {data['error']}")
+            sys.exit(1)
+        print(f"\n  Webhook registered!")
+        print(f"  ID:     {data.get('id', '?')}")
+        print(f"  URL:    {data.get('url', '?')}")
+        print(f"  Events: {', '.join(data.get('events', []))}\n")
+
+    elif args.webhooks_cmd == "remove":
+        req = urllib.request.Request(
+            f"{server}/webhooks/{args.id}", headers=_headers(api_key), method="DELETE"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+        except Exception as exc:
+            print(f"  Error: {exc}")
+            sys.exit(1)
+        print(f"  Webhook {data.get('deleted', args.id)} removed.")

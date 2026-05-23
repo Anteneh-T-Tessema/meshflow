@@ -7,12 +7,13 @@ Three independent pre-execution checks on every agent action:
 
 Guardian fires BEFORE dasc-gate — it blocks, not just logs.
 """
+
 from __future__ import annotations
 
 import re
 import statistics
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from meshflow.core.schemas import InjectionResult, Intent, Message
@@ -34,7 +35,9 @@ _INJECTION_PATTERNS = [
     re.compile(r"developer\s+mode\s+(enabled|on)", re.I),
     re.compile(r"sudo\s+mode", re.I),
     # Exfiltration patterns
-    re.compile(r"(send|transmit|exfiltrate|leak)\s+(all|the)?\s*(data|credentials|keys|secrets)", re.I),
+    re.compile(
+        r"(send|transmit|exfiltrate|leak)\s+(all|the)?\s*(data|credentials|keys|secrets)", re.I
+    ),
     re.compile(r"base64\s+(encode|decode)\s+(and\s+)?(send|transmit)", re.I),
     # Nested prompt injection
     re.compile(r"\[INST\].*\[/INST\]", re.S),
@@ -61,6 +64,7 @@ class InjectionScanResult:
 @dataclass
 class ToolChainRisk:
     """Economic DoS via tool calling chain amplification."""
+
     estimated_calls: int
     estimated_cost_usd: float
     amplification_factor: float
@@ -72,7 +76,7 @@ class ToolChainRisk:
 class BehaviouralAnomaly:
     agent_id: str
     anomaly_type: str
-    deviation_score: float   # z-score of observed vs baseline
+    deviation_score: float  # z-score of observed vs baseline
     is_alert: bool
     details: str = ""
 
@@ -144,7 +148,7 @@ class ToolChainAnalyzer:
     ) -> ToolChainRisk:
         tool_set = {t.lower() for t in tool_names}
         recursive_count = len(tool_set & self._RECURSIVE_TOOLS)
-        amplification = max(1, recursive_count ** 2)
+        amplification = max(1, recursive_count**2)
 
         for combo, factor in self._DANGEROUS_COMBOS:
             if combo.issubset(tool_set):
@@ -155,9 +159,7 @@ class ToolChainAnalyzer:
         estimated_cost = estimated_calls * per_call_cost_usd
 
         is_dangerous = (
-            amplification > 20
-            or estimated_cost > budget_usd * 0.5
-            or estimated_calls > 500
+            amplification > 20 or estimated_cost > budget_usd * 0.5 or estimated_calls > 500
         )
 
         return ToolChainRisk(
@@ -167,7 +169,8 @@ class ToolChainAnalyzer:
             is_dangerous=is_dangerous,
             reason=(
                 f"Recursive tool combo detected: amplification {amplification:.0f}×"
-                if is_dangerous else "Within acceptable range"
+                if is_dangerous
+                else "Within acceptable range"
             ),
         )
 
@@ -180,7 +183,7 @@ class BehaviouralMonitor:
     """
 
     def __init__(self) -> None:
-        self._baselines: dict[str, list[float]] = {}    # agent_id → [token_rates]
+        self._baselines: dict[str, list[float]] = {}  # agent_id → [token_rates]
         self._tool_rates: dict[str, list[float]] = {}
         self._output_lens: dict[str, list[int]] = {}
 
@@ -216,7 +219,8 @@ class BehaviouralMonitor:
             is_alert=z_score > 3.0,
             details=(
                 f"z={z_score:.2f}, current={current_tokens:.1f}, baseline_mean={mean:.1f}"
-                if z_score > 3.0 else ""
+                if z_score > 3.0
+                else ""
             ),
         )
 
@@ -295,12 +299,14 @@ class Guardian:
         return anomaly
 
     def _alert(self, alert_type: str, agent_id: str, details: list[str]) -> None:
-        self._alerts.append({
-            "type": alert_type,
-            "agent_id": agent_id,
-            "details": details,
-            "timestamp": time.time(),
-        })
+        self._alerts.append(
+            {
+                "type": alert_type,
+                "agent_id": agent_id,
+                "details": details,
+                "timestamp": time.time(),
+            }
+        )
 
     def alert_count(self) -> int:
         return len(self._alerts)
