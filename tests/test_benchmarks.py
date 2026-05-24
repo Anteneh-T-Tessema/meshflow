@@ -119,6 +119,6 @@ class TestBenchCLI:
         )
         assert "bench" in result.stdout or result.returncode == 0
 
-    def test_meshflow_version_is_0_14(self) -> None:
+    def test_meshflow_version(self) -> None:
         import meshflow
-        assert meshflow.__version__ == "0.15.0"
+        assert meshflow.__version__ == "0.22.0"

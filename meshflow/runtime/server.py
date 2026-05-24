@@ -157,11 +157,11 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         principal = _get_principal(request)
         if principal is None:
             return False
-        # Rate limiting (best-effort — never blocks startup)
+        # Rate limiting keyed by tenant_id (falls back to "anonymous" in open mode)
         try:
             from meshflow.observability.sla import get_rate_limiter
-            key = _extract_raw_key(request.headers) or "anonymous"
-            if not get_rate_limiter().allow(key):
+            tenant_id = getattr(principal, "tenant_id", "") or "anonymous"
+            if not get_rate_limiter().allow(tenant_id):
                 return False
         except Exception:
             pass

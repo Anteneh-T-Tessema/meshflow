@@ -198,6 +198,61 @@ def post_hitl(run_id: str, action: str, reviewer: str, notes: str) -> bool:
         return False
 
 
+@st.cache_data(ttl=REFRESH)
+def fetch_whoami() -> dict[str, Any]:
+    import urllib.request
+    req = urllib.request.Request(f"{SERVER}/keys/whoami", headers=_headers())
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=REFRESH)
+def fetch_api_keys(tenant: str = "") -> dict[str, Any]:
+    import urllib.request
+    url = f"{SERVER}/keys"
+    if tenant:
+        url += f"?tenant={tenant}"
+    req = urllib.request.Request(url, headers=_headers())
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        return {"keys": [], "count": 0, "error": str(e)}
+
+
+def create_api_key(name: str, role: str, tenant_id: str) -> dict[str, Any]:
+    import urllib.request
+    body = json.dumps({"name": name, "role": role, "tenant_id": tenant_id}).encode()
+    req = urllib.request.Request(
+        f"{SERVER}/keys",
+        data=body,
+        headers={**_headers(), "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def revoke_api_key(key_id: str) -> dict[str, Any]:
+    import urllib.request
+    req = urllib.request.Request(
+        f"{SERVER}/keys/{key_id}",
+        headers=_headers(),
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Metrics parser ────────────────────────────────────────────────────────────
 
 def parse_prometheus(text: str) -> dict[str, float]:
@@ -238,10 +293,19 @@ with st.sidebar:
         "Navigate",
         ["Overview", "Runs", "HITL Queue", "Metrics", "Submit Task", "Live", "Pool",
          "Evals", "Plugins", "Graph", "Audit", "SLA", "OTEL",
-         "Compliance", "Alerts"],
+         "Compliance", "Alerts", "API Keys"],
         label_visibility="collapsed",
     )
     st.divider()
+    # Tenant / identity indicator
+    whoami = fetch_whoami()
+    if whoami:
+        name = whoami.get("name", "")
+        role = whoami.get("role", "")
+        tenant = whoami.get("tenant_id", "") or "global"
+        st.caption(f"**{name}** `{role}`")
+        st.caption(f"Tenant: `{tenant}`")
+        st.divider()
     if st.button("Refresh now"):
         st.cache_data.clear()
         st.rerun()
@@ -891,8 +955,8 @@ elif page == "SLA":
 elif page == "OTEL":
     st.header("OpenTelemetry Configuration")
     st.caption(
-        "Current distributed-tracing setup. Set `MESHFLOW_OTLP_ENDPOINT` "
-        "to export spans to Jaeger / Grafana Tempo / Datadog / Honeycomb."
+        "Live OTELExporter stats and distributed-tracing setup. "
+        "Set `MESHFLOW_OTLP_ENDPOINT` to export spans to Jaeger / Grafana Tempo / Datadog / Honeycomb."
     )
 
     import urllib.request as _ureq
@@ -902,32 +966,45 @@ elif page == "OTEL":
         try:
             with _ureq.urlopen(req, timeout=5) as r:
                 return json.loads(r.read())
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    if st.button("Refresh", key="otel_refresh"):
+        st.cache_data.clear()
 
     cfg = _fetch_otel_config()
 
     if "error" in cfg:
         st.error(f"Could not reach server: {cfg['error']}")
     else:
-        col_a, col_b = st.columns(2)
-        col_a.metric("OTLP enabled", "Yes" if cfg.get("otlp_enabled") else "No")
-        col_b.metric("W3C traceparent", "Yes" if cfg.get("w3c_traceparent") else "No")
+        # ── Live exporter stats ──────────────────────────────────────────────
+        st.subheader("Live export stats")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("OTLP enabled", "Yes" if cfg.get("otlp_enabled") else "No")
+        c2.metric("W3C traceparent", "Yes" if cfg.get("w3c_traceparent") else "No")
+        c3.metric("Spans exported", cfg.get("exported_count", 0))
+        c4.metric("Export errors", cfg.get("error_count", 0))
 
         if cfg.get("otlp_enabled"):
-            st.success(f"Exporting to: `{cfg.get('otlp_endpoint', '?')}`  ({cfg.get('otlp_protocol', '?')})")
+            st.success(
+                f"Exporting to: `{cfg.get('otlp_endpoint', '?')}`  "
+                f"service=`{cfg.get('service_name', '?')}`"
+            )
         else:
             st.warning(
                 "OTLP disabled — spans are recorded in-process only.  "
                 "Set `MESHFLOW_OTLP_ENDPOINT` to enable export."
             )
 
-        if cfg.get("otlp_error"):
-            st.error(f"OTLP error: {cfg['otlp_error']}")
+        if cfg.get("error_count", 0) > 0:
+            st.error(
+                f"{cfg['error_count']} span export error(s) — check your OTLP endpoint "
+                "and that the collector is reachable from the MeshFlow server."
+            )
 
         with st.expander("Environment variables"):
             env_vars = cfg.get("env_vars", {})
-            for k, v in env_vars.items():
+            for k, v in (env_vars or {}).items():
                 st.markdown(f"`{k}` — {v}")
 
     st.divider()
@@ -1124,6 +1201,91 @@ elif page == "Alerts":
                 st.caption("The signing secret is not stored server-side in plaintext; save it now.")
                 st.cache_data.clear()
                 st.rerun()
+
+
+# ── API Key management ─────────────────────────────────────────────────────────
+
+elif page == "API Keys":
+    st.header("API Key Management")
+    st.caption(
+        "Create, list, and revoke API keys. Requires **admin** role. "
+        "The raw key value is shown exactly once on creation — store it immediately."
+    )
+
+    tenant_filter = st.text_input("Filter by tenant (leave blank for all)", placeholder="acme-corp")
+
+    col_r, col_g = st.columns([1, 1])
+    if col_r.button("Refresh keys"):
+        st.cache_data.clear()
+
+    data = fetch_api_keys(tenant=tenant_filter.strip())
+
+    if "error" in data and data.get("keys", []) == []:
+        st.error(f"Could not fetch keys: {data['error']}")
+        st.caption("Only admin-role keys can list API keys. Check your API key configuration.")
+    else:
+        keys = data.get("keys", [])
+        st.metric("Active keys", data.get("count", len(keys)))
+
+        if keys:
+            rows = [
+                {
+                    "key_id": k.get("key_id", "")[:12] + "…",
+                    "name": k.get("name", ""),
+                    "role": k.get("role", ""),
+                    "tenant": k.get("tenant_id", "") or "global",
+                    "created": (k.get("created_at") or "")[:19],
+                    "last_used": (k.get("last_used_at") or "—")[:19],
+                }
+                for k in keys
+            ]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+            st.subheader("Revoke a key")
+            key_labels = [
+                f"{k.get('key_id', '')[:12]}… — {k.get('name', '')} ({k.get('role', '')})"
+                for k in keys
+            ]
+            sel_idx = st.selectbox("Key to revoke", range(len(keys)), format_func=lambda i: key_labels[i])
+            if st.button("Revoke selected key", type="secondary"):
+                kid = keys[sel_idx].get("key_id", "")
+                result = revoke_api_key(kid)
+                if "error" in result:
+                    st.error(f"Revoke failed: {result['error']}")
+                else:
+                    st.success(f"Key `{kid[:12]}…` revoked.")
+                    st.cache_data.clear()
+                    st.rerun()
+        else:
+            st.info("No active API keys found.")
+
+    st.divider()
+    st.subheader("Generate new key")
+
+    with st.form("create_key_form"):
+        col_n, col_role, col_tid = st.columns([3, 1, 2])
+        key_name = col_n.text_input("Key name", placeholder="ci-bot")
+        key_role = col_role.selectbox("Role", ["operator", "viewer", "admin"])
+        key_tenant = col_tid.text_input("Tenant ID (optional)", placeholder="acme-corp")
+        create_submitted = st.form_submit_button("Generate key")
+
+    if create_submitted:
+        if not key_name.strip():
+            st.warning("Enter a key name.")
+        else:
+            result = create_api_key(key_name.strip(), key_role, key_tenant.strip())
+            if "error" in result:
+                st.error(f"Failed: {result['error']}")
+            else:
+                raw = result.get("raw_key", "")
+                st.success(f"Key created — ID: `{result.get('key_id', '?')[:16]}…`")
+                st.warning("**Copy the raw key now — it will not be shown again.**")
+                st.code(raw, language=None)
+                st.caption(
+                    f"Role: `{result.get('role', '?')}` "
+                    f"| Tenant: `{result.get('tenant_id', '') or 'global'}`"
+                )
+                st.cache_data.clear()
 
 
 # ── Auto-refresh ──────────────────────────────────────────────────────────────

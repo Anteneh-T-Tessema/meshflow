@@ -249,6 +249,34 @@ def main() -> None:
     p_comp_report.add_argument("--format", default="text", choices=["text", "json"], help="Output format")
     p_comp_report.add_argument("--out", default="", help="Write to file instead of stdout")
 
+    # schedule subcommands
+    p_comp_sched = p_compliance_sub.add_parser("schedule", help="Manage scheduled compliance report delivery")
+    p_comp_sched_sub = p_comp_sched.add_subparsers(dest="schedule_cmd", required=True)
+
+    p_sched_add = p_comp_sched_sub.add_parser("add", help="Add a new schedule")
+    p_sched_add.add_argument("--framework", default="hipaa", choices=["hipaa", "sox", "gdpr", "pci", "nerc"])
+    p_sched_add.add_argument("--interval", default=86400, type=int, dest="interval_seconds",
+                              help="Delivery interval in seconds (default: 86400 = daily)")
+    p_sched_add.add_argument("--sink", default="stdout", choices=["file", "webhook", "stdout"], dest="sink_type")
+    p_sched_add.add_argument("--sink-path", default="", dest="sink_path", help="File path (sink=file)")
+    p_sched_add.add_argument("--sink-url", default="", dest="sink_url", help="Webhook URL (sink=webhook)")
+    p_sched_add.add_argument("--sink-secret", default="", dest="sink_secret", help="Webhook HMAC secret")
+    p_sched_add.add_argument("--db", default="meshflow_runs.db")
+    p_sched_add.add_argument("--tenant", default="", help="Scope to tenant_id")
+    p_sched_add.add_argument("--schedule-file", default="", dest="schedule_file",
+                              help="Path to schedule store JSON (default: ~/.meshflow/schedules.json)")
+
+    p_sched_list = p_comp_sched_sub.add_parser("list", help="List all schedules")
+    p_sched_list.add_argument("--schedule-file", default="", dest="schedule_file")
+
+    p_sched_run = p_comp_sched_sub.add_parser("run", help="Trigger a schedule immediately")
+    p_sched_run.add_argument("schedule_id", help="Schedule ID to run")
+    p_sched_run.add_argument("--schedule-file", default="", dest="schedule_file")
+
+    p_sched_rm = p_comp_sched_sub.add_parser("remove", help="Remove a schedule")
+    p_sched_rm.add_argument("schedule_id")
+    p_sched_rm.add_argument("--schedule-file", default="", dest="schedule_file")
+
     # webhooks
     p_webhooks = sub.add_parser("webhooks", help="Manage outbound webhook alerts")
     p_webhooks_sub = p_webhooks.add_subparsers(dest="webhooks_cmd", required=True)
@@ -497,10 +525,15 @@ async def _async_run(args: argparse.Namespace) -> None:
         uncertainty=UncertaintyEngine() if pol.enable_uncertainty else None,
         collusion=CollusionAuditor() if pol.enable_collusion_audit else None,
         ledger=ledger,
+        compliance_guard=wf.compliance_guard,
     )
 
     print(f"[meshflow] run_id={run_id}")
     print(f"[meshflow] workflow={wf.name}  nodes={len(wf._nodes)}  policy.budget=${pol.budget_usd}")
+    if wf.compliance_guard is not None:
+        print(f"[meshflow] compliance guard active")
+    if wf.metadata:
+        print(f"[meshflow] metadata: {wf.metadata}")
 
     result = await wf.run(task, runtime, context={"workflow_yaml": args.yaml})
 
@@ -1648,6 +1681,70 @@ def _cmd_bench(args: argparse.Namespace) -> None:
 def _cmd_compliance(args: argparse.Namespace) -> None:
     if args.compliance_cmd == "report":
         asyncio.run(_async_compliance_report(args))
+    elif args.compliance_cmd == "schedule":
+        _cmd_compliance_schedule(args)
+
+
+def _cmd_compliance_schedule(args: argparse.Namespace) -> None:
+    from meshflow.compliance.scheduler import ScheduleStore, ScheduledReporter, create_schedule
+
+    store = ScheduleStore(path=getattr(args, "schedule_file", "") or "")
+    cmd = args.schedule_cmd
+
+    if cmd == "add":
+        sink_config: dict = {}
+        if args.sink_type == "file":
+            if not args.sink_path:
+                print("  --sink-path required for sink=file")
+                sys.exit(1)
+            sink_config = {"path": args.sink_path, "mode": "a"}
+        elif args.sink_type == "webhook":
+            if not args.sink_url:
+                print("  --sink-url required for sink=webhook")
+                sys.exit(1)
+            sink_config = {"url": args.sink_url, "secret": args.sink_secret}
+
+        schedule = create_schedule(
+            framework=args.framework,
+            interval_seconds=args.interval_seconds,
+            sink_type=args.sink_type,
+            sink_config=sink_config,
+            db_path=args.db,
+            tenant_id=getattr(args, "tenant", ""),
+        )
+        store.add(schedule)
+        print(f"  Schedule added — ID: {schedule.schedule_id}")
+        print(f"  Framework: {schedule.framework}  Interval: {schedule.interval_seconds}s  Sink: {schedule.sink_type}")
+
+    elif cmd == "list":
+        schedules = store.list_all()
+        if not schedules:
+            print("  No schedules configured.")
+            return
+        for s in schedules:
+            print(f"  [{s.schedule_id}] {s.framework} every {s.interval_seconds}s → {s.sink_type}")
+            if s.last_run_at:
+                import time
+                print(f"    last_run: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(s.last_run_at))}")
+
+    elif cmd == "run":
+        schedule = store.get(args.schedule_id)
+        if schedule is None:
+            print(f"  Schedule '{args.schedule_id}' not found.")
+            sys.exit(1)
+        reporter = ScheduledReporter(schedule)
+        result = asyncio.run(reporter.run_now())
+        schedule.mark_ran()
+        store.update(schedule)
+        print(f"  Delivered — {result['overall_status']} ({result['run_ids_audited']} runs audited)")
+        print(f"  Sink: {result['sink_type']}  At: {result['delivered_at']}")
+
+    elif cmd == "remove":
+        if store.remove(args.schedule_id):
+            print(f"  Schedule '{args.schedule_id}' removed.")
+        else:
+            print(f"  Schedule '{args.schedule_id}' not found.")
+            sys.exit(1)
 
 
 async def _async_compliance_report(args: argparse.Namespace) -> None:

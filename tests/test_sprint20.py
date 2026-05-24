@@ -213,7 +213,7 @@ class TestDeploymentArtifacts:
 
     def test_helm_chart_version(self):
         content = (self._BASE / "k8s" / "helm" / "Chart.yaml").read_text()
-        assert "0.20.0" in content
+        assert "0.22.0" in content
 
     def test_docker_compose_uses_health_live(self):
         content = (self._BASE / "docker-compose.yml").read_text()

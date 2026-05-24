@@ -179,6 +179,8 @@ class WorkflowDefinition:
         self._loop_edges: list[_LoopEdge] = []
         self._entry: str = ""
         self._terminal: list[str] = []
+        self.compliance_guard: Any = None  # set by from_yaml when compliance: section present
+        self.metadata: dict[str, Any] = {}  # free-form workflow metadata from YAML
 
     # ── Builder API ───────────────────────────────────────────────────────────
 
@@ -907,6 +909,16 @@ class WorkflowDefinition:
                     edge_data.get("condition", ""),
                 )
 
+        # Loop edges
+        for le_data in data.get("loop_edges", []):
+            if isinstance(le_data, dict):
+                wf.add_loop_edge(
+                    src=le_data.get("from", ""),
+                    dst=le_data.get("to", ""),
+                    condition=le_data.get("condition", ""),
+                    max_iterations=int(le_data.get("max_iterations", 10)),
+                )
+
         # Entry + terminal
         entry = data.get("entry", "")
         if entry:
@@ -918,6 +930,25 @@ class WorkflowDefinition:
         if terminal:
             wf.set_terminal(*terminal)
 
+        # Metadata
+        wf.metadata = dict(data.get("metadata", {}))
+
+        # Compliance guard — optional section activates real-time rule enforcement
+        compliance_cfg = data.get("compliance", {})
+        if compliance_cfg:
+            try:
+                from meshflow.compliance.guard import ComplianceGuard
+                frameworks: list[str] = compliance_cfg.get("frameworks", [])
+                if isinstance(frameworks, str):
+                    frameworks = [frameworks]
+                block_on_violation: bool = bool(compliance_cfg.get("block_on_violation", True))
+                wf.compliance_guard = ComplianceGuard(
+                    frameworks=frameworks,
+                    block_on_violation=block_on_violation,
+                )
+            except Exception:
+                pass  # guard unavailable; workflow continues without it
+
         return wf
 
     def describe(self) -> dict[str, Any]:
@@ -925,6 +956,7 @@ class WorkflowDefinition:
         return {
             "name": self.name,
             "version": self.version,
+            "metadata": self.metadata,
             "nodes": [
                 {"id": n.id, "kind": n.kind.value, "risk": int(n.risk_profile)}
                 for n in self._nodes.values()
@@ -937,8 +969,18 @@ class WorkflowDefinition:
                 }
                 for e in self._edges
             ],
+            "loop_edges": [
+                {
+                    "from": le.src,
+                    "to": le.dst,
+                    "condition": le.condition,
+                    "max_iterations": le.max_iterations,
+                }
+                for le in self._loop_edges
+            ],
             "entry": self._entry,
             "terminal": self._terminal,
+            "compliance_guard": self.compliance_guard is not None,
             "policy": {
                 "budget_usd": self.policy.budget_usd,
                 "max_steps": self.policy.max_steps,

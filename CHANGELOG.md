@@ -5,6 +5,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.22.0] — 2026-05-23
+
+### Sprint 22 — Dashboard v2, per-tenant rate limiting, scheduled compliance reports, declarative YAML workflows
+
+**1131 tests passing (18 skipped).**
+
+#### Added
+
+- **Sprint 22A — Dashboard v2**:
+  New `API Keys` page in the Streamlit dashboard: list, generate, and revoke
+  keys via the `/keys` REST endpoints (admin-only). Sidebar now shows the
+  authenticated user's name, role, and tenant from `GET /keys/whoami`.
+  OTEL page updated to show live `OTELExporter` stats: `exported_count`,
+  `error_count`, endpoint, and service name with a Refresh button.
+  (`dashboard/app.py`)
+
+- **Sprint 22D — Per-tenant rate limiting**:
+  `RateLimiter` now uses `tenant_id` as the bucket key instead of the raw
+  API key string. `status()` returns `tenant_id` field. Per-tenant limits
+  are configurable via env vars: `MESHFLOW_RATE_LIMIT_TENANT_<ID>_RPS` and
+  `MESHFLOW_RATE_LIMIT_TENANT_<ID>_BURST`. Server `_require_auth()` passes
+  principal's `tenant_id` to the limiter.
+  (`meshflow/observability/sla.py`, `meshflow/runtime/server.py`)
+
+- **Sprint 22B — Scheduled compliance reports**:
+  New `meshflow/compliance/scheduler.py` with `ReportSchedule` (dataclass),
+  `ScheduleStore` (JSON-backed persistence at `~/.meshflow/schedules.json`),
+  `ScheduledReporter.run_now()` (generates `ComplianceReporter` artifact,
+  delivers to file/webhook/stdout sink). `create_schedule()` factory.
+  HMAC-SHA256 signatures on webhook delivery. Three sinks: `file` (write/append
+  with separator), `webhook` (HTTP POST + signature), `stdout`.
+  CLI: `meshflow compliance schedule add|list|run|remove`.
+
+- **Sprint 22C — Declarative YAML workflow extensions**:
+  `WorkflowDefinition.from_yaml()` now parses:
+  — `loop_edges:` list → `add_loop_edge()` (back-edges with condition + max_iterations)
+  — `compliance:` section → live `ComplianceGuard` wired into `StepRuntime`
+  — `metadata:` section → stored as `wf.metadata` dict
+  `WorkflowDefinition.__init__` gains `compliance_guard` and `metadata` attrs.
+  `describe()` includes `loop_edges`, `compliance_guard`, `metadata` fields.
+  CLI `meshflow run` passes `wf.compliance_guard` to `StepRuntime`.
+
+#### Changed
+
+- Rate limiter bucket key changed from raw API key string to `tenant_id`
+  (`"anonymous"` for open-mode / unauthenticated requests).
+- `RateLimiter.status()` now returns `tenant_id` key instead of `key`.
+
+---
+
 ## [0.21.0] — 2026-05-23
 
 ### Sprint 21 — Tenant isolation, CI, benchmarks, docs
