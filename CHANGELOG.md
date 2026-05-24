@@ -5,6 +5,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.25.0] — 2026-05-24
+
+### Sprint 25 — Guardrails: input/output validation at every agent and node
+
+**1357+ tests passing (18 skipped).**
+
+#### Added
+
+- **`Guardrail` base class** (`meshflow/security/guardrails.py`):
+  Abstract base with `check(text) -> GuardrailResult` and `action` field
+  (`"block"` / `"warn"` / `"modify"`). `GuardrailResult` carries `passed`,
+  `guardrail_name`, `reason`, `modified_text`, `severity`, and `metadata`.
+  `GuardrailViolation` exception carries the failing `GuardrailResult`.
+
+- **`GuardrailStack`**:
+  Compose multiple guardrails in sequence. `mode="strict"` raises
+  `GuardrailViolation` on first blocking failure; `mode="collect"` runs all.
+  "modify" action guardrails rewrite the text in-place for downstream checks.
+  "warn" action guardrails record the failure but do not block the stack.
+  `stack.run(text) -> (all_passed, final_text, results)`.
+
+- **8 built-in guardrails**:
+  - `PIIBlockGuardrail` — detect & block/mask/warn PHI/PII via `SensitiveDataDetector`
+  - `ConfidenceGuardrail` — block outputs below stated CONFIDENCE:0.XX threshold
+  - `LengthGuardrail` — enforce min/max chars or word count
+  - `ToxicityGuardrail` — block violence / self_harm / hate / profanity patterns
+  - `JSONSchemaGuardrail` — validate JSON output; extracts from markdown fences
+  - `RegexGuardrail` — require or forbid a regex pattern
+  - `KeywordBlockGuardrail` — block forbidden keywords/phrases (whole-word or substring)
+  - `CostCapGuardrail` — reject tasks whose estimated input cost exceeds a budget
+  - `CustomGuardrail` — wrap any callable; supports `bool`, `(bool, str)`,
+    `(bool, str, str)` and `(bool, modified_text)` for modify-mode
+
+- **`Agent(input_guardrails=[], output_guardrails=[])` parameters**:
+  Input guardrails run on the task text *before* the LLM call; output guardrails
+  run on the LLM response *before* returning to the caller. A blocking violation
+  returns `{"blocked": True, "guardrail": name, "guardrail_reason": reason}` instead
+  of calling the LLM (zero cost on input block). Non-blocking runs include
+  `{"blocked": False, "guardrail_results": [...]}` in the result dict.
+
+- Exported from `meshflow`: all 9 guardrail classes + `GuardrailResult`,
+  `GuardrailStack`, `GuardrailViolation`.
+
+#### Tests
+
+83 new deterministic tests in `tests/test_sprint25.py` across 14 test classes.
+
+---
+
 ## [0.24.0] — 2026-05-24
 
 ### Sprint 24 — CrewAI/LangGraph/AutoGen feature parity

@@ -84,17 +84,22 @@ class _BuiltAgent(BaseAgent):
         policy: Policy,
         tools: list[Any],
         memory_enabled: bool,
+        input_guardrails: list[Any] | None = None,
+        output_guardrails: list[Any] | None = None,
     ) -> None:
         super().__init__(config, policy)
         self._tools = tools
         self._memory_enabled = memory_enabled
         from meshflow.intelligence.memory import AgentMemory
+        from meshflow.security.guardrails import GuardrailStack
         self._memory = AgentMemory(
             agent_id=config.agent_id,
             max_working=10,
             max_episodic=50,
             enabled=memory_enabled,
         )
+        self._input_stack = GuardrailStack(input_guardrails or [], mode="strict")
+        self._output_stack = GuardrailStack(output_guardrails or [], mode="strict")
 
     def remember(self, content: str, metadata: dict[str, Any] | None = None) -> None:
         """Explicitly store a memory entry."""
@@ -156,12 +161,32 @@ class _BuiltAgent(BaseAgent):
         )
 
     async def step(self, task: str, context: dict[str, Any]) -> dict[str, Any]:
-        # Build memory context from 4-tier memory (working + recent episodic)
+        from meshflow.security.guardrails import GuardrailViolation
+
+        # ── Input guardrails ──────────────────────────────────────────────────
+        guardrail_results: list[Any] = []
+        if self._input_stack.guardrails:
+            try:
+                _, task, in_results = self._input_stack.run(task)
+                guardrail_results.extend(in_results)
+            except GuardrailViolation as exc:
+                return {
+                    "result": f"[BLOCKED by {exc.result.guardrail_name}] {exc.result.reason}",
+                    "agent_name": self.config.agent_id,
+                    "role": self.config.role.value,
+                    "tokens": 0,
+                    "cost_usd": 0.0,
+                    "stated_confidence": 0.0,
+                    "blocked": True,
+                    "guardrail": exc.result.guardrail_name,
+                    "guardrail_reason": exc.result.reason,
+                }
+
+        # ── Build memory context ──────────────────────────────────────────────
         mem_ctx = self._memory.context_string(max_chars=600) if self._memory_enabled else ""
         if mem_ctx:
             mem_ctx = f"\n\n[Memory]\n{mem_ctx}"
 
-        # If caller passed semantic recall hints, do a retrieval pass
         recall_query = context.get("__recall__", task)
         recalled = self._memory.recall(str(recall_query), top_k=2) if self._memory_enabled else []
         recall_ctx = ""
@@ -183,7 +208,25 @@ class _BuiltAgent(BaseAgent):
 
         confidence, content = _extract_confidence(content)
 
-        # Store the result in 4-tier memory
+        # ── Output guardrails ─────────────────────────────────────────────────
+        if self._output_stack.guardrails:
+            try:
+                _, content, out_results = self._output_stack.run(content)
+                guardrail_results.extend(out_results)
+            except GuardrailViolation as exc:
+                return {
+                    "result": f"[BLOCKED by {exc.result.guardrail_name}] {exc.result.reason}",
+                    "agent_name": self.config.agent_id,
+                    "role": self.config.role.value,
+                    "tokens": tokens,
+                    "cost_usd": cost,
+                    "stated_confidence": confidence,
+                    "blocked": True,
+                    "guardrail": exc.result.guardrail_name,
+                    "guardrail_reason": exc.result.reason,
+                }
+
+        # ── Memory ────────────────────────────────────────────────────────────
         if self._memory_enabled:
             self._memory.add(content, metadata={"task": task[:100], "confidence": confidence})
 
@@ -194,6 +237,8 @@ class _BuiltAgent(BaseAgent):
             "tokens": tokens,
             "cost_usd": cost,
             "stated_confidence": confidence,
+            "blocked": False,
+            "guardrail_results": guardrail_results,
         }
 
 
@@ -226,16 +271,20 @@ class Agent:
     model:         Any model name string — provider auto-inferred from it.
     llm:           A pre-built LLM instance or any LLMProvider. Overrides model=.
     tools:         List of Tool objects or tool name strings.
-    skills:        Built-in skill names that augment the system prompt.
-                   e.g. ["python", "data_analysis", "security"].
-                   See meshflow.agents.skills.list_skills() for all names.
-    mcps:          MCP server URLs (str) or StdioServerParams to connect to.
-                   Tools from each server are added to the agent automatically.
-    memory:        Enable cross-step memory for this agent.
-    system_prompt: Override the default role prompt.
-    risk:          Risk tier for actions this agent takes.
-    policy:        Governance policy (defaults to standard).
-    provider:      Low-level LLMProvider object. Prefer llm= for the unified API.
+    skills:            Built-in skill names that augment the system prompt.
+                       e.g. ["python", "data_analysis", "security"].
+                       See meshflow.agents.skills.list_skills() for all names.
+    mcps:              MCP server URLs (str) or StdioServerParams to connect to.
+                       Tools from each server are added to the agent automatically.
+    input_guardrails:  Guardrail instances applied to the task text BEFORE the LLM.
+                       Block, warn, or modify input. e.g. [PIIBlockGuardrail()].
+    output_guardrails: Guardrail instances applied to the LLM output BEFORE returning.
+                       e.g. [ConfidenceGuardrail(0.7), LengthGuardrail(max_chars=2000)].
+    memory:            Enable cross-step memory for this agent.
+    system_prompt:     Override the default role prompt.
+    risk:              Risk tier for actions this agent takes.
+    policy:            Governance policy (defaults to standard).
+    provider:          Low-level LLMProvider object. Prefer llm= for the unified API.
     """
 
     name: str
@@ -245,6 +294,8 @@ class Agent:
     tools: list[Any] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)   # built-in skill names
     mcps: list[Any] = field(default_factory=list)     # MCP server URLs or params
+    input_guardrails: list[Any] = field(default_factory=list)   # Guardrail instances
+    output_guardrails: list[Any] = field(default_factory=list)  # Guardrail instances
     memory: bool = False
     system_prompt: str = ""
     risk: RiskTier = RiskTier.READ_ONLY
@@ -310,7 +361,14 @@ class Agent:
             tools=[getattr(t, "name", str(t)) for t in all_tools],
             provider=self._resolve_provider(),
         )
-        return _BuiltAgent(config, self.policy, all_tools, self.memory)  # type: ignore[arg-type]
+        return _BuiltAgent(
+            config,
+            self.policy,            # type: ignore[arg-type]
+            all_tools,
+            self.memory,
+            list(self.input_guardrails),
+            list(self.output_guardrails),
+        )
 
     def _resolve_mcp_tools(self) -> list[Any]:
         """Convert mcps= list into Tool objects via MCPGateway manifests.

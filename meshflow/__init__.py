@@ -109,6 +109,21 @@ from meshflow.security.sensitive_data import (
     SensitiveMatch,
     get_detector as get_sensitive_detector,
 )
+from meshflow.security.guardrails import (
+    Guardrail,
+    GuardrailResult,
+    GuardrailStack,
+    GuardrailViolation,
+    PIIBlockGuardrail,
+    ConfidenceGuardrail,
+    LengthGuardrail,
+    ToxicityGuardrail,
+    JSONSchemaGuardrail,
+    RegexGuardrail,
+    KeywordBlockGuardrail,
+    CostCapGuardrail,
+    CustomGuardrail,
+)
 from meshflow.agents.health import (
     ModelHealthTracker,
     ModelHealthSummary,
@@ -117,7 +132,7 @@ from meshflow.agents.health import (
 from meshflow.core.analytics import WorkflowAnalytics, RunSummary
 from meshflow.queue import TaskQueue, QueueWorker, TaskItem, TaskStatus
 
-__version__ = "0.24.0"
+__version__ = "0.25.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -293,6 +308,20 @@ __all__ = [
     "SensitiveDataDetector",
     "SensitiveMatch",
     "get_sensitive_detector",
+    # ── Guardrails (input/output validation at every agent + node) ────────────
+    "Guardrail",
+    "GuardrailResult",
+    "GuardrailStack",
+    "GuardrailViolation",
+    "PIIBlockGuardrail",
+    "ConfidenceGuardrail",
+    "LengthGuardrail",
+    "ToxicityGuardrail",
+    "JSONSchemaGuardrail",
+    "RegexGuardrail",
+    "KeywordBlockGuardrail",
+    "CostCapGuardrail",
+    "CustomGuardrail",
     # ── Model health tracking ─────────────────────────────────────────────────
     "ModelHealthTracker",
     "ModelHealthSummary",
