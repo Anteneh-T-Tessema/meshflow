@@ -374,6 +374,79 @@ def main() -> None:
     p_q_worker.add_argument("--concurrency", type=int, default=4, help="Max concurrent tasks")
     p_q_worker.add_argument("--poll", type=float, default=1.0, dest="poll_interval", help="Poll interval seconds")
 
+    # agent-serve
+    p_aserve = sub.add_parser("agent-serve", help="Serve a single agent over A2A HTTP")
+    p_aserve.add_argument("--agent", required=True, dest="agent_name", help="Agent name to serve")
+    p_aserve.add_argument("--role", default="executor", help="Agent role (default: executor)")
+    p_aserve.add_argument("--model", default="", help="LLM model override")
+    p_aserve.add_argument("--host", default="0.0.0.0")
+    p_aserve.add_argument("--port", type=int, default=8080)
+    p_aserve.add_argument("--description", default="")
+
+    # budget
+    p_budget = sub.add_parser("budget", help="Manage per-agent cost and token budgets")
+    p_budget_sub = p_budget.add_subparsers(dest="budget_cmd", required=True)
+
+    p_bud_list = p_budget_sub.add_parser("list", help="List all budget accounts")
+    p_bud_list.add_argument("--agent", default="", dest="agent_name")
+    p_bud_list.add_argument("--db", default="meshflow_budgets.db")
+
+    p_bud_status = p_budget_sub.add_parser("status", help="Show spend status for an account")
+    p_bud_status.add_argument("account_id", help="Budget account ID")
+    p_bud_status.add_argument("--db", default="meshflow_budgets.db")
+
+    p_bud_set = p_budget_sub.add_parser("set", help="Create or update a budget account")
+    p_bud_set.add_argument("account_id", help="Account ID (created if absent)")
+    p_bud_set.add_argument("--agent", required=True, dest="agent_name")
+    p_bud_set.add_argument("--period", default="daily",
+                           choices=["daily", "weekly", "monthly", "total"])
+    p_bud_set.add_argument("--limit-usd", type=float, default=0.0, dest="limit_usd")
+    p_bud_set.add_argument("--limit-tokens", type=int, default=0, dest="limit_tokens")
+    p_bud_set.add_argument("--name", default="")
+    p_bud_set.add_argument("--db", default="meshflow_budgets.db")
+
+    p_bud_reset = p_budget_sub.add_parser("reset", help="Zero out spend for the current window")
+    p_bud_reset.add_argument("account_id")
+    p_bud_reset.add_argument("--db", default="meshflow_budgets.db")
+
+    p_bud_delete = p_budget_sub.add_parser("delete", help="Delete a budget account")
+    p_bud_delete.add_argument("account_id")
+    p_bud_delete.add_argument("--db", default="meshflow_budgets.db")
+
+    # registry
+    p_reg = sub.add_parser("registry", help="Manage the agent registry")
+    p_reg_sub = p_reg.add_subparsers(dest="registry_cmd", required=True)
+
+    p_reg_list = p_reg_sub.add_parser("list", help="List registered agents")
+    p_reg_list.add_argument("--role", default="")
+    p_reg_list.add_argument("--owner", default="")
+    p_reg_list.add_argument("--tag", default="")
+    p_reg_list.add_argument("--db", default="meshflow_registry.db")
+
+    p_reg_search = p_reg_sub.add_parser("search", help="Search agents by keyword")
+    p_reg_search.add_argument("query", help="Search query")
+    p_reg_search.add_argument("--role", default="")
+    p_reg_search.add_argument("--db", default="meshflow_registry.db")
+
+    p_reg_get = p_reg_sub.add_parser("get", help="Show full manifest for an agent")
+    p_reg_get.add_argument("name", help="Agent name")
+    p_reg_get.add_argument("--db", default="meshflow_registry.db")
+
+    p_reg_publish = p_reg_sub.add_parser("publish", help="Publish or update an agent manifest")
+    p_reg_publish.add_argument("name", help="Agent name (slug)")
+    p_reg_publish.add_argument("--role", default="executor")
+    p_reg_publish.add_argument("--description", default="")
+    p_reg_publish.add_argument("--tags", default="", help="Comma-separated tags")
+    p_reg_publish.add_argument("--capabilities", default="", help="Comma-separated capabilities")
+    p_reg_publish.add_argument("--version", default="1.0.0")
+    p_reg_publish.add_argument("--owner", default="")
+    p_reg_publish.add_argument("--url", default="")
+    p_reg_publish.add_argument("--db", default="meshflow_registry.db")
+
+    p_reg_unpublish = p_reg_sub.add_parser("unpublish", help="Remove an agent from the registry")
+    p_reg_unpublish.add_argument("name", help="Agent name to remove")
+    p_reg_unpublish.add_argument("--db", default="meshflow_registry.db")
+
     p_bench = sub.add_parser("bench", help="Run performance benchmarks (no API key required)")
     p_bench.add_argument(
         "--concurrency", nargs="+", type=int, default=[10, 100, 1000],
@@ -421,6 +494,9 @@ def main() -> None:
         "analytics": _cmd_analytics,
         "queue": _cmd_queue,
         "export-traces": _cmd_export_traces,
+        "agent-serve":   _cmd_agent_serve,
+        "budget":        _cmd_budget,
+        "registry":      _cmd_registry,
     }
     dispatch[args.cmd](args)
 
@@ -2224,3 +2300,189 @@ async def _async_queue(args: argparse.Namespace) -> None:
         await worker.run(stop_event=stop)
         await q.close()
         print("  Worker stopped.")
+
+
+# ── agent-serve ───────────────────────────────────────────────────────────────
+
+
+def _cmd_agent_serve(args: argparse.Namespace) -> None:
+    """Serve a single named agent over the A2A HTTP protocol."""
+    import signal
+    import os
+    import threading as _threading
+
+    os.environ.setdefault("MESHFLOW_MOCK", "0")
+    from meshflow.agents.builder import Agent
+    from meshflow.a2a.server import A2AServer
+
+    kwargs: dict = {"name": args.agent_name, "role": args.role}
+    if getattr(args, "model", ""):
+        kwargs["model"] = args.model
+
+    agent = Agent(**kwargs)
+    description = getattr(args, "description", "") or f"MeshFlow agent: {args.agent_name}"
+    srv = A2AServer(agent, host=args.host, port=args.port, description=description)
+
+    print(f"\n  MeshFlow agent-serve")
+    print(f"  Agent:  {args.agent_name}  ({args.role})")
+    print(f"  URL:    http://{args.host}:{args.port}")
+    print(f"  A2A endpoints: /run  /tasks  /tasks/{{id}}  /tasks/{{id}}/stream")
+    print(f"  Probes:        /health  /ready  /metrics")
+    print(f"  Press Ctrl-C to stop\n")
+
+    srv.start()
+    stop = _threading.Event()
+
+    def _on_signal(*_: object) -> None:
+        print("\n  agent-serve: shutdown signal — stopping…")
+        stop.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _on_signal)
+        except (OSError, ValueError):
+            pass
+
+    stop.wait()
+    srv.stop()
+    print("  agent-serve: stopped.")
+
+
+# ── budget ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_budget(args: argparse.Namespace) -> None:
+    import json as _json
+    from meshflow.budget.store import BudgetAccount, BudgetStore
+
+    db = getattr(args, "db", "meshflow_budgets.db")
+    store = BudgetStore(db)
+
+    if args.budget_cmd == "list":
+        accounts = store.list(agent_name=getattr(args, "agent_name", ""))
+        if not accounts:
+            print("  No budget accounts found.")
+            return
+        print(f"\n  {'ACCOUNT ID':<20} {'AGENT':<20} {'PERIOD':<10} {'LIMIT USD':>10} {'LIMIT TOK':>12}")
+        print("  " + "-" * 78)
+        for a in accounts:
+            print(f"  {a.account_id:<20} {a.agent_name:<20} {a.period:<10} "
+                  f"${a.limit_usd:>9.2f} {a.limit_tokens:>12,}")
+
+    elif args.budget_cmd == "status":
+        s = store.summary(args.account_id)
+        if "error" in s:
+            print(f"  Error: {s['error']}")
+            sys.exit(1)
+        pct = s["percent_used"] * 100
+        bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
+        print(f"\n  Budget: {s['name']}  ({s['account_id']})")
+        print(f"  Agent:  {s['agent_name']}   Period: {s['period']} [{s['period_key']}]")
+        if s["limit_usd"]:
+            print(f"  USD:    ${s['spent_usd']:.4f} / ${s['limit_usd']:.4f}  "
+                  f"(remaining: ${s['remaining_usd']:.4f})")
+        else:
+            print(f"  USD:    ${s['spent_usd']:.4f}  (no USD cap)")
+        if s["limit_tokens"]:
+            print(f"  Tokens: {s['spent_tokens']:,} / {s['limit_tokens']:,}")
+        else:
+            print(f"  Tokens: {s['spent_tokens']:,}  (no token cap)")
+        print(f"  Calls:  {s['call_count']}")
+        print(f"  [{bar}] {pct:.1f}%")
+        status = "ALLOWED" if s["allowed"] else "BLOCKED"
+        print(f"  Status: {status}\n")
+
+    elif args.budget_cmd == "set":
+        import time as _time
+        existing = store.get(args.account_id)
+        account = BudgetAccount(
+            account_id=args.account_id,
+            name=getattr(args, "name", "") or args.account_id,
+            agent_name=args.agent_name,
+            period=args.period,
+            limit_usd=args.limit_usd,
+            limit_tokens=args.limit_tokens,
+            created_at=existing.created_at if existing else _time.time(),
+        )
+        store.create(account)
+        print(f"  Budget account '{args.account_id}' saved.")
+        print(f"  Agent: {args.agent_name}  Period: {args.period}  "
+              f"Limit: ${args.limit_usd:.2f} / {args.limit_tokens:,} tokens")
+
+    elif args.budget_cmd == "reset":
+        store.reset_spend(args.account_id)
+        print(f"  Spend reset for '{args.account_id}'.")
+
+    elif args.budget_cmd == "delete":
+        if store.delete(args.account_id):
+            print(f"  Deleted '{args.account_id}'.")
+        else:
+            print(f"  Account '{args.account_id}' not found.")
+            sys.exit(1)
+
+
+# ── registry ──────────────────────────────────────────────────────────────────
+
+
+def _cmd_registry(args: argparse.Namespace) -> None:
+    import json as _json
+    from meshflow.registry.core import AgentManifest, AgentRegistry
+
+    db = getattr(args, "db", "meshflow_registry.db")
+    reg = AgentRegistry(db)
+
+    if args.registry_cmd == "list":
+        agents = reg.list(
+            role=getattr(args, "role", ""),
+            owner=getattr(args, "owner", ""),
+            tag=getattr(args, "tag", ""),
+        )
+        if not agents:
+            print("  No agents registered.")
+            return
+        print(f"\n  {'NAME':<24} {'ROLE':<12} {'VERSION':<10} {'OWNER':<16} TAGS")
+        print("  " + "-" * 80)
+        for m in agents:
+            tags = ", ".join(m.tags[:3]) + ("…" if len(m.tags) > 3 else "")
+            print(f"  {m.name:<24} {m.role:<12} {m.version:<10} {m.owner:<16} {tags}")
+
+    elif args.registry_cmd == "search":
+        agents = reg.search(args.query, role=getattr(args, "role", ""))
+        if not agents:
+            print(f"  No agents matched '{args.query}'.")
+            return
+        print(f"\n  Results for '{args.query}':")
+        for m in agents:
+            print(f"  [{m.role}] {m.name}  v{m.version}")
+            if m.description:
+                print(f"    {m.description[:72]}")
+
+    elif args.registry_cmd == "get":
+        m = reg.get(args.name)
+        if m is None:
+            print(f"  Agent '{args.name}' not found.")
+            sys.exit(1)
+        print(_json.dumps(m.to_dict(), indent=2))
+
+    elif args.registry_cmd == "publish":
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+        caps = [c.strip() for c in args.capabilities.split(",") if c.strip()]
+        manifest = AgentManifest(
+            name=args.name,
+            role=args.role,
+            description=args.description,
+            tags=tags,
+            capabilities=caps,
+            version=args.version,
+            owner=getattr(args, "owner", ""),
+            url=getattr(args, "url", ""),
+        )
+        reg.publish(manifest)
+        print(f"  Published '{args.name}'  v{args.version}  ({args.role})")
+
+    elif args.registry_cmd == "unpublish":
+        if reg.unpublish(args.name):
+            print(f"  Unpublished '{args.name}'.")
+        else:
+            print(f"  Agent '{args.name}' not found.")
+            sys.exit(1)

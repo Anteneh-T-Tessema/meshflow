@@ -198,7 +198,7 @@ from meshflow.budget import (
     period_key as budget_period_key,
 )
 
-__version__ = "0.44.0"
+__version__ = "0.45.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
