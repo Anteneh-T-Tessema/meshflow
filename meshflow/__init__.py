@@ -187,8 +187,18 @@ from meshflow.observability.otel_exporter import (
     set_global_exporter,
     reset_global_exporter,
 )
+from meshflow.budget import (
+    BudgetAccount,
+    BudgetSpend,
+    BudgetCheckResult,
+    BudgetStore,
+    BudgetGuardrail,
+    get_budget_store,
+    reset_budget_store,
+    period_key as budget_period_key,
+)
 
-__version__ = "0.43.0"
+__version__ = "0.44.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -458,6 +468,15 @@ __all__ = [
     "A2ATaskStore",
     "TaskState",
     "TaskEventQueue",
+    # ── Cost budgets + quota enforcement ─────────────────────────────────────
+    "BudgetAccount",
+    "BudgetSpend",
+    "BudgetCheckResult",
+    "BudgetStore",
+    "BudgetGuardrail",
+    "get_budget_store",
+    "reset_budget_store",
+    "budget_period_key",
     # ── Prometheus metrics + OTLP wire export ────────────────────────────────
     "MetricsCollector",
     "OTELExporter",
