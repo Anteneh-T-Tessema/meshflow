@@ -341,6 +341,7 @@ class Agent:
     memory_session_id: str = ""    # defaults to agent.name when empty
     cache: Any = None              # LLMCache instance, True (→ InMemoryCache), or False
     healing: Any = None            # HealingPolicy instance or None (disabled)
+    handoffs: list[Any] = field(default_factory=list)  # peer agents this agent can transfer to
     system_prompt: str = ""
     risk: RiskTier = RiskTier.READ_ONLY
     policy: Policy | str | None = None
@@ -685,6 +686,23 @@ class Agent:
             "multimodal_inputs": len(inputs),
             "blocked": False,
         }
+
+    async def run_with_handoffs(
+        self,
+        task: str,
+        context: dict[str, Any] | None = None,
+        *,
+        config: Any = None,
+    ) -> Any:
+        """Run this agent with peer-to-peer handoff support.
+
+        If this agent's response contains ``TRANSFER_TO:<name>``, control
+        transfers to the matching agent in ``self.handoffs``.
+
+        Returns a :class:`~meshflow.agents.handoff.HandoffResult`.
+        """
+        from meshflow.agents.handoff import run_with_handoffs as _run
+        return await _run(self, task, context, config=config)
 
     async def run_with_healing(
         self,

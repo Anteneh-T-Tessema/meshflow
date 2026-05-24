@@ -159,8 +159,11 @@ from meshflow.cache import CacheEntry, LLMCache, InMemoryCache, SQLiteCache, Cac
 from meshflow.agents.healing import HealingPolicy, HealingStrategy, HealingResult, run_with_healing
 from meshflow.prompts import PromptVersion, PromptTemplate, PromptRegistry, PromptABTest
 from meshflow.export import FinetuneExporter, ExportFormat, TraceRecord, ExportFilter
+from meshflow.mcp.client import MCPClientSession, MCPRemoteTool, MCPClient, MCPClientError
+from meshflow.agents.handoff import HandoffConfig, HandoffLink, HandoffResult, run_with_handoffs
+from meshflow.a2a.tasks import A2ATask, A2ATaskStore, TaskState, TaskEventQueue
 
-__version__ = "0.36.0"
+__version__ = "0.39.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -415,4 +418,19 @@ __all__ = [
     "ExportFormat",
     "TraceRecord",
     "ExportFilter",
+    # ── MCP client (consume external MCP servers) ─────────────────────────────
+    "MCPClientSession",
+    "MCPRemoteTool",
+    "MCPClient",
+    "MCPClientError",
+    # ── Handoff pattern (peer-to-peer agent transfer) ─────────────────────────
+    "HandoffConfig",
+    "HandoffLink",
+    "HandoffResult",
+    "run_with_handoffs",
+    # ── A2A task lifecycle (full state machine + SSE) ─────────────────────────
+    "A2ATask",
+    "A2ATaskStore",
+    "TaskState",
+    "TaskEventQueue",
 ]
