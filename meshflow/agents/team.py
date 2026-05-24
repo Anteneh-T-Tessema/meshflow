@@ -19,10 +19,12 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Literal
 
 from meshflow.core.schemas import Policy, policy_for_mode
+from meshflow.core.streaming import StreamChunk
 from meshflow.core.workflow import WorkflowDefinition, WorkflowResult
 
 
@@ -66,6 +68,81 @@ class Team:
 
         workflow = self._build_workflow()
         return await Mesh(policy=self._policy).run_workflow(workflow, task=task, **(context or {}))
+
+    async def stream(
+        self,
+        task: str,
+        context: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream tokens from each agent in the team.
+
+        Yields ``StreamChunk`` objects in this order per agent:
+          ``node_start`` → one or more ``token`` → ``node_end``
+        Finishes with a single ``done`` chunk.
+
+        For sequential/hierarchical patterns the agents run in order;
+        for parallel all run concurrently with interleaved token chunks.
+        """
+        return self._stream_impl(task, context)
+
+    async def _stream_impl(
+        self,
+        task: str,
+        context: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        ctx = context or {}
+
+        if self.pattern == "parallel":
+            async for chunk in self._stream_parallel(task, ctx):
+                yield chunk
+        else:
+            # sequential / hierarchical / supervised / reflective
+            # Stream each agent in order; pass accumulated result as context
+            accumulated = ""
+            for i, agent in enumerate(self.agents):
+                agent_task = task if i == 0 else f"{task}\n\nPrior output:\n{accumulated}"
+                yield StreamChunk(kind="node_start", node_name=agent.name)
+                tokens: list[str] = []
+                async for token in agent.stream(agent_task, ctx):
+                    yield StreamChunk(kind="token", content=token, node_name=agent.name)
+                    tokens.append(token)
+                accumulated = "".join(tokens)
+                yield StreamChunk(kind="node_end", node_name=agent.name, content=accumulated)
+
+        yield StreamChunk(kind="done")
+
+    async def _stream_parallel(
+        self,
+        task: str,
+        context: dict[str, Any],
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream all agents concurrently; interleave chunks via asyncio.Queue."""
+        q: asyncio.Queue[StreamChunk | None] = asyncio.Queue()
+        active = len(self.agents)
+
+        async def _run_agent(agent: Any) -> None:
+            await q.put(StreamChunk(kind="node_start", node_name=agent.name))
+            collected: list[str] = []
+            async for token in agent.stream(task, context):
+                await q.put(StreamChunk(kind="token", content=token, node_name=agent.name))
+                collected.append(token)
+            await q.put(StreamChunk(
+                kind="node_end",
+                node_name=agent.name,
+                content="".join(collected),
+            ))
+            await q.put(None)  # signal this agent is done
+
+        tasks = [asyncio.create_task(_run_agent(a)) for a in self.agents]
+        finished = 0
+        while finished < active:
+            chunk = await q.get()
+            if chunk is None:
+                finished += 1
+            else:
+                yield chunk
+
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def _build_workflow(self) -> WorkflowDefinition:
         nodes = [agent.to_mesh_node() for agent in self.agents]

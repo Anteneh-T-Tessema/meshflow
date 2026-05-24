@@ -86,6 +86,7 @@ class _BuiltAgent(BaseAgent):
         memory_enabled: bool,
         input_guardrails: list[Any] | None = None,
         output_guardrails: list[Any] | None = None,
+        knowledge: list[Any] | None = None,
     ) -> None:
         super().__init__(config, policy)
         self._tools = tools
@@ -100,6 +101,11 @@ class _BuiltAgent(BaseAgent):
         )
         self._input_stack = GuardrailStack(input_guardrails or [], mode="strict")
         self._output_stack = GuardrailStack(output_guardrails or [], mode="strict")
+        if knowledge:
+            from meshflow.intelligence.knowledge import AgentKnowledge
+            self._knowledge: Any = AgentKnowledge(knowledge)
+        else:
+            self._knowledge = None
 
     def remember(self, content: str, metadata: dict[str, Any] | None = None) -> None:
         """Explicitly store a memory entry."""
@@ -193,8 +199,15 @@ class _BuiltAgent(BaseAgent):
         if recalled:
             recall_ctx = "\n\n[Retrieved]\n" + "\n".join(f"• {r}" for r in recalled)
 
+        # ── Knowledge retrieval (RAG) ─────────────────────────────────────────
+        knowledge_ctx = ""
+        if self._knowledge:
+            k_text = self._knowledge.context_string(task, max_chars=1500)
+            if k_text:
+                knowledge_ctx = f"\n\n[Knowledge]\n{k_text}"
+
         messages = [
-            {"role": "user", "content": f"Task: {task}\nContext: {context}{mem_ctx}{recall_ctx}"}
+            {"role": "user", "content": f"Task: {task}\nContext: {context}{mem_ctx}{recall_ctx}{knowledge_ctx}"}
         ]
 
         if self._tools:
@@ -280,6 +293,10 @@ class Agent:
                        Block, warn, or modify input. e.g. [PIIBlockGuardrail()].
     output_guardrails: Guardrail instances applied to the LLM output BEFORE returning.
                        e.g. [ConfidenceGuardrail(0.7), LengthGuardrail(max_chars=2000)].
+    knowledge:         Knowledge sources for auto-retrieval at each step.
+                       Accepts file paths (str), raw text snippets (str),
+                       VectorStore objects, or KnowledgeSource objects.
+                       Retrieved chunks are injected as [Knowledge] context.
     memory:            Enable cross-step memory for this agent.
     system_prompt:     Override the default role prompt.
     risk:              Risk tier for actions this agent takes.
@@ -296,6 +313,7 @@ class Agent:
     mcps: list[Any] = field(default_factory=list)     # MCP server URLs or params
     input_guardrails: list[Any] = field(default_factory=list)   # Guardrail instances
     output_guardrails: list[Any] = field(default_factory=list)  # Guardrail instances
+    knowledge: list[Any] = field(default_factory=list)          # str | VectorStore | KnowledgeSource
     memory: bool = False
     system_prompt: str = ""
     risk: RiskTier = RiskTier.READ_ONLY
@@ -368,6 +386,7 @@ class Agent:
             self.memory,
             list(self.input_guardrails),
             list(self.output_guardrails),
+            list(self.knowledge) if self.knowledge else None,
         )
 
     def _resolve_mcp_tools(self) -> list[Any]:

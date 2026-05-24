@@ -5,6 +5,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.26.0] — 2026-05-24
+
+### Sprint 26 — Streaming at all layers + Sprint 27 — Native RAG / Knowledge
+
+**1521+ tests passing (18 skipped).**
+
+#### Sprint 26 — Streaming
+
+- **`StreamChunk`** (`meshflow/core/streaming.py`):
+  Unified streaming event type across all MeshFlow layers.
+  `kind`: `token | node_start | node_end | task_start | task_end | done | error`.
+  Fields: `content`, `node_name`, `task_index`, `metadata`.
+  Properties: `is_token`, `is_done`. Exported as `meshflow.StreamChunk`.
+
+- **`Team.stream(task, context)`**:
+  Async generator yielding `StreamChunk` objects. Sequential/hierarchical/supervised
+  patterns stream each agent in order, passing accumulated output forward.
+  Parallel pattern interleaves token chunks across agents via `asyncio.Queue`.
+  Each agent produces: `node_start → token… → node_end`. Ends with `done`.
+
+- **`Crew.kickoff_stream(inputs)`**:
+  Stream token-by-token from each Task in the crew — one LLM call per task
+  (no double-calling). Collects streamed tokens, sets `task.output` for
+  downstream context injection, then yields `task_end` with full content.
+  Supports sequential, hierarchical, and parallel process modes.
+  Events: `task_start → token… → task_end → done`.
+
+- **`Agent.stream()`** already existed — regression tested (Sprint 9).
+
+- 34 new deterministic tests in `tests/test_sprint26.py`.
+
+#### Sprint 27 — Native RAG / Knowledge
+
+- **`VectorStore`** (`meshflow/intelligence/knowledge.py`):
+  In-memory semantic search with zero required dependencies. Embedding chain:
+  sentence-transformers → numpy BoW → pure-Python char n-gram (always works
+  offline). `from_texts(texts)`, `from_file(path)` (txt/md/py/json/yaml/csv/pdf),
+  `from_directory(dir, extensions)`. `query(text, top_k) → list[str]`.
+  Sentence-boundary-aware chunking with configurable `chunk_size` and `overlap`.
+
+- **`KnowledgeSource`**:
+  A single retrievable source — file path, directory, raw text snippet, URL,
+  or `VectorStore`. Lazy-loaded on first `retrieve()`. Configurable `top_k`.
+
+- **`AgentKnowledge`**:
+  Aggregates multiple `KnowledgeSource` / `VectorStore` / string sources.
+  `retrieve(query)` deduplicates across sources. `context_string(query,
+  max_chars)` returns a prompt-ready `[Knowledge]` block with `---` separators.
+
+- **`Agent(knowledge=[...])`**:
+  Accepts file paths, text snippets, `VectorStore`, or `KnowledgeSource` objects.
+  Before each LLM call, the agent queries its knowledge and injects retrieved
+  chunks as `[Knowledge]\n...` context. Zero cost when no knowledge is provided.
+
+- **`Task(knowledge=[...])`**:
+  Per-task knowledge override; injected as `[Task Knowledge]\n...` in the
+  task prompt. Independent from (and additive to) the agent's own knowledge.
+
+- 48 new deterministic tests in `tests/test_sprint27.py`.
+
+---
+
 ## [0.25.0] — 2026-05-24
 
 ### Sprint 25 — Guardrails: input/output validation at every agent and node

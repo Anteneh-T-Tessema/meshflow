@@ -69,6 +69,8 @@ from meshflow.agents.providers import (
     PROVIDER_NAMES,
 )
 from meshflow.intelligence.memory import AgentMemory, MemoryItem
+from meshflow.intelligence.knowledge import VectorStore, KnowledgeSource, AgentKnowledge
+from meshflow.core.streaming import StreamChunk
 from meshflow.agents.supervisor import Supervisor, SupervisorResult
 from meshflow.agents.adversarial import AdversarialTeam, AdversarialResult
 from meshflow.agents.session import AgentSession, SessionResult, Turn
@@ -132,7 +134,7 @@ from meshflow.agents.health import (
 from meshflow.core.analytics import WorkflowAnalytics, RunSummary
 from meshflow.queue import TaskQueue, QueueWorker, TaskItem, TaskStatus
 
-__version__ = "0.25.0"
+__version__ = "0.26.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -263,6 +265,12 @@ __all__ = [
     # ── 4-tier memory ─────────────────────────────────────────────────────────
     "AgentMemory",
     "MemoryItem",
+    # ── Native RAG / Knowledge ────────────────────────────────────────────────
+    "VectorStore",
+    "KnowledgeSource",
+    "AgentKnowledge",
+    # ── Streaming ─────────────────────────────────────────────────────────────
+    "StreamChunk",
     # ── Multi-agent patterns ──────────────────────────────────────────────────
     "Supervisor",
     "SupervisorResult",

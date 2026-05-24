@@ -31,9 +31,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, AsyncIterator
 
 from meshflow.agents.task import Task, TaskOutput
+from meshflow.core.streaming import StreamChunk
 
 
 class Process(str, Enum):
@@ -101,6 +102,123 @@ class Crew:
         if self.process == Process.hierarchical:
             return await self._run_hierarchical(inputs)
         return await self._run_sequential(inputs)
+
+    async def kickoff_stream(
+        self,
+        inputs: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream token-by-token output from each task in the crew.
+
+        Yields ``StreamChunk`` events:
+          ``task_start`` — task is beginning (node_name = description preview)
+          ``token``      — one text token from the agent's LLM stream
+          ``task_end``   — task finished (content = full output, metadata has tokens)
+          ``done``       — all tasks complete
+
+        The agent's LLM is called **once** per task (streaming); the full
+        collected output is stored as the task's ``output`` for context injection.
+
+        Works for sequential and hierarchical process modes.
+        Parallel mode yields all tasks concurrently (interleaved by task_index).
+        """
+        return self._kickoff_stream_impl(inputs)
+
+    async def _kickoff_stream_impl(
+        self,
+        inputs: dict[str, Any] | None,
+    ) -> AsyncIterator[StreamChunk]:
+        if self.process == Process.parallel:
+            async for chunk in self._stream_parallel(inputs):
+                yield chunk
+            return
+
+        # Sequential / hierarchical — stream tasks in execution order
+        ordered_tasks = list(self.tasks)
+        if self.process == Process.hierarchical and len(self.tasks) >= 2:
+            # manager first, rest sequential
+            pass  # same order as self.tasks; context injection happens below
+
+        executed: list[Task] = []
+
+        for i, task in enumerate(ordered_tasks):
+            # Auto-wire context for sequential/hierarchical
+            if task.context is None and executed:
+                task.context = list(executed)
+
+            desc_preview = task.description[:60]
+            yield StreamChunk(kind="task_start", task_index=i, node_name=desc_preview)
+
+            prompt = task._build_prompt(inputs)
+            agent = task.agent
+            if agent is None:
+                yield StreamChunk(kind="error", task_index=i, content="Task has no agent")
+                continue
+
+            collected: list[str] = []
+            async for token in agent.stream(prompt):
+                yield StreamChunk(kind="token", content=token, task_index=i, node_name=agent.name)
+                collected.append(token)
+
+            full_output = "".join(collected)
+
+            # Store output so downstream tasks can use it as context
+            from meshflow.agents.task import TaskOutput as _TO
+            task.output = _TO(
+                raw=full_output,
+                task_description=task.description[:120],
+                agent_name=getattr(agent, "name", ""),
+            )
+            executed.append(task)
+
+            yield StreamChunk(
+                kind="task_end",
+                task_index=i,
+                content=full_output,
+                node_name=getattr(agent, "name", ""),
+                metadata={"tokens": len(full_output.split())},
+            )
+
+            if self.verbose:
+                print(f"[Crew stream] Task {i+1}/{len(ordered_tasks)} ✓")
+
+        yield StreamChunk(kind="done")
+
+    async def _stream_parallel(
+        self,
+        inputs: dict[str, Any] | None,
+    ) -> AsyncIterator[StreamChunk]:
+        q: asyncio.Queue[StreamChunk | None] = asyncio.Queue()
+        active = len(self.tasks)
+
+        async def _run_task(i: int, task: Task) -> None:
+            desc = task.description[:60]
+            await q.put(StreamChunk(kind="task_start", task_index=i, node_name=desc))
+            prompt = task._build_prompt(inputs)
+            agent = task.agent
+            if agent is None:
+                await q.put(StreamChunk(kind="error", task_index=i, content="No agent"))
+                await q.put(None)
+                return
+            collected: list[str] = []
+            async for token in agent.stream(prompt):
+                await q.put(StreamChunk(kind="token", content=token, task_index=i, node_name=agent.name))
+                collected.append(token)
+            full = "".join(collected)
+            from meshflow.agents.task import TaskOutput as _TO
+            task.output = _TO(raw=full, task_description=task.description[:120], agent_name=agent.name)
+            await q.put(StreamChunk(kind="task_end", task_index=i, content=full, node_name=agent.name))
+            await q.put(None)
+
+        tasks = [asyncio.create_task(_run_task(i, t)) for i, t in enumerate(self.tasks)]
+        finished = 0
+        while finished < active:
+            chunk = await q.get()
+            if chunk is None:
+                finished += 1
+            else:
+                yield chunk
+        await asyncio.gather(*tasks, return_exceptions=True)
+        yield StreamChunk(kind="done")
 
     # ── Execution modes ───────────────────────────────────────────────────────
 

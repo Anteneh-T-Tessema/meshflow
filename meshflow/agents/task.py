@@ -69,6 +69,7 @@ class Task:
     human_input: bool = False
     context: list["Task"] | None = None
     tools: list[Any] = field(default_factory=list)
+    knowledge: list[Any] = field(default_factory=list)   # str | VectorStore | KnowledgeSource
     output: TaskOutput | None = field(default=None, init=False, repr=False)
 
     def _build_prompt(self, inputs: dict[str, Any] | None) -> str:
@@ -100,6 +101,17 @@ class Task:
             raise ValueError(f"Task has no agent assigned: {self.description[:60]!r}")
 
         prompt = self._build_prompt(inputs)
+
+        # Inject per-task knowledge into prompt if provided
+        knowledge_ctx = ""
+        if self.knowledge:
+            from meshflow.intelligence.knowledge import AgentKnowledge
+            ak = AgentKnowledge(self.knowledge)
+            k_text = ak.context_string(prompt, max_chars=1200)
+            if k_text:
+                knowledge_ctx = f"\n\n[Task Knowledge]\n{k_text}"
+        if knowledge_ctx:
+            prompt = prompt + knowledge_ctx
 
         extra_tools = list(self.tools)
         if extra_tools:
