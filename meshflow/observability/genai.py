@@ -310,6 +310,20 @@ def record_agent_step(
     if _enabled:
         _store.record(rec)
         _maybe_export_otlp(rec)
+    # Always push to MetricsCollector regardless of OTEL enabled state
+    try:
+        from meshflow.observability.metrics import MetricsCollector
+        MetricsCollector.get().record_agent_call(
+            agent_name=agent_name,
+            role=role,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=cost_usd,
+            blocked=blocked,
+            latency_ms=rec.duration_ms,
+        )
+    except Exception:
+        pass
     return rec
 
 
@@ -332,6 +346,11 @@ def record_handoff(
     if _enabled:
         _store.record(rec)
         _maybe_export_otlp(rec)
+    try:
+        from meshflow.observability.metrics import MetricsCollector
+        MetricsCollector.get().record_handoff(from_agent, to_agent)
+    except Exception:
+        pass
     return rec
 
 

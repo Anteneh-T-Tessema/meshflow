@@ -180,8 +180,15 @@ from meshflow.observability.genai import (
 from meshflow.registry import AgentManifest, AgentRegistry, get_registry
 from meshflow.eval.feedback import FeedbackRecord, FeedbackStore
 from meshflow.eval.shadow import ShadowResult, shadow_run, RegressionAlert, RegressionDetector
+from meshflow.observability.metrics import MetricsCollector
+from meshflow.observability.otel_exporter import (
+    OTELExporter,
+    get_global_exporter,
+    set_global_exporter,
+    reset_global_exporter,
+)
 
-__version__ = "0.42.0"
+__version__ = "0.43.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -451,6 +458,12 @@ __all__ = [
     "A2ATaskStore",
     "TaskState",
     "TaskEventQueue",
+    # ── Prometheus metrics + OTLP wire export ────────────────────────────────
+    "MetricsCollector",
+    "OTELExporter",
+    "get_global_exporter",
+    "set_global_exporter",
+    "reset_global_exporter",
     # ── OpenTelemetry GenAI semantic conventions ──────────────────────────────
     "GenAI",
     "MF",

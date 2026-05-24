@@ -80,7 +80,7 @@ class A2AServer:
             name=self.agent.name,
             description=self.description,
             url=self.url,
-            capabilities=["run", "tasks", "stream"],
+            capabilities=["run", "tasks", "stream", "metrics"],
             version="2.0",
         )
 
@@ -156,6 +156,22 @@ class A2AServer:
 
                 elif path == "/health":
                     self._send_json({"status": "ok", "agent": agent.name})
+
+                elif path == "/ready":
+                    self._send_json({"status": "ready", "agent": agent.name, "tasks": len(store.list(1000))})
+
+                elif path == "/metrics":
+                    try:
+                        from meshflow.observability.metrics import MetricsCollector
+                        body = MetricsCollector.get().prometheus_text().encode()
+                    except Exception as exc:
+                        body = f"# error generating metrics: {exc}\n".encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
 
                 elif path == "/tasks":
                     tasks = [t.to_dict() for t in store.list(50)]
