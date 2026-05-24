@@ -197,8 +197,15 @@ from meshflow.budget import (
     reset_budget_store,
     period_key as budget_period_key,
 )
+from meshflow.scheduler import (
+    CronExpression,
+    CronScheduler,
+    ScheduledTask,
+    ScheduleRun,
+    ScheduleStore,
+)
 
-__version__ = "0.45.0"
+__version__ = "0.46.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -508,4 +515,10 @@ __all__ = [
     "shadow_run",
     "RegressionAlert",
     "RegressionDetector",
+    # ── Cron scheduler ────────────────────────────────────────────────────────
+    "CronExpression",
+    "CronScheduler",
+    "ScheduledTask",
+    "ScheduleRun",
+    "ScheduleStore",
 ]

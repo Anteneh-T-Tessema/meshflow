@@ -447,6 +447,42 @@ def main() -> None:
     p_reg_unpublish.add_argument("name", help="Agent name to remove")
     p_reg_unpublish.add_argument("--db", default="meshflow_registry.db")
 
+    # schedule
+    p_sched = sub.add_parser("schedule", help="Manage cron-scheduled agent tasks")
+    p_sched_sub = p_sched.add_subparsers(dest="schedule_cmd", required=True)
+
+    p_sched_list_cmd = p_sched_sub.add_parser("list", help="List all schedules")
+    p_sched_list_cmd.add_argument("--agent", default="", dest="agent_name", help="Filter by agent name")
+    p_sched_list_cmd.add_argument("--db", default="meshflow_schedules.db")
+
+    p_sched_add_cmd = p_sched_sub.add_parser("add", help="Add a cron-scheduled task")
+    p_sched_add_cmd.add_argument("--agent", required=True, dest="agent_name", help="Agent name to dispatch to")
+    p_sched_add_cmd.add_argument("--cron", required=True, help="Cron expression, e.g. '0 9 * * 1-5'")
+    p_sched_add_cmd.add_argument("--task", default="", dest="task_payload", help="Payload / prompt sent to agent")
+    p_sched_add_cmd.add_argument("--name", default="", help="Human-friendly schedule name")
+    p_sched_add_cmd.add_argument("--db", default="meshflow_schedules.db")
+
+    p_sched_get_cmd = p_sched_sub.add_parser("get", help="Show a schedule by ID")
+    p_sched_get_cmd.add_argument("schedule_id", help="Schedule ID")
+    p_sched_get_cmd.add_argument("--db", default="meshflow_schedules.db")
+
+    p_sched_rm_cmd = p_sched_sub.add_parser("remove", help="Remove a schedule")
+    p_sched_rm_cmd.add_argument("schedule_id", help="Schedule ID")
+    p_sched_rm_cmd.add_argument("--db", default="meshflow_schedules.db")
+
+    p_sched_en_cmd = p_sched_sub.add_parser("enable", help="Enable a disabled schedule")
+    p_sched_en_cmd.add_argument("schedule_id", help="Schedule ID")
+    p_sched_en_cmd.add_argument("--db", default="meshflow_schedules.db")
+
+    p_sched_dis_cmd = p_sched_sub.add_parser("disable", help="Disable a schedule without deleting it")
+    p_sched_dis_cmd.add_argument("schedule_id", help="Schedule ID")
+    p_sched_dis_cmd.add_argument("--db", default="meshflow_schedules.db")
+
+    p_sched_runs_cmd = p_sched_sub.add_parser("runs", help="Show recent runs for a schedule")
+    p_sched_runs_cmd.add_argument("schedule_id", help="Schedule ID")
+    p_sched_runs_cmd.add_argument("--limit", type=int, default=20)
+    p_sched_runs_cmd.add_argument("--db", default="meshflow_schedules.db")
+
     p_bench = sub.add_parser("bench", help="Run performance benchmarks (no API key required)")
     p_bench.add_argument(
         "--concurrency", nargs="+", type=int, default=[10, 100, 1000],
@@ -497,6 +533,7 @@ def main() -> None:
         "agent-serve":   _cmd_agent_serve,
         "budget":        _cmd_budget,
         "registry":      _cmd_registry,
+        "schedule":      _cmd_schedule,
     }
     dispatch[args.cmd](args)
 
@@ -2486,3 +2523,90 @@ def _cmd_registry(args: argparse.Namespace) -> None:
         else:
             print(f"  Agent '{args.name}' not found.")
             sys.exit(1)
+
+
+# ── schedule ──────────────────────────────────────────────────────────────────
+
+def _cmd_schedule(args: argparse.Namespace) -> None:
+    import json as _json
+    from meshflow.scheduler.store import ScheduleStore, ScheduledTask
+    from meshflow.scheduler.cron import CronExpression
+    import time as _time
+
+    store = ScheduleStore(args.db)
+
+    if args.schedule_cmd == "list":
+        tasks = store.list(agent_name=getattr(args, "agent_name", ""))
+        if not tasks:
+            print("  No schedules found.")
+            return
+        print(f"\n  {'ID':<14} {'NAME':<20} {'AGENT':<20} {'CRON':<18} {'ENABLED':<8} FIRES")
+        print("  " + "-" * 90)
+        for t in tasks:
+            enabled = "yes" if t.enabled else "no"
+            next_s  = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(t.next_fire_at)) \
+                      if t.next_fire_at else "—"
+            print(f"  {t.schedule_id:<14} {t.name[:19]:<20} {t.agent_name[:19]:<20} "
+                  f"{t.cron:<18} {enabled:<8} {next_s}")
+
+    elif args.schedule_cmd == "add":
+        # validate cron before saving
+        try:
+            expr = CronExpression(args.cron)
+        except ValueError as exc:
+            print(f"  Invalid cron expression: {exc}")
+            sys.exit(1)
+        task = ScheduledTask(
+            name=args.name,
+            agent_name=args.agent_name,
+            cron=args.cron,
+            task_payload=args.task_payload,
+        )
+        task.next_fire_at = expr.next_after(_time.time())
+        store.add(task)
+        nxt = _time.strftime("%Y-%m-%d %H:%M UTC", _time.gmtime(task.next_fire_at))
+        print(f"  Schedule created: {task.schedule_id}")
+        print(f"    agent   : {task.agent_name}")
+        print(f"    cron    : {task.cron}")
+        print(f"    next    : {nxt}")
+
+    elif args.schedule_cmd == "get":
+        task = store.get(args.schedule_id)
+        if task is None:
+            print(f"  Schedule '{args.schedule_id}' not found.")
+            sys.exit(1)
+        d = task.to_dict()
+        d["metadata"] = task.metadata
+        print(_json.dumps(d, indent=2, default=str))
+
+    elif args.schedule_cmd == "remove":
+        if store.delete(args.schedule_id):
+            print(f"  Schedule '{args.schedule_id}' removed.")
+        else:
+            print(f"  Schedule '{args.schedule_id}' not found.")
+            sys.exit(1)
+
+    elif args.schedule_cmd == "enable":
+        if store.enable(args.schedule_id, True):
+            print(f"  Schedule '{args.schedule_id}' enabled.")
+        else:
+            print(f"  Schedule '{args.schedule_id}' not found.")
+            sys.exit(1)
+
+    elif args.schedule_cmd == "disable":
+        if store.enable(args.schedule_id, False):
+            print(f"  Schedule '{args.schedule_id}' disabled.")
+        else:
+            print(f"  Schedule '{args.schedule_id}' not found.")
+            sys.exit(1)
+
+    elif args.schedule_cmd == "runs":
+        runs = store.runs(args.schedule_id, limit=args.limit)
+        if not runs:
+            print("  No runs found.")
+            return
+        print(f"\n  {'RUN ID':<14} {'FIRED AT':<22} {'STATUS':<12} TASK ID")
+        print("  " + "-" * 70)
+        for r in runs:
+            fired = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(r.fired_at))
+            print(f"  {r.run_id:<14} {fired:<22} {r.status:<12} {r.task_id or '—'}")
