@@ -433,20 +433,16 @@ class EchoProvider(LLMProvider):
 
 
 def _default_provider() -> LLMProvider:
-    """Return the right provider based on environment.
+    """Auto-detect and return the best available LLM provider.
 
-    - ``MESHFLOW_MOCK=1``           → EchoProvider (no SDK, no key)
-    - ``MESHFLOW_PROVIDER=openai``  → OpenAICompatibleProvider
-    - default                       → AnthropicProvider (requires SDK + key)
+    Checks (in order): MESHFLOW_MOCK → MESHFLOW_PROVIDER → ANTHROPIC_API_KEY
+    → OPENAI_API_KEY → GOOGLE_API_KEY → AWS credentials → Azure → Ollama
+    → LITELLM_MODEL → EchoProvider fallback.
+
+    See meshflow.agents.providers.auto_detect_provider for full details.
     """
-    import os
-    mock = os.environ.get("MESHFLOW_MOCK", "").strip().lower()
-    if mock in ("1", "true", "yes"):
-        return EchoProvider()
-    prov = os.environ.get("MESHFLOW_PROVIDER", "").strip().lower()
-    if prov == "openai":
-        return OpenAICompatibleProvider()
-    return AnthropicProvider()
+    from meshflow.agents.providers import auto_detect_provider
+    return auto_detect_provider()
 
 
 def _anthropic_to_oai_tool(schema: dict[str, Any]) -> dict[str, Any]:

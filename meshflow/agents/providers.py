@@ -1,22 +1,33 @@
 """Extended LLM provider implementations for MeshFlow.
 
-Beyond the built-in AnthropicProvider and OpenAICompatibleProvider in base.py,
-this module adds:
-  - GeminiProvider    (Google Gemini via google-generativeai)
-  - BedrockProvider   (AWS Bedrock Claude via boto3)
-  - AzureOpenAIProvider (Azure OpenAI via openai SDK)
+MeshFlow works with any LLM.  Set one environment variable and go:
 
-Factory function::
+    MESHFLOW_PROVIDER=anthropic   ANTHROPIC_API_KEY=sk-ant-...
+    MESHFLOW_PROVIDER=openai      OPENAI_API_KEY=sk-...
+    MESHFLOW_PROVIDER=gemini      GOOGLE_API_KEY=...
+    MESHFLOW_PROVIDER=bedrock     (uses boto3 / AWS env vars)
+    MESHFLOW_PROVIDER=azure       AZURE_OPENAI_API_KEY=...  AZURE_OPENAI_ENDPOINT=...
+    MESHFLOW_PROVIDER=ollama      (free, local — no key needed)
+    MESHFLOW_PROVIDER=litellm     LITELLM_MODEL=gpt-4o  (100+ models)
+    MESHFLOW_MOCK=1               (offline echo — no key at all)
+
+Or let MeshFlow auto-detect: set any of the API keys above and it picks
+the right provider automatically.  Override the model with MESHFLOW_MODEL.
+
+Factory::
 
     from meshflow.agents.providers import provider_for
     p = provider_for("gemini", model="gemini-2.0-flash")
+    p = provider_for("ollama", model="llama3.2", host="http://localhost:11434")
+    p = provider_for("litellm", model="gpt-4o")
     p = provider_for("bedrock", model="anthropic.claude-3-5-sonnet-20241022-v2:0")
-    p = provider_for("azure", model="gpt-4o", endpoint="https://...", api_key="...")
+    p = provider_for("azure", endpoint="https://...", api_key="sk-...")
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
@@ -308,41 +319,392 @@ class AzureOpenAIProvider(LLMProvider):
                 )
 
 
+# ── Ollama ────────────────────────────────────────────────────────────────────
+
+
+class OllamaProvider(LLMProvider):
+    """Ollama local model provider — free, no API key, runs on your machine.
+
+    Ollama exposes an OpenAI-compatible REST API, so this provider is a thin
+    wrapper around OpenAICompatibleProvider pointed at localhost:11434.
+
+    Install Ollama: https://ollama.com/download
+    Pull a model:  ollama pull llama3.2
+
+    Usage::
+
+        p = OllamaProvider()                          # llama3.2 at localhost
+        p = OllamaProvider(model="mistral")           # different model
+        p = OllamaProvider(host="http://10.0.0.1:11434")  # remote Ollama
+    """
+
+    _DEFAULT_MODEL = "llama3.2"
+    _DEFAULT_HOST  = "http://localhost:11434"
+
+    def __init__(
+        self,
+        model: str = "",
+        host: str = "",
+    ) -> None:
+        import os
+        self._model = (
+            model
+            or os.environ.get("MESHFLOW_MODEL", "")
+            or os.environ.get("OLLAMA_MODEL", "")
+            or self._DEFAULT_MODEL
+        )
+        self._host = host or os.environ.get("OLLAMA_HOST", self._DEFAULT_HOST)
+        # Delegate to OpenAICompatibleProvider using Ollama's OpenAI-compat API
+        from meshflow.agents.base import OpenAICompatibleProvider
+        self._inner = OpenAICompatibleProvider(
+            model=self._model,
+            api_key="ollama",           # Ollama ignores this but openai SDK requires it
+            base_url=self._host.rstrip("/") + "/v1",
+            input_rate=0.0,
+            output_rate=0.0,            # Ollama is free
+        )
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+    ) -> tuple[str, int, float]:
+        return await self._inner.complete(
+            model or self._model, messages, system, max_tokens
+        )
+
+    async def complete_with_tools(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        tool_schemas: list[dict[str, Any]],
+        tool_fns: dict[str, Any],
+    ) -> tuple[str, int, float]:
+        return await self._inner.complete_with_tools(
+            model or self._model, messages, system, max_tokens, tool_schemas, tool_fns
+        )
+
+    async def stream_complete(  # type: ignore[override]
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        agent_id: str,
+        step_id: str,
+        run_id: str,
+    ) -> AsyncIterator[Any]:
+        async for chunk in self._inner.stream_complete(
+            model or self._model, messages, system, max_tokens,
+            agent_id, step_id, run_id,
+        ):
+            yield chunk
+
+    @classmethod
+    def is_reachable(cls, host: str = "") -> bool:
+        """Return True if the Ollama server can be reached (synchronous ping)."""
+        import urllib.request
+        import os
+        target = host or os.environ.get("OLLAMA_HOST", cls._DEFAULT_HOST)
+        try:
+            with urllib.request.urlopen(f"{target}/api/tags", timeout=1):
+                return True
+        except Exception:
+            return False
+
+
+# ── LiteLLM ───────────────────────────────────────────────────────────────────
+
+
+class LiteLLMProvider(LLMProvider):
+    """Universal LLM provider via LiteLLM — covers 100+ models with one interface.
+
+    LiteLLM translates any model string to the right API call.  The model
+    format is ``<provider>/<model>``:
+
+        openai/gpt-4o
+        anthropic/claude-opus-4-7
+        gemini/gemini-2.0-flash
+        bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
+        ollama/llama3.2
+        groq/llama-3.1-70b-versatile
+        cohere/command-r-plus
+
+    Install:  pip install litellm
+
+    Usage::
+
+        p = LiteLLMProvider(model="openai/gpt-4o")
+        p = LiteLLMProvider(model="ollama/llama3.2")
+        # Or set env var and leave model="":
+        # LITELLM_MODEL=gemini/gemini-2.0-flash
+    """
+
+    def __init__(self, model: str = "") -> None:
+        import os
+        self._model = (
+            model
+            or os.environ.get("MESHFLOW_MODEL", "")
+            or os.environ.get("LITELLM_MODEL", "gpt-4o")
+        )
+
+    def _litellm(self) -> Any:
+        try:
+            import litellm
+            litellm.drop_params = True   # ignore unknown params silently
+            return litellm
+        except ImportError as exc:
+            raise ImportError(
+                "LiteLLMProvider requires litellm: pip install litellm"
+            ) from exc
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+    ) -> tuple[str, int, float]:
+        lit = self._litellm()
+        m = model or self._model
+        oai_msgs = [{"role": "system", "content": system}, *messages]
+        response = await lit.acompletion(model=m, messages=oai_msgs, max_tokens=max_tokens)
+        content = response.choices[0].message.content or ""
+        usage = getattr(response, "usage", None)
+        in_tok  = getattr(usage, "prompt_tokens", 0) if usage else 0
+        out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
+        cost = getattr(response, "_hidden_params", {}).get("response_cost", 0.0) or 0.0
+        return content, in_tok + out_tok, float(cost)
+
+    async def complete_with_tools(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        tool_schemas: list[dict[str, Any]],
+        tool_fns: dict[str, Any],
+    ) -> tuple[str, int, float]:
+        # Convert Anthropic-style tool schemas to OpenAI format
+        oai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+                },
+            }
+            for t in tool_schemas
+        ]
+        lit = self._litellm()
+        m = model or self._model
+        oai_msgs: list[dict[str, Any]] = [{"role": "system", "content": system}, *messages]
+        total_in = total_out = 0
+        cost_total = 0.0
+
+        for _ in range(10):
+            response = await lit.acompletion(
+                model=m, messages=oai_msgs, max_tokens=max_tokens, tools=oai_tools
+            )
+            usage = getattr(response, "usage", None)
+            total_in  += getattr(usage, "prompt_tokens", 0) if usage else 0
+            total_out += getattr(usage, "completion_tokens", 0) if usage else 0
+            cost_total += float(
+                getattr(response, "_hidden_params", {}).get("response_cost", 0.0) or 0.0
+            )
+            msg = response.choices[0].message
+            tool_calls = getattr(msg, "tool_calls", None) or []
+            if not tool_calls or response.choices[0].finish_reason == "stop":
+                return msg.content or "", total_in + total_out, cost_total
+
+            oai_msgs.append({"role": "assistant", "content": msg.content or "", "tool_calls": tool_calls})
+            for tc in tool_calls:
+                fn_name = tc.function.name
+                try:
+                    fn_args = json.loads(tc.function.arguments)
+                    fn = tool_fns.get(fn_name)
+                    result = (await fn(**fn_args)) if asyncio.iscoroutinefunction(fn) else fn(**fn_args) if fn else f"Unknown tool: {fn_name}"
+                    result_text = json.dumps(result) if not isinstance(result, str) else result
+                except Exception as exc:
+                    result_text = f"Tool error: {exc}"
+                oai_msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
+
+        return "[max tool rounds reached]", total_in + total_out, cost_total
+
+    async def stream_complete(  # type: ignore[override]
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        agent_id: str,
+        step_id: str,
+        run_id: str,
+    ) -> AsyncIterator[Any]:
+        from meshflow.core.schemas import TokenChunk
+        lit = self._litellm()
+        m = model or self._model
+        oai_msgs = [{"role": "system", "content": system}, *messages]
+        response = await lit.acompletion(model=m, messages=oai_msgs, max_tokens=max_tokens, stream=True)
+        async for chunk in response:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            text = getattr(delta, "content", "") or ""
+            if text:
+                yield TokenChunk(text=text, agent_id=agent_id, step_id=step_id, run_id=run_id)
+
+
 # ── Factory ───────────────────────────────────────────────────────────────────
 
-_PROVIDER_MAP: dict[str, type[LLMProvider] | None] = {
-    "anthropic": None,  # resolved lazily to avoid circular import
-    "openai": None,
-    "gemini": GeminiProvider,
-    "bedrock": BedrockProvider,
-    "azure": AzureOpenAIProvider,
+_PROVIDER_MAP: dict[str, type] = {
+    "gemini":   GeminiProvider,
+    "bedrock":  BedrockProvider,
+    "azure":    AzureOpenAIProvider,
+    "ollama":   OllamaProvider,
+    "litellm":  LiteLLMProvider,
 }
+
+#: All known provider names — shown in error messages and CLI help.
+PROVIDER_NAMES = ["anthropic", "openai", "gemini", "bedrock", "azure", "ollama", "litellm", "echo"]
 
 
 def provider_for(name: str, **kwargs: Any) -> Any:
-    """Return a provider instance by short name.
+    """Return a provider instance by short name.  Extra kwargs → constructor.
 
-    Names: "anthropic", "openai", "gemini", "bedrock", "azure".
-    Extra kwargs are passed to the provider constructor.
+    Names: anthropic · openai · gemini · bedrock · azure · ollama · litellm · echo
 
-    Example::
+    Examples::
 
-        p = provider_for("gemini", model="gemini-2.0-flash")
-        p = provider_for("bedrock", model="anthropic.claude-3-5-sonnet-20241022-v2:0")
-        p = provider_for("azure", endpoint="https://...", api_key="sk-...")
+        provider_for("anthropic")
+        provider_for("openai", model="gpt-4o")
+        provider_for("gemini", model="gemini-2.0-flash")
+        provider_for("ollama", model="mistral", host="http://localhost:11434")
+        provider_for("litellm", model="groq/llama-3.1-70b-versatile")
+        provider_for("bedrock", model="anthropic.claude-3-5-sonnet-20241022-v2:0")
+        provider_for("azure", endpoint="https://...", api_key="sk-...")
+        provider_for("echo")
     """
-    name = name.lower()
+    name = name.lower().strip()
+    if name in ("echo", "mock"):
+        from meshflow.agents.base import EchoProvider
+        return EchoProvider(**kwargs)
     if name == "anthropic":
         from meshflow.agents.base import AnthropicProvider
-
         return AnthropicProvider()
     if name == "openai":
         from meshflow.agents.base import OpenAICompatibleProvider
-
         return OpenAICompatibleProvider(**kwargs)
     cls = _PROVIDER_MAP.get(name)
     if cls is None:
         raise ValueError(
-            f"Unknown provider {name!r}. Choose: anthropic, openai, gemini, bedrock, azure"
+            f"Unknown provider {name!r}. "
+            f"Choose: {', '.join(PROVIDER_NAMES)}"
         )
     return cls(**kwargs)
+
+
+def auto_detect_provider(verbose: bool = False) -> "LLMProvider":
+    """Return the best available provider based on environment, with no configuration needed.
+
+    Detection order (first match wins):
+
+    1. ``MESHFLOW_MOCK=1``          → EchoProvider (no key, no SDK)
+    2. ``MESHFLOW_PROVIDER=<name>`` → that provider explicitly
+    3. ``ANTHROPIC_API_KEY`` set    → AnthropicProvider
+    4. ``OPENAI_API_KEY`` set       → OpenAICompatibleProvider
+    5. ``GOOGLE_API_KEY`` /         → GeminiProvider
+       ``GEMINI_API_KEY`` set
+    6. ``AWS_ACCESS_KEY_ID`` set    → BedrockProvider
+    7. ``AZURE_OPENAI_API_KEY``     → AzureOpenAIProvider
+    8. Ollama reachable locally     → OllamaProvider (free, no key)
+    9. ``LITELLM_MODEL`` set        → LiteLLMProvider
+    10. fallback                    → EchoProvider (prints guidance)
+    """
+    import os
+
+    def _log(msg: str) -> None:
+        if verbose:
+            print(f"[meshflow] provider: {msg}")
+
+    # 1. Explicit mock
+    mock = os.environ.get("MESHFLOW_MOCK", "").strip().lower()
+    if mock in ("1", "true", "yes"):
+        _log("EchoProvider (MESHFLOW_MOCK=1)")
+        from meshflow.agents.base import EchoProvider
+        return EchoProvider()
+
+    # 2. Explicit provider name
+    prov_name = os.environ.get("MESHFLOW_PROVIDER", "").strip().lower()
+    if prov_name:
+        _log(f"provider_for({prov_name!r}) via MESHFLOW_PROVIDER")
+        return provider_for(prov_name)
+
+    # 3. Anthropic key
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        _log("AnthropicProvider (ANTHROPIC_API_KEY found)")
+        from meshflow.agents.base import AnthropicProvider
+        return AnthropicProvider()
+
+    # 4. OpenAI key
+    if os.environ.get("OPENAI_API_KEY"):
+        model = os.environ.get("MESHFLOW_MODEL", "gpt-4o")
+        _log(f"OpenAICompatibleProvider (OPENAI_API_KEY found, model={model!r})")
+        from meshflow.agents.base import OpenAICompatibleProvider
+        return OpenAICompatibleProvider(model=model)
+
+    # 5. Google / Gemini key
+    if os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
+        model = os.environ.get("MESHFLOW_MODEL", "gemini-2.0-flash")
+        _log(f"GeminiProvider (GOOGLE_API_KEY found, model={model!r})")
+        return GeminiProvider(model=model)
+
+    # 6. AWS credentials → Bedrock
+    if os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("AWS_PROFILE"):
+        model = os.environ.get("MESHFLOW_MODEL",
+                               "anthropic.claude-3-5-sonnet-20241022-v2:0")
+        _log(f"BedrockProvider (AWS credentials found, model={model!r})")
+        return BedrockProvider(model=model)
+
+    # 7. Azure OpenAI
+    if os.environ.get("AZURE_OPENAI_API_KEY") and os.environ.get("AZURE_OPENAI_ENDPOINT"):
+        model = os.environ.get("MESHFLOW_MODEL", "gpt-4o")
+        _log(f"AzureOpenAIProvider (Azure env vars found, model={model!r})")
+        return AzureOpenAIProvider(
+            model=model,
+            endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+            api_key=os.environ["AZURE_OPENAI_API_KEY"],
+        )
+
+    # 8. Ollama — try a fast ping
+    ollama_host = os.environ.get("OLLAMA_HOST", OllamaProvider._DEFAULT_HOST)
+    if OllamaProvider.is_reachable(ollama_host):
+        model = os.environ.get("MESHFLOW_MODEL", OllamaProvider._DEFAULT_MODEL)
+        _log(f"OllamaProvider (Ollama reachable at {ollama_host}, model={model!r})")
+        return OllamaProvider(model=model, host=ollama_host)
+
+    # 9. LiteLLM configured
+    if os.environ.get("LITELLM_MODEL"):
+        model = os.environ.get("MESHFLOW_MODEL") or os.environ["LITELLM_MODEL"]
+        _log(f"LiteLLMProvider (LITELLM_MODEL={model!r})")
+        return LiteLLMProvider(model=model)
+
+    # 10. Nothing found — use echo and tell the user
+    import warnings
+    warnings.warn(
+        "\n\nMeshFlow: no LLM provider configured — using EchoProvider (offline mode).\n"
+        "To use a real LLM, set one of:\n"
+        "  ANTHROPIC_API_KEY=sk-ant-...          (Anthropic Claude)\n"
+        "  OPENAI_API_KEY=sk-...                 (OpenAI / any compatible)\n"
+        "  GOOGLE_API_KEY=...                    (Google Gemini)\n"
+        "  AWS_ACCESS_KEY_ID=... (+ region)      (AWS Bedrock)\n"
+        "  ollama pull llama3.2  (no key needed) (local Ollama)\n"
+        "Or: MESHFLOW_PROVIDER=<name>  MESHFLOW_MODEL=<model-id>\n"
+        "Or: MESHFLOW_MOCK=1           (silence this warning)\n",
+        stacklevel=3,
+    )
+    from meshflow.agents.base import EchoProvider
+    return EchoProvider()

@@ -52,7 +52,17 @@ from meshflow.agents.messaging import MessageBus
 from meshflow.agents.conversation import GroupChat, GroupChatManager, ConversationResult
 from meshflow.agents.react import ReActAgent, ReActResult, ThoughtStep
 from meshflow.agents.router import ProviderRouter, auto_provider, auto_model
-from meshflow.agents.base import EchoProvider
+from meshflow.agents.base import EchoProvider, AnthropicProvider, OpenAICompatibleProvider
+from meshflow.agents.providers import (
+    GeminiProvider,
+    BedrockProvider,
+    AzureOpenAIProvider,
+    OllamaProvider,
+    LiteLLMProvider,
+    provider_for,
+    auto_detect_provider,
+    PROVIDER_NAMES,
+)
 from meshflow.intelligence.memory import AgentMemory, MemoryItem
 from meshflow.agents.supervisor import Supervisor, SupervisorResult
 from meshflow.agents.adversarial import AdversarialTeam, AdversarialResult
@@ -201,8 +211,18 @@ __all__ = [
     "ProviderRouter",
     "auto_provider",
     "auto_model",
-    # ── Zero-dependency / offline provider ────────────────────────────────────
-    "EchoProvider",
+    # ── LLM providers — any LLM, zero friction ───────────────────────────────
+    "EchoProvider",           # offline / test / MESHFLOW_MOCK=1
+    "AnthropicProvider",      # ANTHROPIC_API_KEY
+    "OpenAICompatibleProvider",  # OPENAI_API_KEY or any OpenAI-compat endpoint
+    "GeminiProvider",         # GOOGLE_API_KEY
+    "BedrockProvider",        # AWS credentials
+    "AzureOpenAIProvider",    # AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT
+    "OllamaProvider",         # local Ollama, no API key
+    "LiteLLMProvider",        # 100+ models via LiteLLM
+    "provider_for",           # factory: provider_for("ollama", model="llama3.2")
+    "auto_detect_provider",   # auto-pick based on available keys / services
+    "PROVIDER_NAMES",         # list of all supported provider names
     # ── 4-tier memory ─────────────────────────────────────────────────────────
     "AgentMemory",
     "MemoryItem",
