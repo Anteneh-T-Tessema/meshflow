@@ -303,6 +303,76 @@ class Crew:
 
         return self._aggregate(outputs)
 
+    # ── YAML factory ──────────────────────────────────────────────────────────
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "Crew":
+        """Instantiate a :class:`Crew` from a YAML file.
+
+        Expected format::
+
+            version: "1.0"
+            kind: crew                  # optional; default is "crew"
+            name: my_pipeline           # optional label
+            process: sequential         # sequential | parallel | hierarchical
+            verbose: false
+            agents:
+              - name: researcher
+                role: researcher
+                model: claude-haiku-4-5-20251001   # optional
+              - name: writer
+                role: executor
+            tasks:
+              - description: "Research {topic}"
+                expected_output: "A research summary"
+                agent: researcher       # matches agent name above
+              - description: "Write article"
+                agent: writer
+        """
+        import yaml  # type: ignore[import]
+        from meshflow.agents.builder import Agent  # avoid circular at module level
+
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        # Build agents index
+        agent_defs = data.get("agents", [])
+        agent_map: dict[str, Any] = {}
+        for a in agent_defs:
+            name = a["name"]
+            kwargs: dict[str, Any] = {"name": name}
+            if "role" in a:
+                kwargs["role"] = a["role"]
+            if "model" in a:
+                kwargs["model"] = a["model"]
+            if "system_prompt" in a:
+                kwargs["system_prompt"] = a["system_prompt"]
+            if "skills" in a:
+                kwargs["skills"] = a["skills"]
+            agent_map[name] = Agent(**kwargs)
+
+        # Build tasks
+        task_objs: list[Task] = []
+        for t in data.get("tasks", []):
+            agent_ref = agent_map.get(t.get("agent", ""))
+            task_objs.append(
+                Task(
+                    description=t["description"],
+                    expected_output=t.get("expected_output", ""),
+                    agent=agent_ref,
+                )
+            )
+
+        process_str = data.get("process", "sequential")
+        verbose = bool(data.get("verbose", False))
+
+        return cls(
+            agents=list(agent_map.values()),
+            tasks=task_objs,
+            process=Process(process_str),
+            verbose=verbose,
+        )
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod

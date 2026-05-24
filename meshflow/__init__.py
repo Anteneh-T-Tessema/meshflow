@@ -133,8 +133,17 @@ from meshflow.agents.health import (
 )
 from meshflow.core.analytics import WorkflowAnalytics, RunSummary
 from meshflow.queue import TaskQueue, QueueWorker, TaskItem, TaskStatus
+from meshflow.tools.code_interpreter import CodeInterpreter, CodeResult
+from meshflow.a2a import AgentCard, A2AMessage, A2AResponse, A2AClient, A2AServer
+from meshflow.multimodal import (
+    ImageInput,
+    DocumentInput,
+    AudioInput,
+    MultiModalInput,
+    build_multimodal_message,
+)
 
-__version__ = "0.26.0"
+__version__ = "0.30.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -342,4 +351,19 @@ __all__ = [
     "QueueWorker",
     "TaskItem",
     "TaskStatus",
+    # ── Code interpreter ─────────────────────────────────────────────────────
+    "CodeInterpreter",
+    "CodeResult",
+    # ── A2A protocol ─────────────────────────────────────────────────────────
+    "AgentCard",
+    "A2AMessage",
+    "A2AResponse",
+    "A2AClient",
+    "A2AServer",
+    # ── Multi-modal inputs ────────────────────────────────────────────────────
+    "ImageInput",
+    "DocumentInput",
+    "AudioInput",
+    "MultiModalInput",
+    "build_multimodal_message",
 ]

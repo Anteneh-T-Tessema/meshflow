@@ -536,11 +536,55 @@ async def _async_approve(args: argparse.Namespace) -> None:
 # ── run ───────────────────────────────────────────────────────────────────────
 
 
+async def _async_run_crew(args: argparse.Namespace) -> None:
+    """Handle ``meshflow run`` when the YAML declares ``kind: crew``."""
+    from meshflow.agents.crew import Crew
+
+    import yaml as _yaml
+    with open(args.yaml, encoding="utf-8") as f:
+        data = _yaml.safe_load(f)
+
+    name = data.get("name", args.yaml)
+    inputs: dict[str, Any] = data.get("inputs", {})
+
+    # task override from CLI splices into inputs["task"]
+    if args.task:
+        inputs["task"] = args.task
+
+    crew = Crew.from_yaml(args.yaml)
+    run_id = str(uuid.uuid4())
+
+    print(f"[meshflow] run_id={run_id}")
+    print(f"[meshflow] crew={name}  tasks={len(crew.tasks)}  process={crew.process.value}")
+
+    result = await crew.kickoff(inputs=inputs)
+
+    print(f"\n{'=' * 60}")
+    print(f"  Tasks    : {len(result.tasks_output)}")
+    print(f"  Cost     : ${result.total_cost_usd:.6f}")
+    print(f"  Tokens   : {result.total_tokens}")
+    print(f"\n  Output:\n{result.raw[:2000]}")
+    print()
+
+
 def _cmd_run(args: argparse.Namespace) -> None:
     asyncio.run(_async_run(args))
 
 
 async def _async_run(args: argparse.Namespace) -> None:
+    # ── detect kind: crew vs. kind: workflow ──────────────────────────────────
+    try:
+        import yaml as _yaml
+        with open(args.yaml, encoding="utf-8") as _f:
+            _peek = _yaml.safe_load(_f)
+        _kind = str(_peek.get("kind", "workflow")).lower() if isinstance(_peek, dict) else "workflow"
+    except Exception:
+        _kind = "workflow"
+
+    if _kind == "crew":
+        await _async_run_crew(args)
+        return
+
     from meshflow.core.workflow import WorkflowDefinition
     from meshflow.core.runtime import StepRuntime
     from meshflow.core.ledger import ReplayLedger

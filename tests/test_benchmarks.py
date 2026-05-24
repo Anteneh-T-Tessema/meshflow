@@ -121,4 +121,4 @@ class TestBenchCLI:
 
     def test_meshflow_version(self) -> None:
         import meshflow
-        assert meshflow.__version__ == "0.26.0"
+        assert meshflow.__version__ == "0.30.0"

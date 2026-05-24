@@ -514,6 +514,41 @@ class Agent:
         agent = self._build()
         return await agent.step(task, context or {})
 
+    async def run_multimodal(
+        self,
+        task: str,
+        inputs: list[Any],
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run this agent on a task that includes multi-modal content.
+
+        Parameters
+        ----------
+        task:    Text prompt / instruction for the agent.
+        inputs:  List of :class:`~meshflow.multimodal.ImageInput`,
+                 :class:`~meshflow.multimodal.DocumentInput`, or
+                 :class:`~meshflow.multimodal.AudioInput` objects.
+        context: Optional extra context forwarded to the agent step.
+
+        Returns the same result dict as :meth:`run`.
+        """
+        from meshflow.multimodal.inputs import build_multimodal_message
+
+        built = self._build()
+        blocks = build_multimodal_message(task, inputs)
+        messages: list[dict[str, Any]] = [{"role": "user", "content": blocks}]
+
+        text, tokens, cost = await built.think(messages)
+        return {
+            "result": text,
+            "agent_name": self.name,
+            "role": str(self.role.value if isinstance(self.role, AgentRole) else self.role),
+            "tokens": tokens,
+            "cost_usd": cost,
+            "multimodal_inputs": len(inputs),
+            "blocked": False,
+        }
+
     def to_mesh_node(self) -> Any:
         """Convert to a MeshNode for use inside WorkflowDefinition / Team.
 
