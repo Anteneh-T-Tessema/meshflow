@@ -253,6 +253,16 @@ def revoke_api_key(key_id: str) -> dict[str, Any]:
         return {"error": str(e)}
 
 
+def fetch_analytics(n: int = 20) -> dict[str, Any]:
+    import urllib.request
+    req = urllib.request.Request(f"{SERVER}/analytics?n={n}", headers=_headers())
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Metrics parser ────────────────────────────────────────────────────────────
 
 def parse_prometheus(text: str) -> dict[str, float]:
@@ -293,7 +303,7 @@ with st.sidebar:
         "Navigate",
         ["Overview", "Runs", "HITL Queue", "Metrics", "Submit Task", "Live", "Pool",
          "Evals", "Plugins", "Graph", "Audit", "SLA", "OTEL",
-         "Compliance", "Alerts", "API Keys"],
+         "Compliance", "Alerts", "API Keys", "Analytics"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -1286,6 +1296,74 @@ elif page == "API Keys":
                     f"| Tenant: `{result.get('tenant_id', '') or 'global'}`"
                 )
                 st.cache_data.clear()
+
+
+# ── Analytics ─────────────────────────────────────────────────────────────────
+
+elif page == "Analytics":
+    st.header("Workflow Analytics")
+
+    n_runs = st.slider("Runs to analyse", min_value=5, max_value=100, value=20, step=5)
+
+    data = fetch_analytics(n_runs)
+    if "error" in data:
+        st.warning(f"Analytics unavailable: {data['error']}")
+    else:
+        # KPI tiles
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Runs analysed", data.get("runs_analysed", 0))
+        c2.metric("Total cost", f"${data.get('total_cost_usd', 0):.4f}")
+        c3.metric("Total tokens", f"{data.get('total_tokens', 0):,}")
+        c4.metric("Total carbon", f"{data.get('total_carbon_gco2', 0):.4f} gCO₂")
+
+        st.divider()
+
+        # Cost trend chart
+        cost_rows = data.get("cost_trend", [])
+        if cost_rows:
+            st.subheader("Cost trend")
+            chart_data = {r["run_id"]: r["cost_usd"] for r in cost_rows}
+            st.bar_chart(chart_data)
+
+        # Latency
+        lat = data.get("latency", {})
+        if lat:
+            st.subheader("Latency percentiles (per-run p95)")
+            col_a, col_b, col_c, col_d = st.columns(4)
+            col_a.metric("P50", f"{lat.get('p50_run_p95_ms', 0):.0f} ms")
+            col_b.metric("P95", f"{lat.get('p95_run_p95_ms', 0):.0f} ms")
+            col_c.metric("P99", f"{lat.get('p99_run_p95_ms', 0):.0f} ms")
+            col_d.metric("Mean", f"{lat.get('mean_run_p95_ms', 0):.0f} ms")
+
+        # Blocked rate
+        blk = data.get("blocked", {})
+        if blk:
+            st.subheader("Blocked steps")
+            brate = blk.get("blocked_rate", 0)
+            st.progress(min(brate, 1.0), text=f"{brate*100:.1f}% blocked")
+            col_e, col_f = st.columns(2)
+            col_e.metric("Blocked steps", blk.get("blocked_steps", 0))
+            col_f.metric("Total steps", blk.get("total_steps", 0))
+
+        # Quality drift
+        qual = data.get("quality", {})
+        if qual:
+            st.subheader("Quality / uncertainty drift")
+            trend = qual.get("trend", "stable")
+            delta = qual.get("delta", 0.0)
+            color = "normal" if trend == "stable" else ("inverse" if trend == "improving" else "off")
+            st.metric("Trend", trend.capitalize(), delta=f"{delta:+.4f}", delta_color=color)
+            col_g, col_h = st.columns(2)
+            col_g.metric("First half avg", f"{qual.get('first_half_avg', 0):.4f}")
+            col_h.metric("Second half avg", f"{qual.get('second_half_avg', 0):.4f}")
+
+        # Top costly nodes
+        nodes = data.get("top_costly_nodes", [])
+        if nodes:
+            st.subheader("Top costly nodes")
+            import pandas as pd  # type: ignore[import]
+            df = pd.DataFrame(nodes)
+            st.dataframe(df, use_container_width=True)
 
 
 # ── Auto-refresh ──────────────────────────────────────────────────────────────

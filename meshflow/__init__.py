@@ -88,8 +88,20 @@ from meshflow.swarm import (
     VerificationResult,
     DeterministicVerifier,
 )
+from meshflow.security.sensitive_data import (
+    SensitiveDataDetector,
+    SensitiveMatch,
+    get_detector as get_sensitive_detector,
+)
+from meshflow.agents.health import (
+    ModelHealthTracker,
+    ModelHealthSummary,
+    get_health_tracker,
+)
+from meshflow.core.analytics import WorkflowAnalytics, RunSummary
+from meshflow.queue import TaskQueue, QueueWorker, TaskItem, TaskStatus
 
-__version__ = "0.22.0"
+__version__ = "0.23.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -232,4 +244,20 @@ __all__ = [
     "swarm_available_domains",
     "VerificationResult",
     "DeterministicVerifier",
+    # ── Sensitive data detection ───────────────────────────────────────────────
+    "SensitiveDataDetector",
+    "SensitiveMatch",
+    "get_sensitive_detector",
+    # ── Model health tracking ─────────────────────────────────────────────────
+    "ModelHealthTracker",
+    "ModelHealthSummary",
+    "get_health_tracker",
+    # ── Workflow analytics ────────────────────────────────────────────────────
+    "WorkflowAnalytics",
+    "RunSummary",
+    # ── Background task queue ─────────────────────────────────────────────────
+    "TaskQueue",
+    "QueueWorker",
+    "TaskItem",
+    "TaskStatus",
 ]

@@ -318,6 +318,45 @@ def main() -> None:
     p_keys_revoke.add_argument("key_id", help="Key ID to revoke")
     p_keys_revoke.add_argument("--db", default="meshflow_runs.db", help="Ledger SQLite path")
 
+    # analytics
+    p_analytics = sub.add_parser("analytics", help="Workflow run analytics — costs, latency, quality")
+    p_analytics.add_argument("--db", default="meshflow_runs.db", help="Ledger SQLite path")
+    p_analytics.add_argument("--runs", type=int, default=20, dest="n_runs", help="Number of recent runs to analyse")
+    p_analytics.add_argument("--format", default="text", choices=["text", "json"], help="Output format")
+    p_analytics.add_argument(
+        "--metric",
+        default="full",
+        choices=["full", "cost", "latency", "blocked", "quality", "carbon", "nodes"],
+        help="Which metric to show (default: full report)",
+    )
+
+    # queue
+    p_queue = sub.add_parser("queue", help="Background task queue management")
+    p_queue_sub = p_queue.add_subparsers(dest="queue_cmd", required=True)
+
+    p_q_push = p_queue_sub.add_parser("push", help="Push a workflow task onto the queue")
+    p_q_push.add_argument("yaml", help="Path to workflow YAML file")
+    p_q_push.add_argument("--task", default="", help="Task string override")
+    p_q_push.add_argument("--priority", type=int, default=0, help="Priority (higher = sooner)")
+    p_q_push.add_argument("--db", default="meshflow_queue.db", help="Queue SQLite path")
+
+    p_q_status = p_queue_sub.add_parser("status", help="Show queue statistics")
+    p_q_status.add_argument("--db", default="meshflow_queue.db", help="Queue SQLite path")
+
+    p_q_list = p_queue_sub.add_parser("list", help="List tasks in the queue")
+    p_q_list.add_argument("--db", default="meshflow_queue.db", help="Queue SQLite path")
+    p_q_list.add_argument("--status", default="", choices=["", "pending", "running", "done", "failed", "cancelled"])
+    p_q_list.add_argument("--limit", type=int, default=20)
+
+    p_q_cancel = p_queue_sub.add_parser("cancel", help="Cancel a pending task")
+    p_q_cancel.add_argument("task_id", help="Task ID to cancel")
+    p_q_cancel.add_argument("--db", default="meshflow_queue.db", help="Queue SQLite path")
+
+    p_q_worker = p_queue_sub.add_parser("worker", help="Start a queue worker process")
+    p_q_worker.add_argument("--db", default="meshflow_queue.db", help="Queue SQLite path")
+    p_q_worker.add_argument("--concurrency", type=int, default=4, help="Max concurrent tasks")
+    p_q_worker.add_argument("--poll", type=float, default=1.0, dest="poll_interval", help="Poll interval seconds")
+
     p_bench = sub.add_parser("bench", help="Run performance benchmarks (no API key required)")
     p_bench.add_argument(
         "--concurrency", nargs="+", type=int, default=[10, 100, 1000],
@@ -362,6 +401,8 @@ def main() -> None:
         "compliance": _cmd_compliance,
         "webhooks": _cmd_webhooks,
         "keys": _cmd_keys,
+        "analytics": _cmd_analytics,
+        "queue": _cmd_queue,
     }
     dispatch[args.cmd](args)
 
@@ -1909,3 +1950,193 @@ def _cmd_keys(args: argparse.Namespace) -> None:
         else:
             print(f"  Key {args.key_id} not found or already revoked.")
             sys.exit(1)
+
+
+# ── analytics ─────────────────────────────────────────────────────────────────
+
+
+def _cmd_analytics(args: argparse.Namespace) -> None:
+    asyncio.run(_async_analytics(args))
+
+
+async def _async_analytics(args: argparse.Namespace) -> None:
+    import os
+    from meshflow.core.ledger import ReplayLedger
+    from meshflow.core.analytics import WorkflowAnalytics
+
+    db = args.db
+    if not os.path.exists(db):
+        print(f"\n  No ledger found at '{db}'. Run a workflow first.\n")
+        return
+
+    ledger = ReplayLedger(db)
+    analytics = WorkflowAnalytics(ledger)
+    n = args.n_runs
+    metric = args.metric
+
+    if metric == "cost":
+        data = await analytics.cost_trend(n)
+    elif metric == "latency":
+        data = await analytics.latency_percentiles(n)
+    elif metric == "blocked":
+        data = await analytics.blocked_rate(n)
+    elif metric == "quality":
+        data = await analytics.quality_drift(n)
+    elif metric == "carbon":
+        data = await analytics.carbon_trend(n)
+    elif metric == "nodes":
+        data = await analytics.top_costly_nodes(n)
+    else:
+        data = await analytics.full_report(n)
+
+    if args.format == "json":
+        print(json.dumps(data, indent=2))
+        return
+
+    # Human-readable text output
+    if metric == "full":
+        report = data
+        print(f"\n  MeshFlow Analytics — last {report.get('runs_analysed', 0)} runs")
+        print(f"  {'─' * 52}")
+        print(f"  Total cost:    ${report.get('total_cost_usd', 0):.6f}")
+        print(f"  Total tokens:  {report.get('total_tokens', 0):,}")
+        print(f"  Total carbon:  {report.get('total_carbon_gco2', 0):.4f} gCO₂")
+        lat = report.get("latency", {})
+        print(f"  P50 latency:   {lat.get('p50_run_p95_ms', 0):.0f} ms")
+        print(f"  P95 latency:   {lat.get('p95_run_p95_ms', 0):.0f} ms")
+        blk = report.get("blocked", {})
+        print(f"  Blocked rate:  {blk.get('blocked_rate', 0)*100:.1f}%  "
+              f"({blk.get('blocked_steps', 0)}/{blk.get('total_steps', 0)} steps)")
+        qual = report.get("quality", {})
+        print(f"  Quality trend: {qual.get('trend', 'n/a')}  "
+              f"(Δ uncertainty {qual.get('delta', 0):+.4f})")
+        nodes = report.get("top_costly_nodes", [])
+        if nodes:
+            print(f"\n  Top costly nodes:")
+            print(f"  {'Node':<36}  {'Total $':>10}  {'Calls':>6}  {'Avg $':>10}")
+            print(f"  {'─' * 36}  {'─' * 10}  {'─' * 6}  {'─' * 10}")
+            for n_row in nodes[:5]:
+                print(
+                    f"  {n_row['node_id']:<36}  "
+                    f"${n_row['total_cost_usd']:>9.6f}  "
+                    f"{n_row['call_count']:>6}  "
+                    f"${n_row['avg_cost_usd']:>9.6f}"
+                )
+        print()
+    elif metric == "cost":
+        print(f"\n  Cost trend — last {len(data)} runs:")
+        for row in data:
+            print(f"  {row['run_id']}  ${row['cost_usd']:.6f}")
+        print()
+    elif metric == "latency":
+        print(f"\n  Latency percentiles (per-run p95) over {data.get('runs_analysed', 0)} runs:")
+        print(f"  P50: {data.get('p50_run_p95_ms', 0):.0f} ms")
+        print(f"  P95: {data.get('p95_run_p95_ms', 0):.0f} ms")
+        print(f"  P99: {data.get('p99_run_p95_ms', 0):.0f} ms")
+        print(f"  Mean: {data.get('mean_run_p95_ms', 0):.0f} ms\n")
+    elif metric == "blocked":
+        print(f"\n  Blocked step rate: {data.get('blocked_rate', 0)*100:.1f}%")
+        print(f"  Blocked steps: {data.get('blocked_steps', 0)}/{data.get('total_steps', 0)}")
+        print(f"  Max run blocked rate: {data.get('max_run_blocked_rate', 0)*100:.1f}%\n")
+    elif metric == "quality":
+        print(f"\n  Quality drift: {data.get('trend', 'n/a')}")
+        print(f"  First half avg uncertainty: {data.get('first_half_avg', 0):.4f}")
+        print(f"  Second half avg uncertainty: {data.get('second_half_avg', 0):.4f}")
+        print(f"  Delta: {data.get('delta', 0):+.4f}\n")
+    elif metric == "carbon":
+        print(f"\n  Carbon footprint — last {len(data)} runs:")
+        for row in data:
+            print(f"  {row['run_id']}  {row['carbon_gco2']:.6f} gCO₂")
+        print()
+    elif metric == "nodes":
+        print(f"\n  Top costly nodes:")
+        for row in data:
+            print(f"  {row['node_id']:<36}  ${row['total_cost_usd']:.6f}  "
+                  f"×{row['call_count']}  avg ${row['avg_cost_usd']:.6f}")
+        print()
+
+
+# ── queue ─────────────────────────────────────────────────────────────────────
+
+
+def _cmd_queue(args: argparse.Namespace) -> None:
+    asyncio.run(_async_queue(args))
+
+
+async def _async_queue(args: argparse.Namespace) -> None:
+    from meshflow.queue import TaskQueue, QueueWorker, TaskStatus
+
+    db = args.db
+
+    if args.queue_cmd == "push":
+        q = TaskQueue(db)
+        payload: dict[str, Any] = {"workflow": args.yaml}
+        if args.task:
+            payload["task"] = args.task
+        task_id = await q.push(payload, priority=args.priority)
+        await q.close()
+        print(f"\n  Task enqueued!")
+        print(f"  ID:       {task_id}")
+        print(f"  Workflow: {args.yaml}")
+        print(f"  Priority: {args.priority}\n")
+
+    elif args.queue_cmd == "status":
+        q = TaskQueue(db)
+        stats = await q.stats()
+        await q.close()
+        print(f"\n  Queue status ({db}):")
+        for status_name, count in sorted(stats.items()):
+            print(f"  {status_name:<12} {count}")
+        print()
+
+    elif args.queue_cmd == "list":
+        q = TaskQueue(db)
+        status_filter = TaskStatus(args.status) if args.status else None
+        items = await q.list_tasks(status=status_filter, limit=args.limit)
+        await q.close()
+        if not items:
+            print("  No tasks found.\n")
+            return
+        print(f"\n  {'Task ID':<38}  {'Status':<12}  {'Priority':>8}  {'Created'}")
+        print(f"  {'─' * 38}  {'─' * 12}  {'─' * 8}  {'─' * 24}")
+        for item in items:
+            import datetime
+            ts = datetime.datetime.fromtimestamp(item.created_at).strftime("%Y-%m-%d %H:%M:%S")
+            print(f"  {item.task_id:<38}  {item.status.value:<12}  {item.priority:>8}  {ts}")
+        print()
+
+    elif args.queue_cmd == "cancel":
+        q = TaskQueue(db)
+        ok = await q.cancel(args.task_id)
+        await q.close()
+        if ok:
+            print(f"  Task {args.task_id} cancelled.")
+        else:
+            print(f"  Task {args.task_id} not found or not cancellable (may already be running/done).")
+            sys.exit(1)
+
+    elif args.queue_cmd == "worker":
+        import signal
+        q = TaskQueue(db)
+        worker = QueueWorker(q, concurrency=args.concurrency, poll_interval=args.poll_interval)
+        stop = asyncio.Event()
+
+        def _stop() -> None:
+            print("\n  Worker: shutdown signal received…")
+            stop.set()
+
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, _stop)
+            except (NotImplementedError, RuntimeError):
+                pass
+
+        print(f"\n  MeshFlow queue worker started")
+        print(f"  Queue:       {db}")
+        print(f"  Concurrency: {args.concurrency}")
+        print(f"  Poll:        {args.poll_interval}s")
+        print(f"  Press Ctrl-C to stop\n")
+        await worker.run(stop_event=stop)
+        await q.close()
+        print("  Worker stopped.")

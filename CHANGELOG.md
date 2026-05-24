@@ -5,6 +5,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.23.0] — 2026-05-23
+
+### Sprint 23 — Sensitive data detection, model health tracking, workflow analytics, background task queue
+
+**1190+ tests passing (18 skipped).**
+
+#### Added
+
+- **Sprint 23A — SensitiveDataDetector** (`meshflow/security/sensitive_data.py`):
+  Rich PHI + PII + credential detection over arbitrary text. Returns structured
+  `SensitiveMatch` objects with `kind`, `category`, `value_preview`, `start`,
+  `end`, `confidence`. 11 PHI/PII patterns (SSN, EMAIL, PHONE, DATE, ZIP, IP,
+  URL, MRN, NPI, CREDIT_CARD, NAME) and 12 credential patterns (Anthropic/
+  OpenAI/AWS/GCP/GitHub API keys, JWT, RSA private key, DB connection strings,
+  high-entropy hex, Bearer tokens). `mask()` replaces PHI with `[REDACTED]`
+  and credentials with `[CREDENTIAL-REDACTED]` in a single non-shifting pass.
+  `audit_report()` returns a compliance-ready summary. Module singleton via
+  `get_detector()` / `reset_detector()`. Exported as `meshflow.SensitiveDataDetector`.
+
+- **Sprint 23B — ModelHealthTracker + ProviderRouter auto-fallback**
+  (`meshflow/agents/health.py`, `meshflow/agents/router.py`):
+  `ModelHealthTracker` records per-model success/failure outcomes in a
+  rolling window (default 50; configurable via `MESHFLOW_HEALTH_WINDOW`).
+  Health score = success fraction; models below threshold (default 0.7;
+  `MESHFLOW_HEALTH_DEGRADED_THRESHOLD`) are marked degraded. `summary(model)`
+  returns a `ModelHealthSummary` with p50/p95 latency percentiles and last
+  error. Global singleton via `get_health_tracker()`. `ProviderRouter` gains
+  `set_fallback_chain(*models)` and `route_with_health()` which skips degraded
+  models and returns the best healthy candidate (or `best_model()` if all degraded).
+
+- **Sprint 23C — WorkflowAnalytics** (`meshflow/core/analytics.py`):
+  Async post-hoc analytics over `ReplayLedger`. `WorkflowAnalytics` exposes:
+  `cost_trend(n)`, `latency_percentiles(n)` (p50/p95/p99), `blocked_rate(n)`,
+  `quality_drift(n)` (uncertainty trend → "degrading"/"stable"/"improving"),
+  `carbon_trend(n)`, `top_costly_nodes(n_runs, top_n)`, and `full_report(n)`.
+  All methods are async. New server endpoint `GET /analytics?n=N`. New CLI
+  subcommand `meshflow analytics [--metric cost|latency|blocked|quality|carbon|nodes|full]
+  [--runs N] [--format text|json]`. New dashboard "Analytics" page with KPI tiles,
+  cost bar chart, latency metrics, blocked-rate progress bar, quality drift delta,
+  and top-costly-nodes table.
+
+- **Sprint 23D — Background task queue** (`meshflow/queue/`):
+  SQLite-backed durable async task queue. `TaskItem` (task_id, payload, status,
+  priority, timestamps, result, error) persists across restarts. `TaskQueue`
+  is crash-safe: tasks stuck in "running" are automatically re-queued on startup.
+  `QueueWorker` provides a bounded async concurrency pool with pluggable
+  `handler(TaskItem) → dict`. New server endpoints: `GET /queue/status`,
+  `POST /queue/push`, `DELETE /queue/{task_id}/cancel`, `GET /queue/{task_id}`.
+  New CLI subcommands: `meshflow queue push <yaml>`, `meshflow queue status`,
+  `meshflow queue list [--status ...]`, `meshflow queue cancel <id>`,
+  `meshflow queue worker [--concurrency N]`.
+
+#### Changed
+
+- `meshflow/__init__.py` version bumped to **0.23.0**.
+- New top-level exports: `SensitiveDataDetector`, `SensitiveMatch`,
+  `get_sensitive_detector`, `ModelHealthTracker`, `ModelHealthSummary`,
+  `get_health_tracker`, `WorkflowAnalytics`, `RunSummary`, `TaskQueue`,
+  `QueueWorker`, `TaskItem`, `TaskStatus`.
+
+---
+
 ## [0.22.0] — 2026-05-23
 
 ### Sprint 22 — Dashboard v2, per-tenant rate limiting, scheduled compliance reports, declarative YAML workflows

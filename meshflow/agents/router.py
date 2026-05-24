@@ -94,6 +94,7 @@ class ProviderRouter:
     def __init__(self) -> None:
         # Custom overrides: role → model string (set via set_rule)
         self._overrides: dict[str, str] = {}
+        self._fallback_chain: list[str] = []  # ordered fallback models (health-aware)
 
     def set_rule(self, role: str, model: str, budget_ceiling: float = 0.0) -> None:
         """Override the default model for *role*.
@@ -147,6 +148,55 @@ class ProviderRouter:
         # Rule 4: role default
         model = self._ROLE_DEFAULTS.get(role_str, _SONNET)
         return AnthropicProvider(), model
+
+    def set_fallback_chain(self, *models: str) -> "ProviderRouter":
+        """Set an ordered list of model fallbacks used by ``route_with_health()``.
+
+        When the primary model is degraded, ``route_with_health()`` tries each
+        model in order and returns the first healthy one.
+
+        Example::
+
+            router.set_fallback_chain(
+                "claude-opus-4-7",
+                "claude-sonnet-4-6",
+                "claude-haiku-4-5-20251001",
+            )
+        """
+        self._fallback_chain = list(models)
+        return self
+
+    def route_with_health(
+        self,
+        role: str | AgentRole,
+        budget_usd: float = 1.0,
+        compliance: str = "",
+        tracker: "Any | None" = None,
+    ) -> tuple[LLMProvider, str]:
+        """Like ``route()``, but skips degraded models using ModelHealthTracker.
+
+        Falls back through ``_fallback_chain`` until a healthy model is found.
+        If all models in the chain are degraded, returns the best of the chain.
+        If no fallback chain is set, behaves identically to ``route()``.
+        """
+        from meshflow.agents.health import get_health_tracker
+        health = tracker or get_health_tracker()
+
+        provider, primary_model = self.route(role, budget_usd, compliance)
+
+        # If no chain configured, just return the primary
+        if not self._fallback_chain:
+            return provider, primary_model
+
+        # Try chain: include primary at the front
+        chain = [primary_model] + [m for m in self._fallback_chain if m != primary_model]
+        for model in chain:
+            if not health.is_degraded(model):
+                return AnthropicProvider(), model
+
+        # All degraded — return the healthiest
+        best = health.best_model(chain)
+        return AnthropicProvider(), best
 
     def explain(
         self,

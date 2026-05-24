@@ -1103,6 +1103,93 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
             text=json.dumps(principal.to_dict()),
         )
 
+    # ── Queue endpoints ────────────────────────────────────────────────────────
+
+    _task_queue_path = ledger_path.replace(".db", "_queue.db") if ledger_path.endswith(".db") else ledger_path + "_queue"
+
+    async def queue_status(request: Any) -> Any:
+        """GET /queue/status — task queue statistics."""
+        _require_auth(request)
+        from meshflow.queue import TaskQueue
+        q = TaskQueue(_task_queue_path)
+        stats = await q.stats()
+        await q.close()
+        return web.Response(
+            content_type="application/json",
+            headers=_cors_headers(),
+            text=json.dumps({"stats": stats}),
+        )
+
+    async def queue_push(request: Any) -> Any:
+        """POST /queue/push — enqueue a new task."""
+        _require_auth(request)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.Response(status=400, content_type="application/json",
+                                text=json.dumps({"error": "Invalid JSON body"}))
+        payload = body.get("payload", body)
+        priority = int(body.get("priority", 0))
+        from meshflow.queue import TaskQueue
+        q = TaskQueue(_task_queue_path)
+        task_id = await q.push(payload, priority=priority)
+        await q.close()
+        return web.Response(
+            status=201,
+            content_type="application/json",
+            headers=_cors_headers(),
+            text=json.dumps({"task_id": task_id, "status": "pending"}),
+        )
+
+    async def queue_cancel(request: Any) -> Any:
+        """DELETE /queue/{task_id}/cancel — cancel a pending task."""
+        _require_auth(request)
+        task_id = request.match_info["task_id"]
+        from meshflow.queue import TaskQueue
+        q = TaskQueue(_task_queue_path)
+        cancelled = await q.cancel(task_id)
+        await q.close()
+        if not cancelled:
+            return web.Response(status=404, content_type="application/json",
+                                text=json.dumps({"error": "Task not found or not cancellable"}))
+        return web.Response(
+            content_type="application/json",
+            headers=_cors_headers(),
+            text=json.dumps({"task_id": task_id, "status": "cancelled"}),
+        )
+
+    async def queue_get(request: Any) -> Any:
+        """GET /queue/{task_id} — get task details."""
+        _require_auth(request)
+        task_id = request.match_info["task_id"]
+        from meshflow.queue import TaskQueue
+        q = TaskQueue(_task_queue_path)
+        item = await q.get(task_id)
+        await q.close()
+        if item is None:
+            return web.Response(status=404, content_type="application/json",
+                                text=json.dumps({"error": "Task not found"}))
+        return web.Response(
+            content_type="application/json",
+            headers=_cors_headers(),
+            text=json.dumps(item.to_dict()),
+        )
+
+    # ── Analytics endpoint ─────────────────────────────────────────────────────
+
+    async def analytics_report(request: Any) -> Any:
+        """GET /analytics — full workflow analytics report."""
+        _require_auth(request)
+        n = int(request.rel_url.query.get("n", "20"))
+        from meshflow.core.analytics import WorkflowAnalytics
+        analytics = WorkflowAnalytics(ledger)
+        report = await analytics.full_report(n_runs=n)
+        return web.Response(
+            content_type="application/json",
+            headers=_cors_headers(),
+            text=json.dumps(report),
+        )
+
     app = web.Application()
     app.router.add_get("/health", health)
     app.router.add_get("/health/live", health_live)
@@ -1141,6 +1228,11 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
     app.router.add_get("/keys", keys_list)
     app.router.add_post("/keys", keys_create)
     app.router.add_delete("/keys/{key_id}", keys_revoke)
+    app.router.add_get("/queue/status", queue_status)
+    app.router.add_post("/queue/push", queue_push)
+    app.router.add_delete("/queue/{task_id}/cancel", queue_cancel)
+    app.router.add_get("/queue/{task_id}", queue_get)
+    app.router.add_get("/analytics", analytics_report)
     app.router.add_route("OPTIONS", "/{path_info:.*}", options_handler)
     return app
 
