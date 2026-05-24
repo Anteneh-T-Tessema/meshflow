@@ -142,8 +142,22 @@ from meshflow.multimodal import (
     MultiModalInput,
     build_multimodal_message,
 )
+from meshflow.agents.structured import (
+    StructuredOutputResult,
+    StructuredOutputError,
+    StructuredOutputParser,
+)
+from meshflow.intelligence.memory_backends import (
+    MemoryBackend,
+    InMemoryBackend,
+    SQLiteMemoryBackend,
+    PostgresMemoryBackend,
+    snapshot_from_memory,
+    restore_memory,
+)
+from meshflow.cache import CacheEntry, LLMCache, InMemoryCache, SQLiteCache, CachedProvider
 
-__version__ = "0.30.0"
+__version__ = "0.33.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -366,4 +380,21 @@ __all__ = [
     "AudioInput",
     "MultiModalInput",
     "build_multimodal_message",
+    # ── Structured output ─────────────────────────────────────────────────────
+    "StructuredOutputResult",
+    "StructuredOutputError",
+    "StructuredOutputParser",
+    # ── Persistent memory backends ────────────────────────────────────────────
+    "MemoryBackend",
+    "InMemoryBackend",
+    "SQLiteMemoryBackend",
+    "PostgresMemoryBackend",
+    "snapshot_from_memory",
+    "restore_memory",
+    # ── LLM response cache ────────────────────────────────────────────────────
+    "CacheEntry",
+    "LLMCache",
+    "InMemoryCache",
+    "SQLiteCache",
+    "CachedProvider",
 ]

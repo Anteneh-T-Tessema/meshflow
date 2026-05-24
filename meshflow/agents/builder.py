@@ -87,6 +87,8 @@ class _BuiltAgent(BaseAgent):
         input_guardrails: list[Any] | None = None,
         output_guardrails: list[Any] | None = None,
         knowledge: list[Any] | None = None,
+        memory_backend: Any = None,
+        memory_session_id: str = "",
     ) -> None:
         super().__init__(config, policy)
         self._tools = tools
@@ -99,6 +101,11 @@ class _BuiltAgent(BaseAgent):
             max_episodic=50,
             enabled=memory_enabled,
         )
+        self._memory_backend: Any = memory_backend
+        self._memory_session_id: str = memory_session_id or config.agent_id
+        # Restore persisted memory if backend available
+        if memory_backend is not None and memory_enabled:
+            self._restore_memory()
         self._input_stack = GuardrailStack(input_guardrails or [], mode="strict")
         self._output_stack = GuardrailStack(output_guardrails or [], mode="strict")
         if knowledge:
@@ -106,6 +113,20 @@ class _BuiltAgent(BaseAgent):
             self._knowledge: Any = AgentKnowledge(knowledge)
         else:
             self._knowledge = None
+
+    def _restore_memory(self) -> None:
+        from meshflow.intelligence.memory_backends import restore_memory
+        snapshot = self._memory_backend.load(self._memory_session_id)
+        if snapshot is not None:
+            restore_memory(self._memory, snapshot)
+
+    def _persist_memory(self) -> None:
+        if self._memory_backend is None or not self._memory_enabled:
+            return
+        from meshflow.intelligence.memory_backends import snapshot_from_memory
+        self._memory_backend.save(
+            self._memory_session_id, snapshot_from_memory(self._memory)
+        )
 
     def remember(self, content: str, metadata: dict[str, Any] | None = None) -> None:
         """Explicitly store a memory entry."""
@@ -242,6 +263,7 @@ class _BuiltAgent(BaseAgent):
         # ── Memory ────────────────────────────────────────────────────────────
         if self._memory_enabled:
             self._memory.add(content, metadata={"task": task[:100], "confidence": confidence})
+            self._persist_memory()
 
         return {
             "result": content,
@@ -315,6 +337,9 @@ class Agent:
     output_guardrails: list[Any] = field(default_factory=list)  # Guardrail instances
     knowledge: list[Any] = field(default_factory=list)          # str | VectorStore | KnowledgeSource
     memory: bool = False
+    memory_backend: Any = None     # MemoryBackend instance or "sqlite://path.db" shorthand
+    memory_session_id: str = ""    # defaults to agent.name when empty
+    cache: Any = None              # LLMCache instance, True (→ InMemoryCache), or False
     system_prompt: str = ""
     risk: RiskTier = RiskTier.READ_ONLY
     policy: Policy | str | None = None
@@ -379,7 +404,7 @@ class Agent:
             tools=[getattr(t, "name", str(t)) for t in all_tools],
             provider=self._resolve_provider(),
         )
-        return _BuiltAgent(
+        built = _BuiltAgent(
             config,
             self.policy,            # type: ignore[arg-type]
             all_tools,
@@ -387,7 +412,30 @@ class Agent:
             list(self.input_guardrails),
             list(self.output_guardrails),
             list(self.knowledge) if self.knowledge else None,
+            memory_backend=self._resolve_memory_backend(),
+            memory_session_id=self.memory_session_id or self.name,
         )
+        # Wrap the fully-resolved provider with cache AFTER BaseAgent.__init__ sets it
+        if self.cache is not None and self.cache is not False:
+            from meshflow.cache.provider import CachedProvider
+            from meshflow.cache.core import InMemoryCache
+            llm_cache = self.cache if self.cache is not True else InMemoryCache()
+            built._provider = CachedProvider(built._provider, llm_cache)
+        return built
+
+    def _resolve_memory_backend(self) -> Any:
+        """Resolve memory_backend= to a MemoryBackend instance."""
+        backend = self.memory_backend
+        if backend is None:
+            return None
+        if isinstance(backend, str):
+            from meshflow.intelligence.memory_backends import SQLiteMemoryBackend
+            if backend.startswith("sqlite://"):
+                path = backend[len("sqlite://"):]
+                return SQLiteMemoryBackend(path or "meshflow_memory.db")
+            # bare path
+            return SQLiteMemoryBackend(backend)
+        return backend  # already a MemoryBackend instance
 
     def _resolve_mcp_tools(self) -> list[Any]:
         """Convert mcps= list into Tool objects via MCPGateway manifests.
@@ -490,6 +538,81 @@ class Agent:
             text = getattr(chunk, "text", str(chunk))
             if text:
                 yield text
+
+    async def run_structured(
+        self,
+        task: str,
+        schema: Any,
+        *,
+        max_retries: int = 3,
+        context: dict[str, Any] | None = None,
+    ) -> Any:
+        """Run this agent and guarantee structured output matching *schema*.
+
+        Parameters
+        ----------
+        task:        The task description / prompt.
+        schema:      A Pydantic model class **or** a plain JSON Schema dict.
+        max_retries: How many LLM calls to attempt before raising
+                     :exc:`~meshflow.agents.structured.StructuredOutputError`.
+        context:     Optional extra context passed to the agent.
+
+        Returns a :class:`~meshflow.agents.structured.StructuredOutputResult`
+        whose ``.data`` is a validated Pydantic instance (or dict for plain schemas).
+
+        Raises
+        ------
+        StructuredOutputError
+            When all *max_retries* attempts fail to produce valid structured output.
+        """
+        from meshflow.agents.structured import (
+            StructuredOutputParser,
+            StructuredOutputResult,
+            StructuredOutputError,
+        )
+
+        parser = StructuredOutputParser(schema, max_retries=max_retries)
+        built = self._build()
+
+        total_tokens = 0
+        total_cost = 0.0
+        last_raw = ""
+        last_err = ""
+
+        # Augment system prompt to enforce JSON-only output
+        original_system = built.config.system_prompt
+        built.config.system_prompt = original_system + parser.SYSTEM_SUFFIX
+
+        for attempt in range(1, max_retries + 1):
+            if attempt == 1:
+                prompt = parser.build_prompt(task)
+            else:
+                prompt = parser.build_retry_prompt(last_raw, last_err)
+
+            result = await built.step(prompt, context or {})
+            last_raw = result.get("result", "")
+            total_tokens += result.get("tokens", 0)
+            total_cost += result.get("cost_usd", 0.0)
+
+            try:
+                data = parser.parse(last_raw)
+                return StructuredOutputResult(
+                    data=data,
+                    raw=last_raw,
+                    attempts=attempt,
+                    schema_name=parser.schema_name,
+                    tokens=total_tokens,
+                    cost_usd=total_cost,
+                )
+            except Exception as exc:
+                last_err = str(exc)
+
+        raise StructuredOutputError(
+            f"Failed to produce valid {parser.schema_name} after {max_retries} attempts. "
+            f"Last error: {last_err}",
+            last_raw=last_raw,
+            attempts=max_retries,
+        )
 
     async def run(self, task: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Run this agent on a task and return the result dict.
