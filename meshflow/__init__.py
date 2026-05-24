@@ -156,8 +156,11 @@ from meshflow.intelligence.memory_backends import (
     restore_memory,
 )
 from meshflow.cache import CacheEntry, LLMCache, InMemoryCache, SQLiteCache, CachedProvider
+from meshflow.agents.healing import HealingPolicy, HealingStrategy, HealingResult, run_with_healing
+from meshflow.prompts import PromptVersion, PromptTemplate, PromptRegistry, PromptABTest
+from meshflow.export import FinetuneExporter, ExportFormat, TraceRecord, ExportFilter
 
-__version__ = "0.33.0"
+__version__ = "0.36.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -397,4 +400,19 @@ __all__ = [
     "InMemoryCache",
     "SQLiteCache",
     "CachedProvider",
+    # ── Self-healing orchestration ────────────────────────────────────────────
+    "HealingPolicy",
+    "HealingStrategy",
+    "HealingResult",
+    "run_with_healing",
+    # ── Prompt management ─────────────────────────────────────────────────────
+    "PromptVersion",
+    "PromptTemplate",
+    "PromptRegistry",
+    "PromptABTest",
+    # ── Fine-tuning data export ───────────────────────────────────────────────
+    "FinetuneExporter",
+    "ExportFormat",
+    "TraceRecord",
+    "ExportFilter",
 ]

@@ -340,6 +340,7 @@ class Agent:
     memory_backend: Any = None     # MemoryBackend instance or "sqlite://path.db" shorthand
     memory_session_id: str = ""    # defaults to agent.name when empty
     cache: Any = None              # LLMCache instance, True (→ InMemoryCache), or False
+    healing: Any = None            # HealingPolicy instance or None (disabled)
     system_prompt: str = ""
     risk: RiskTier = RiskTier.READ_ONLY
     policy: Policy | str | None = None
@@ -382,6 +383,19 @@ class Agent:
     def _build(self) -> _BuiltAgent:
         role = self.role if isinstance(self.role, AgentRole) else AgentRole.EXECUTOR
         prompt = self.system_prompt or _ROLE_PROMPTS.get(role, "")
+
+        # Resolve named prompt from registry (prompt= "name" or "name:version_id")
+        if not prompt and hasattr(self, "_prompt_ref") and self._prompt_ref:
+            try:
+                from meshflow.prompts.core import PromptRegistry
+                _reg = getattr(self, "_prompt_registry", None) or PromptRegistry()
+                parts = self._prompt_ref.split(":", 1)
+                _name = parts[0]
+                _ver = parts[1] if len(parts) > 1 else None
+                tmpl = _reg.get(_name, version=_ver)
+                prompt = str(tmpl)
+            except Exception:
+                pass
 
         # Augment system prompt with built-in skill descriptions
         if self.skills:
@@ -671,6 +685,24 @@ class Agent:
             "multimodal_inputs": len(inputs),
             "blocked": False,
         }
+
+    async def run_with_healing(
+        self,
+        task: str,
+        context: dict[str, Any] | None = None,
+        *,
+        policy: Any = None,
+    ) -> Any:
+        """Run this agent with automatic self-healing on failure or low confidence.
+
+        Uses ``self.healing`` policy by default; *policy* overrides it per-call.
+
+        Returns a :class:`~meshflow.agents.healing.HealingResult` whose
+        ``.to_dict()`` includes ``healed``, ``healing_attempts``, and
+        ``healing_strategies_tried`` in addition to all normal result fields.
+        """
+        from meshflow.agents.healing import run_with_healing as _run
+        return await _run(self, task, context, policy=policy or self.healing)
 
     def to_mesh_node(self) -> Any:
         """Convert to a MeshNode for use inside WorkflowDefinition / Team.

@@ -330,6 +330,23 @@ def main() -> None:
         help="Which metric to show (default: full report)",
     )
 
+    # export-traces
+    p_export = sub.add_parser("export-traces", help="Export agent traces as fine-tuning JSONL")
+    p_export.add_argument("--db", default="meshflow_runs.db", help="Ledger SQLite path")
+    p_export.add_argument("--output", "-o", default="traces.jsonl", help="Output JSONL file")
+    p_export.add_argument(
+        "--format", default="openai",
+        choices=["openai", "anthropic", "generic", "sharegpt"],
+        help="Output format (default: openai)",
+    )
+    p_export.add_argument("--min-confidence", type=float, default=0.0, dest="min_confidence")
+    p_export.add_argument("--max-records", type=int, default=None, dest="max_records")
+    p_export.add_argument("--agent", default="", dest="agent_name",
+                          help="Filter to a specific agent name")
+    p_export.add_argument("--no-dedup", action="store_false", dest="deduplicate",
+                          help="Disable deduplication")
+    p_export.add_argument("--stats", action="store_true", help="Print stats after export")
+
     # queue
     p_queue = sub.add_parser("queue", help="Background task queue management")
     p_queue_sub = p_queue.add_subparsers(dest="queue_cmd", required=True)
@@ -403,6 +420,7 @@ def main() -> None:
         "keys": _cmd_keys,
         "analytics": _cmd_analytics,
         "queue": _cmd_queue,
+        "export-traces": _cmd_export_traces,
     }
     dispatch[args.cmd](args)
 
@@ -534,6 +552,28 @@ async def _async_approve(args: argparse.Namespace) -> None:
 
 
 # ── run ───────────────────────────────────────────────────────────────────────
+
+
+def _cmd_export_traces(args: argparse.Namespace) -> None:
+    from meshflow.export import FinetuneExporter, ExportFormat
+
+    exporter = FinetuneExporter(
+        ledger_path=args.db,
+        format=ExportFormat(args.format),
+        min_confidence=args.min_confidence,
+        max_records=args.max_records,
+        agent_names=[args.agent_name] if args.agent_name else [],
+        deduplicate=args.deduplicate,
+    )
+    count = exporter.export(args.output)
+    print(f"\n  Exported {count} training records → {args.output}")
+    print(f"  Format: {args.format}")
+    if args.stats and count > 0:
+        s = exporter.stats()
+        print(f"  Agents: {', '.join(s['agents'])}")
+        print(f"  Avg confidence: {s['avg_confidence']:.3f}")
+        print(f"  Total tokens: {s['total_tokens']}")
+    print()
 
 
 async def _async_run_crew(args: argparse.Namespace) -> None:
