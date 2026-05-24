@@ -30,6 +30,8 @@ from meshflow.eval.runner import (
     run_eval,
 )
 from meshflow.eval.baseline import BaselineDiff, EvalBaseline, ScenarioBaseline
+from meshflow.eval.feedback import FeedbackRecord, FeedbackStore
+from meshflow.eval.shadow import ShadowResult, shadow_run, RegressionAlert, RegressionDetector
 
 __all__ = [
     "EvalSuite",
@@ -40,4 +42,10 @@ __all__ = [
     "EvalBaseline",
     "ScenarioBaseline",
     "BaselineDiff",
+    "FeedbackRecord",
+    "FeedbackStore",
+    "ShadowResult",
+    "shadow_run",
+    "RegressionAlert",
+    "RegressionDetector",
 ]

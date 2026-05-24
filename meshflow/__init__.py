@@ -162,8 +162,26 @@ from meshflow.export import FinetuneExporter, ExportFormat, TraceRecord, ExportF
 from meshflow.mcp.client import MCPClientSession, MCPRemoteTool, MCPClient, MCPClientError
 from meshflow.agents.handoff import HandoffConfig, HandoffLink, HandoffResult, run_with_handoffs
 from meshflow.a2a.tasks import A2ATask, A2ATaskStore, TaskState, TaskEventQueue
+from meshflow.observability.genai import (
+    GenAI,
+    MF,
+    GenAISpanRecord,
+    SpanStore,
+    configure_telemetry,
+    get_span_store,
+    record_agent_step,
+    record_handoff,
+    record_tool_call,
+    record_guardrail,
+    record_healing_attempt,
+    span as otel_span,
+    is_enabled as otel_is_enabled,
+)
+from meshflow.registry import AgentManifest, AgentRegistry, get_registry
+from meshflow.eval.feedback import FeedbackRecord, FeedbackStore
+from meshflow.eval.shadow import ShadowResult, shadow_run, RegressionAlert, RegressionDetector
 
-__version__ = "0.39.0"
+__version__ = "0.42.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -433,4 +451,29 @@ __all__ = [
     "A2ATaskStore",
     "TaskState",
     "TaskEventQueue",
+    # ── OpenTelemetry GenAI semantic conventions ──────────────────────────────
+    "GenAI",
+    "MF",
+    "GenAISpanRecord",
+    "SpanStore",
+    "configure_telemetry",
+    "get_span_store",
+    "record_agent_step",
+    "record_handoff",
+    "record_tool_call",
+    "record_guardrail",
+    "record_healing_attempt",
+    "otel_span",
+    "otel_is_enabled",
+    # ── Agent registry (publish, discover, govern) ────────────────────────────
+    "AgentManifest",
+    "AgentRegistry",
+    "get_registry",
+    # ── Production eval: feedback loop + shadow runner ────────────────────────
+    "FeedbackRecord",
+    "FeedbackStore",
+    "ShadowResult",
+    "shadow_run",
+    "RegressionAlert",
+    "RegressionDetector",
 ]

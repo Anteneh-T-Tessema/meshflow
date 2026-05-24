@@ -649,8 +649,28 @@ class Agent:
                 "stated_confidence": out.confidence,
                 "structured": out.structured,
             }
+        import time as _time
+        _t0 = _time.monotonic()
         agent = self._build()
-        return await agent.step(task, context or {})
+        result = await agent.step(task, context or {})
+        _dur_ms = (_time.monotonic() - _t0) * 1000
+        try:
+            from meshflow.observability.genai import record_agent_step, is_enabled
+            if is_enabled():
+                record_agent_step(
+                    agent_name=self.name,
+                    role=str(self.role.value if isinstance(self.role, AgentRole) else self.role),
+                    model=self._resolve_model(),
+                    tokens_in=result.get("tokens", 0) // 2,
+                    tokens_out=result.get("tokens", 0) - result.get("tokens", 0) // 2,
+                    cost_usd=result.get("cost_usd", 0.0),
+                    confidence=result.get("stated_confidence", 1.0),
+                    blocked=result.get("blocked", False),
+                    run_id=str(context.get("run_id", "") if context else ""),
+                )
+        except Exception:
+            pass
+        return result
 
     async def run_multimodal(
         self,
