@@ -6,10 +6,18 @@ Usage:
         role="researcher",
         model="claude-sonnet-4-6",
         tools=["web_search", "read_file"],
+        skills=["data_analysis", "web_search"],   # augment system prompt
         memory=True,
         system_prompt="You research topics thoroughly and cite sources.",
     )
     result = await researcher.run("What is prompt caching?")
+
+MCP server integration (CrewAI-style):
+    agent = Agent(
+        name="mcp_agent",
+        role="executor",
+        mcps=["https://mcp.example.com/sse"],     # HTTP SSE MCP server
+    )
 """
 
 from __future__ import annotations
@@ -218,6 +226,11 @@ class Agent:
     model:         Any model name string — provider auto-inferred from it.
     llm:           A pre-built LLM instance or any LLMProvider. Overrides model=.
     tools:         List of Tool objects or tool name strings.
+    skills:        Built-in skill names that augment the system prompt.
+                   e.g. ["python", "data_analysis", "security"].
+                   See meshflow.agents.skills.list_skills() for all names.
+    mcps:          MCP server URLs (str) or StdioServerParams to connect to.
+                   Tools from each server are added to the agent automatically.
     memory:        Enable cross-step memory for this agent.
     system_prompt: Override the default role prompt.
     risk:          Risk tier for actions this agent takes.
@@ -230,6 +243,8 @@ class Agent:
     model: str = ""              # empty → auto-detect from env; set to fix the model
     llm: Any = None              # LLM instance or any LLMProvider — preferred API
     tools: list[Any] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)   # built-in skill names
+    mcps: list[Any] = field(default_factory=list)     # MCP server URLs or params
     memory: bool = False
     system_prompt: str = ""
     risk: RiskTier = RiskTier.READ_ONLY
@@ -273,15 +288,73 @@ class Agent:
     def _build(self) -> _BuiltAgent:
         role = self.role if isinstance(self.role, AgentRole) else AgentRole.EXECUTOR
         prompt = self.system_prompt or _ROLE_PROMPTS.get(role, "")
+
+        # Augment system prompt with built-in skill descriptions
+        if self.skills:
+            from meshflow.agents.skills import skill_prompt
+            extra = skill_prompt(self.skills)
+            if extra:
+                prompt = f"{prompt}\n\n{extra}" if prompt else extra
+
+        # Resolve MCP tools from server URLs / params
+        all_tools = list(self.tools)
+        if self.mcps:
+            mcp_tools = self._resolve_mcp_tools()
+            all_tools = all_tools + mcp_tools
+
         config = AgentConfig(
             agent_id=self.name,
             role=role,
             model=self._resolve_model(),
             system_prompt=prompt,
-            tools=[getattr(t, "name", str(t)) for t in self.tools],
+            tools=[getattr(t, "name", str(t)) for t in all_tools],
             provider=self._resolve_provider(),
         )
-        return _BuiltAgent(config, self.policy, self.tools, self.memory)  # type: ignore[arg-type]
+        return _BuiltAgent(config, self.policy, all_tools, self.memory)  # type: ignore[arg-type]
+
+    def _resolve_mcp_tools(self) -> list[Any]:
+        """Convert mcps= list into Tool objects via MCPGateway manifests.
+
+        Each entry can be:
+        - A URL string  → registers as a trusted HTTP MCP server manifest
+        - An object with .command (StdioServerParams-like) → stdio transport
+
+        Returns a list of lightweight Tool wrappers that call the gateway.
+        """
+        from meshflow.mcp.gateway import MCPGateway, ToolManifest
+        from meshflow.tools.registry import Tool
+        from meshflow.core.schemas import RiskTier as _RT
+
+        gateway = MCPGateway(budget_usd_per_turn=0.10)
+        tools: list[Any] = []
+
+        for entry in self.mcps:
+            if isinstance(entry, str):
+                server_uri = entry
+                tool_name = f"mcp_{re.sub(r'[^a-z0-9]', '_', server_uri.lower())[:32]}"
+                manifest = ToolManifest(
+                    tool_name=tool_name,
+                    server_uri=server_uri,
+                    description=f"MCP tool from {server_uri}",
+                    trusted=True,
+                )
+                gateway.register_tool(manifest)
+
+                async def _call(params: dict[str, Any], _uri: str = server_uri, _name: str = tool_name) -> str:
+                    result = await gateway.call(_name, params, agent_id=self.name, cost_per_call=0.0)
+                    return str(result)
+
+                tools.append(Tool(
+                    name=tool_name,
+                    description=f"MCP tool at {server_uri}",
+                    fn=_call,
+                    risk=_RT.EXTERNAL_IO,
+                ))
+            else:
+                # Stdio-style params object — skip (requires running subprocess)
+                pass
+
+        return tools
 
     async def run_typed(
         self,

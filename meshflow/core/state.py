@@ -1,7 +1,7 @@
 """Typed state channels with reducers — MeshFlow's answer to LangGraph's StateGraph.
 
 Usage:
-    from meshflow.core.state import StateGraph, add, last
+    from meshflow.core.state import StateGraph, add, last, node, interrupt, Command
 
     class ResearchState(TypedDict):
         query:    str
@@ -9,8 +9,16 @@ Usage:
         draft:    Annotated[str, last]         # last writer wins
         tokens:   Annotated[int, operator.add] # accumulate across branches
 
+    @node
+    def search(state: dict) -> dict:
+        return {"sources": ["source1", "source2"]}
+
+    @node("generate")                          # custom node name
+    def draft_fn(state: dict) -> dict:
+        return {"draft": "..."}
+
     graph = StateGraph(ResearchState)
-    graph.add_node("search",  search_fn)
+    graph.add_node("search",  search)
     graph.add_node("draft",   draft_fn)
     graph.add_node("review",  review_fn)
     graph.add_edge("search",  "draft")
@@ -18,6 +26,17 @@ Usage:
     graph.set_entry_point("search")
 
     result = await graph.run({"query": "What is RAG?"})
+
+HITL (interrupt / Command):
+    @node
+    def human_review(state: dict) -> dict:
+        if state.get("needs_review"):
+            interrupt("Please review the draft and approve or reject.")
+        return {"approved": True}
+
+    # Resume after human input:
+    compiled = graph.compile()
+    result = await compiled.run(initial, resume=Command(resume="approved"))
 """
 
 from __future__ import annotations
@@ -32,6 +51,76 @@ END = "__end__"
 START = "__start__"
 
 T = TypeVar("T")
+
+
+# ── @node decorator ───────────────────────────────────────────────────────────
+
+def node(fn_or_name: Any = None) -> Any:
+    """Mark a function as a StateGraph node.
+
+    Can be used bare or with a custom name:
+
+        @node
+        def search(state: dict) -> dict: ...
+
+        @node("my_search")
+        def search_fn(state: dict) -> dict: ...
+    """
+    if fn_or_name is None or isinstance(fn_or_name, str):
+        # @node("name") — returns a decorator
+        name_override: str | None = fn_or_name
+
+        def _decorator(fn: Callable) -> Callable:
+            fn._is_meshflow_node = True  # type: ignore[attr-defined]
+            fn._node_name = name_override or fn.__name__  # type: ignore[attr-defined]
+            return fn
+
+        return _decorator
+
+    # @node — used bare, fn_or_name IS the function
+    fn_or_name._is_meshflow_node = True  # type: ignore[attr-defined]
+    fn_or_name._node_name = fn_or_name.__name__  # type: ignore[attr-defined]
+    return fn_or_name
+
+
+# ── interrupt / Command (LangGraph-style HITL) ────────────────────────────────
+
+class Interrupt(Exception):
+    """Raised inside a StateGraph node to pause execution for human input."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+        super().__init__(str(value))
+
+
+def interrupt(value: Any) -> None:
+    """Pause the current graph node and surface *value* to the caller.
+
+    The graph stores the current state snapshot so execution can resume later
+    via ``CompiledGraph.run(initial, resume=Command(resume=<decision>))``.
+
+    Raises
+    ------
+    Interrupt — caught by CompiledGraph; re-raised as InterruptedError with
+                the node name and payload attached.
+    """
+    raise Interrupt(value)
+
+
+@dataclass
+class Command:
+    """Resume directive for a paused CompiledGraph.
+
+    Parameters
+    ----------
+    resume:  The value that replaces the interrupt payload (e.g., human decision).
+    goto:    Optional node name to jump to instead of the interrupted node.
+    update:  Extra state updates to apply before resuming.
+    """
+
+    resume: Any = None
+    goto:   str | None = None
+    update: dict[str, Any] = field(default_factory=dict)
 
 
 # ── Built-in reducers ─────────────────────────────────────────────────────────
@@ -257,9 +346,31 @@ class CompiledGraph:
         self,
         initial: dict[str, Any],
         max_steps: int = 200,
+        resume: "Command | None" = None,
     ) -> dict[str, Any]:
+        """Execute the graph.
+
+        Parameters
+        ----------
+        initial:   Initial state dict.
+        max_steps: Hard limit on execution steps.
+        resume:    If provided, apply ``resume.update`` to initial state and
+                   restart from the interrupted node (or ``resume.goto``).
+        """
+        # Apply resume updates on top of initial state
+        if resume is not None and resume.update:
+            initial = {**initial, **resume.update}
+
         state = GraphState(self._g._channels, initial)
-        queue: list[str] = [self._g._entry]  # type: ignore[list-item]
+
+        # Determine starting queue
+        if resume is not None and (resume.goto or getattr(self, "_interrupted_node", None)):
+            start_node = resume.goto or self._interrupted_node  # type: ignore[attr-defined]
+            queue: list[str] = [start_node]
+            self._interrupted_node = None
+        else:
+            queue = [self._g._entry]  # type: ignore[list-item]
+
         visited_counts: dict[str, int] = {}
         step = 0
 
@@ -277,6 +388,17 @@ class CompiledGraph:
             )
 
             for name, result in zip(ready, results):
+                if isinstance(result, Interrupt):
+                    # Save the paused node so resume= can restart it
+                    self._interrupted_node = name
+                    err = InterruptedError(
+                        f"Node {name!r} interrupted: {result.value}"
+                    )
+                    err.node = name        # type: ignore[attr-defined]
+                    err.value = result.value  # type: ignore[attr-defined]
+                    err.state = state.snapshot()  # type: ignore[attr-defined]
+                    raise err
+
                 if isinstance(result, Exception):
                     raise result
 
@@ -309,21 +431,24 @@ class CompiledGraph:
 
         return state.snapshot()
 
-    async def _run_node(self, name: str, state: dict[str, Any]) -> dict[str, Any]:
+    async def _run_node(self, name: str, state: dict[str, Any]) -> dict[str, Any] | Interrupt:
         entry = self._g._nodes[name]
         fn = entry.fn
         sig = inspect.signature(fn)
-        # Support both fn(state) and fn(state, config)
-        if len(sig.parameters) >= 2:
-            if entry.is_async:
-                result = await fn(state, {"graph": self})
+        try:
+            # Support both fn(state) and fn(state, config)
+            if len(sig.parameters) >= 2:
+                if entry.is_async:
+                    result = await fn(state, {"graph": self})
+                else:
+                    result = fn(state, {"graph": self})
             else:
-                result = fn(state, {"graph": self})
-        else:
-            if entry.is_async:
-                result = await fn(state)
-            else:
-                result = fn(state)
+                if entry.is_async:
+                    result = await fn(state)
+                else:
+                    result = fn(state)
+        except Interrupt as exc:
+            return exc   # surface through asyncio.gather as a value, not exception
 
         if result is None:
             return {}

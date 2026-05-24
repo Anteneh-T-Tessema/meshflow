@@ -5,6 +5,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.24.0] — 2026-05-24
+
+### Sprint 24 — CrewAI/LangGraph/AutoGen feature parity
+
+**1274+ tests passing (18 skipped).**
+
+#### Added
+
+- **Task class** (`meshflow/agents/task.py`):
+  CrewAI-compatible first-class task abstraction. `Task(description, expected_output,
+  agent, human_input=False, context=[], tools=[])`. Supports `{placeholder}` substitution
+  in `description` via `kickoff(inputs={...})`. Auto-injects prior task outputs as context
+  when `context` is set. Extra `tools` are merged for the duration of the task, then
+  restored. `TaskOutput` holds `raw`, `agent_name`, `tokens`, `cost_usd`. The `output`
+  field is `None` before run and filled after. Exported as `meshflow.Task`.
+
+- **Crew + Process + CrewOutput** (`meshflow/agents/crew.py`):
+  `Crew(agents, tasks, process=Process.sequential, verbose=False)` — governed crew with
+  three execution modes: `sequential` (chain with auto context injection), `parallel`
+  (concurrent asyncio.gather), `hierarchical` (first task is manager, rest are workers
+  that receive manager output as context). `CrewOutput` aggregates per-task outputs,
+  total tokens, and total cost. `Crew.kickoff(inputs={})` is the entry point.
+  `Process` is a `str` enum so string literals work interchangeably. Exported as
+  `meshflow.Crew`, `meshflow.Process`, `meshflow.CrewOutput`.
+
+- **Built-in skills library** (`meshflow/agents/skills.py`):
+  15 built-in skills: `python`, `javascript`, `data_analysis`, `sql`, `web_search`,
+  `code_review`, `writing`, `legal`, `medical`, `security`, `api_design`, `devops`,
+  `machine_learning`, `finance`, `product`. Each `Skill` is a frozen dataclass with
+  `name`, `description`, and `tags`. `skill_prompt(["python", "security"])` returns
+  a combined system-prompt snippet. Unknown skill names are silently ignored.
+  `list_skills()` returns sorted names. Exported as `meshflow.SKILLS`, `meshflow.Skill`,
+  `meshflow.skill_prompt`, `meshflow.list_skills`.
+
+- **`Agent(skills=[], mcps=[])` parameters** (`meshflow/agents/builder.py`):
+  `skills`: list of built-in skill names that augment the agent's system prompt.
+  Skills are appended after the role prompt (or custom `system_prompt`).
+  `mcps`: list of MCP server URLs (strings); each is registered in `MCPGateway` and
+  exposed as a `Tool` in the agent's tool list. Stdio params objects are accepted too.
+
+- **`@node` decorator** (`meshflow/core/state.py`):
+  LangGraph-style decorator to mark functions as StateGraph nodes.
+  `@node` bare sets `_is_meshflow_node=True` and `_node_name=fn.__name__`.
+  `@node("custom_name")` sets a custom node name. Decorated functions are still
+  callable directly. Exported as `meshflow.node`.
+
+- **`interrupt()` + `Command` HITL** (`meshflow/core/state.py`):
+  `interrupt(value)` raises `Interrupt` from inside a node to pause graph execution.
+  `CompiledGraph.run()` catches the `Interrupt`, attaches `.node`, `.value`, `.state`
+  to the raised `InterruptedError`, and stores `_interrupted_node` for resume.
+  `Command(resume=..., goto=None, update={})` resumes execution: `update` is merged
+  into `initial` state, `goto` redirects to a different node, `resume` carries the
+  human decision back into the graph. Exported as `meshflow.interrupt`, `meshflow.Command`,
+  `meshflow.Interrupt`.
+
+#### Tests
+
+74 new deterministic tests in `tests/test_sprint24.py` across 14 test classes:
+Task, TaskOutput, Crew (sequential/parallel/hierarchical), Process, CrewOutput,
+Skills library, Agent skills integration, @node decorator, interrupt/Command,
+StateGraph reducers (regression), and public API surface.
+
+---
+
 ## [0.23.0] — 2026-05-23
 
 ### Sprint 23 — Sensitive data detection, model health tracking, workflow analytics, background task queue

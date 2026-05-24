@@ -21,7 +21,7 @@ from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
 from meshflow.core.contracts import core_contract_schemas
 from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult
 from meshflow.core.events import WorkflowEventBus
-from meshflow.core.state import StateGraph, END, START, add, last, first, Channel
+from meshflow.core.state import StateGraph, END, START, add, last, first, Channel, node, interrupt, Command, Interrupt
 from meshflow.core.config import MeshFlowConfig, load, loads
 from meshflow.core.ledger import (
     LedgerArchiveResult,
@@ -48,6 +48,9 @@ from meshflow.core.schemas import (
 from meshflow.agents.adapters import from_autogen, from_callable, from_crewai, from_langgraph
 from meshflow.agents.builder import Agent
 from meshflow.agents.team import Team
+from meshflow.agents.task import Task, TaskOutput
+from meshflow.agents.crew import Crew, Process, CrewOutput
+from meshflow.agents.skills import Skill, SKILLS, skill_prompt, list_skills
 from meshflow.agents.messaging import MessageBus
 from meshflow.agents.conversation import GroupChat, GroupChatManager, ConversationResult
 from meshflow.agents.react import ReActAgent, ReActResult, ThoughtStep
@@ -114,13 +117,24 @@ from meshflow.agents.health import (
 from meshflow.core.analytics import WorkflowAnalytics, RunSummary
 from meshflow.queue import TaskQueue, QueueWorker, TaskItem, TaskStatus
 
-__version__ = "0.23.0"
+__version__ = "0.24.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
     "Team",
     "MessageBus",
     "agents",
+    # ── Task + Crew (CrewAI-compatible) ───────────────────────────────────────
+    "Task",
+    "TaskOutput",
+    "Crew",
+    "CrewOutput",
+    "Process",
+    # ── Skills library ────────────────────────────────────────────────────────
+    "Skill",
+    "SKILLS",
+    "skill_prompt",
+    "list_skills",
     # ── Conversational multi-agent ────────────────────────────────────────────
     "GroupChat",
     "GroupChatManager",
@@ -133,6 +147,10 @@ __all__ = [
     "add",
     "last",
     "first",
+    "node",
+    "interrupt",
+    "Command",
+    "Interrupt",
     # ── Declarative config ────────────────────────────────────────────────────
     "MeshFlowConfig",
     "load",
