@@ -52,6 +52,7 @@ from meshflow.agents.messaging import MessageBus
 from meshflow.agents.conversation import GroupChat, GroupChatManager, ConversationResult
 from meshflow.agents.react import ReActAgent, ReActResult, ThoughtStep
 from meshflow.agents.router import ProviderRouter, auto_provider, auto_model
+from meshflow.agents.base import EchoProvider
 from meshflow.intelligence.memory import AgentMemory, MemoryItem
 from meshflow.agents.supervisor import Supervisor, SupervisorResult
 from meshflow.agents.adversarial import AdversarialTeam, AdversarialResult
@@ -200,6 +201,8 @@ __all__ = [
     "ProviderRouter",
     "auto_provider",
     "auto_model",
+    # ── Zero-dependency / offline provider ────────────────────────────────────
+    "EchoProvider",
     # ── 4-tier memory ─────────────────────────────────────────────────────────
     "AgentMemory",
     "MemoryItem",

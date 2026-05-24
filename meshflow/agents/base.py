@@ -366,6 +366,89 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
 
 
+class EchoProvider(LLMProvider):
+    """Zero-dependency provider for offline use, tests, and demos.
+
+    Requires no API key and makes no network calls.  Returns a canned response
+    that echoes the last user message prefixed with ``[echo]``.
+
+    Use it directly::
+
+        agent = Agent(name="a", role="executor", provider=EchoProvider())
+
+    Or enable globally with the ``MESHFLOW_MOCK=1`` environment variable —
+    MeshFlow will automatically use EchoProvider for every agent that does not
+    have an explicit provider set.
+
+    This is how LangGraph, CrewAI, and AutoGen let you test orchestration
+    logic without paying for API calls.
+    """
+
+    def __init__(self, response: str = "") -> None:
+        # ``response`` overrides the echo behaviour with a fixed reply — useful
+        # for tests that need predictable, deterministic output.
+        self._fixed = response
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+    ) -> tuple[str, int, float]:
+        if self._fixed:
+            return self._fixed, len(self._fixed.split()), 0.0
+        last = messages[-1].get("content", "") if messages else "Hello"
+        if isinstance(last, list):
+            last = " ".join(
+                p.get("text", "") for p in last if isinstance(p, dict)
+            )
+        reply = f"[echo] {last}"
+        return reply, len(reply.split()), 0.0
+
+    async def complete_with_tools(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        tool_schemas: list[dict[str, Any]],
+        tool_fns: dict[str, Any],
+    ) -> tuple[str, int, float]:
+        return await self.complete(model, messages, system, max_tokens)
+
+    async def stream_complete(  # type: ignore[override]
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        agent_id: str,
+        step_id: str,
+        run_id: str,
+    ) -> AsyncIterator[TokenChunk]:
+        content, _, _ = await self.complete(model, messages, system, max_tokens)
+        for word in content.split():
+            yield TokenChunk(text=word + " ", agent_id=agent_id, step_id=step_id, run_id=run_id)
+
+
+def _default_provider() -> LLMProvider:
+    """Return the right provider based on environment.
+
+    - ``MESHFLOW_MOCK=1``           → EchoProvider (no SDK, no key)
+    - ``MESHFLOW_PROVIDER=openai``  → OpenAICompatibleProvider
+    - default                       → AnthropicProvider (requires SDK + key)
+    """
+    import os
+    mock = os.environ.get("MESHFLOW_MOCK", "").strip().lower()
+    if mock in ("1", "true", "yes"):
+        return EchoProvider()
+    prov = os.environ.get("MESHFLOW_PROVIDER", "").strip().lower()
+    if prov == "openai":
+        return OpenAICompatibleProvider()
+    return AnthropicProvider()
+
+
 def _anthropic_to_oai_tool(schema: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "function",
@@ -577,7 +660,7 @@ class BaseAgent:
     def __init__(self, config: AgentConfig, policy: Policy) -> None:
         self.config = config
         self.policy = policy
-        self._provider: LLMProvider = config.provider or AnthropicProvider()
+        self._provider: LLMProvider = config.provider or _default_provider()
         self._state = AgentState(
             agent_id=config.agent_id,
             role=config.role,
