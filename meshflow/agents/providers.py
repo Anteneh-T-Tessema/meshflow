@@ -708,3 +708,222 @@ def auto_detect_provider(verbose: bool = False) -> "LLMProvider":
     )
     from meshflow.agents.base import EchoProvider
     return EchoProvider()
+
+
+# ── Model-name → provider inference (the CrewAI insight) ─────────────────────
+
+# Ordered rules: (prefix_or_substring_list, provider_factory)
+# More specific entries must come before more general ones.
+_MODEL_RULES: list[tuple[list[str], str]] = [
+    # OpenAI
+    (["gpt-", "o1-", "o1 ", "o3-", "o4-", "o3 ", "o4 ", "text-embedding", "davinci", "babbage", "ada"],
+     "openai"),
+    # Anthropic Claude
+    (["claude"],
+     "anthropic"),
+    # Google Gemini
+    (["gemini"],
+     "gemini"),
+    # AWS Bedrock (full model ARN / prefix)
+    (["amazon.", "anthropic.", "meta.llama", "cohere.command", "mistral.mistral",
+      "ai21.jamba"],
+     "bedrock"),
+    # Azure (deployed model names often match endpoint, harder to infer — rely on env var)
+    # Groq-hosted (OpenAI-compat)
+    (["groq/", "llama-3.1-", "llama-3.2-", "llama-3.3-", "mixtral-8x"],
+     "openai"),       # via OPENAI_API_KEY + OPENAI_API_BASE=https://api.groq.com/openai/v1
+    # Common Ollama / local models
+    (["llama", "mistral", "phi-", "phi3", "qwen", "deepseek", "codellama",
+      "vicuna", "gemma", "falcon", "orca", "yi-", "solar", "stablelm",
+      "command-r", "nous-", "openhermes", "zephyr", "neural-"],
+     "ollama"),
+]
+
+
+def model_to_provider(model: str) -> "LLMProvider":
+    """Infer the right LLMProvider from a model name string.
+
+    This is the **CrewAI pattern** — the user only needs to know the model name.
+    The framework figures out which backend to call.
+
+    Rules (first match wins):
+
+    +--------------------------+---------------------+-------------------+
+    | Model name               | Provider            | Requires          |
+    +--------------------------+---------------------+-------------------+
+    | gpt-4o, o3-mini, …       | OpenAICompatible    | OPENAI_API_KEY    |
+    | claude-*                 | Anthropic           | ANTHROPIC_API_KEY |
+    | gemini-*                 | Gemini              | GOOGLE_API_KEY    |
+    | amazon.*, anthropic.*,   | Bedrock             | AWS credentials   |
+    |   meta.llama*, …         |                     |                   |
+    | llama*, mistral*, phi*,  | Ollama (local)      | ollama running    |
+    |   qwen*, deepseek*, …    |                     |                   |
+    | provider/model (any /)   | LiteLLM             | litellm + key     |
+    | anything else            | auto_detect()       | (best available)  |
+    +--------------------------+---------------------+-------------------+
+
+    Usage::
+
+        # These all just work — no provider import needed:
+        agent = Agent(name="a", model="gpt-4o")
+        agent = Agent(name="b", model="claude-opus-4-7")
+        agent = Agent(name="c", model="gemini-2.0-flash")
+        agent = Agent(name="d", model="llama3.2")            # local Ollama
+        agent = Agent(name="e", model="groq/llama-3.1-70b")  # LiteLLM
+    """
+    import os
+
+    # MESHFLOW_MOCK always wins
+    if os.environ.get("MESHFLOW_MOCK", "").strip().lower() in ("1", "true", "yes"):
+        from meshflow.agents.base import EchoProvider
+        return EchoProvider()
+
+    model_lower = model.lower().strip()
+
+    # LiteLLM-style "provider/model" prefix — route directly to LiteLLM
+    if "/" in model_lower and not model_lower.startswith("http"):
+        return LiteLLMProvider(model=model)
+
+    # Match against known prefix lists
+    for prefixes, backend in _MODEL_RULES:
+        if any(model_lower.startswith(p) or p in model_lower for p in prefixes):
+            if backend == "openai":
+                from meshflow.agents.base import OpenAICompatibleProvider
+                return OpenAICompatibleProvider(model=model)
+            if backend == "anthropic":
+                from meshflow.agents.base import AnthropicProvider
+                return AnthropicProvider()
+            if backend == "gemini":
+                return GeminiProvider(model=model)
+            if backend == "bedrock":
+                return BedrockProvider(model=model)
+            if backend == "ollama":
+                return OllamaProvider(model=model)
+
+    # Unknown model — fall back to environment-based auto-detection
+    return auto_detect_provider()
+
+
+# ── Unified LLM class (the single-entry-point pattern) ───────────────────────
+
+class LLM:
+    """Single entry point for any LLM — the CrewAI-inspired unified interface.
+
+    Pass any model name.  MeshFlow infers the provider automatically.
+    Optionally override with explicit kwargs.
+
+    Usage::
+
+        from meshflow import LLM, Agent
+
+        # Auto-infer provider from model name:
+        llm = LLM("gpt-4o")                         # → OpenAI
+        llm = LLM("claude-opus-4-7")                 # → Anthropic
+        llm = LLM("gemini-2.0-flash")                # → Google
+        llm = LLM("llama3.2")                        # → local Ollama
+        llm = LLM("groq/llama-3.1-70b-versatile")    # → LiteLLM
+
+        # Explicit overrides:
+        llm = LLM("llama3.2", host="http://10.0.0.5:11434")
+        llm = LLM("gpt-4o", api_key="sk-...", base_url="https://proxy/v1")
+
+        # Use in an agent:
+        agent = Agent(name="analyst", role="researcher", llm=llm)
+
+        # Or just pass model= directly — same result:
+        agent = Agent(name="analyst", model="gpt-4o")
+    """
+
+    def __init__(self, model: str = "", **kwargs: Any) -> None:
+        import os
+        self.model = (
+            model
+            or os.environ.get("MESHFLOW_MODEL", "")
+            or os.environ.get("LITELLM_MODEL", "")
+        )
+        self._kwargs = kwargs
+        # Build the underlying provider immediately so errors surface early
+        if kwargs:
+            # Explicit kwargs → route to the inferred provider but with overrides
+            backend = self._infer_backend()
+            self._provider: LLMProvider = self._build_with_kwargs(backend)
+        else:
+            self._provider = model_to_provider(self.model) if self.model else auto_detect_provider()
+
+    def _infer_backend(self) -> str:
+        m = self.model.lower()
+        if any(m.startswith(p) for p in ["gpt-", "o1-", "o3-", "o4-"]):
+            return "openai"
+        if m.startswith("claude"):
+            return "anthropic"
+        if m.startswith("gemini"):
+            return "gemini"
+        if any(m.startswith(p) for p in ["amazon.", "anthropic.", "meta.llama"]):
+            return "bedrock"
+        if "/" in m:
+            return "litellm"
+        return "openai"   # sensible default for unknown names with kwargs
+
+    def _build_with_kwargs(self, backend: str) -> LLMProvider:
+        if backend == "openai":
+            from meshflow.agents.base import OpenAICompatibleProvider
+            return OpenAICompatibleProvider(
+                model=self.model,
+                api_key=self._kwargs.get("api_key", ""),
+                base_url=self._kwargs.get("base_url", ""),
+            )
+        if backend == "anthropic":
+            from meshflow.agents.base import AnthropicProvider
+            return AnthropicProvider()
+        if backend == "gemini":
+            return GeminiProvider(model=self.model, **self._kwargs)
+        if backend == "bedrock":
+            return BedrockProvider(model=self.model)
+        if backend == "ollama":
+            return OllamaProvider(
+                model=self.model,
+                host=self._kwargs.get("host", ""),
+            )
+        return LiteLLMProvider(model=self.model)
+
+    # ── Forward the LLMProvider protocol ─────────────────────────────────────
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+    ) -> tuple[str, int, float]:
+        return await self._provider.complete(model or self.model, messages, system, max_tokens)
+
+    async def complete_with_tools(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        tool_schemas: list[dict[str, Any]],
+        tool_fns: dict[str, Any],
+    ) -> tuple[str, int, float]:
+        return await self._provider.complete_with_tools(
+            model or self.model, messages, system, max_tokens, tool_schemas, tool_fns
+        )
+
+    async def stream_complete(  # type: ignore[override]
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        agent_id: str,
+        step_id: str,
+        run_id: str,
+    ) -> "AsyncIterator[Any]":
+        async for chunk in self._provider.stream_complete(
+            model or self.model, messages, system, max_tokens, agent_id, step_id, run_id
+        ):
+            yield chunk
+
+    def __repr__(self) -> str:
+        return f"LLM(model={self.model!r}, provider={type(self._provider).__name__})"

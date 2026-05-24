@@ -191,30 +191,50 @@ class _BuiltAgent(BaseAgent):
 
 @dataclass
 class Agent:
-    """Declarative agent builder.
+    """Declarative agent builder — works with any LLM, zero config needed.
+
+    MeshFlow infers the right provider from the model name (CrewAI pattern):
+
+        Agent(name="a", model="gpt-4o")             # → OpenAI
+        Agent(name="b", model="claude-opus-4-7")     # → Anthropic
+        Agent(name="c", model="gemini-2.0-flash")    # → Google
+        Agent(name="d", model="llama3.2")            # → local Ollama
+        Agent(name="e", model="groq/llama-3.1-70b")  # → LiteLLM
+
+    Or pass a pre-built LLM / provider explicitly:
+
+        from meshflow import LLM
+        agent = Agent(name="f", llm=LLM("gpt-4o", api_key="sk-..."))
+
+    Or let the environment decide (auto_detect_provider picks the best available
+    API key or locally running Ollama):
+
+        agent = Agent(name="g", role="researcher")   # no model= needed
 
     Parameters
     ----------
     name:          Unique identifier for this agent.
-    role:          One of planner / researcher / executor / critic / orchestrator / guardian.
-    model:         Claude model ID (or any model supported by the injected provider).
+    role:          planner / researcher / executor / critic / orchestrator / guardian.
+    model:         Any model name string — provider auto-inferred from it.
+    llm:           A pre-built LLM instance or any LLMProvider. Overrides model=.
     tools:         List of Tool objects or tool name strings.
     memory:        Enable cross-step memory for this agent.
     system_prompt: Override the default role prompt.
     risk:          Risk tier for actions this agent takes.
     policy:        Governance policy (defaults to standard).
-    provider:      Optional LLM provider (defaults to AnthropicProvider).
+    provider:      Low-level LLMProvider object. Prefer llm= for the unified API.
     """
 
     name: str
     role: str | AgentRole = AgentRole.EXECUTOR
-    model: str = "claude-sonnet-4-6"
+    model: str = ""              # empty → auto-detect from env; set to fix the model
+    llm: Any = None              # LLM instance or any LLMProvider — preferred API
     tools: list[Any] = field(default_factory=list)
     memory: bool = False
     system_prompt: str = ""
     risk: RiskTier = RiskTier.READ_ONLY
     policy: Policy | str | None = None
-    provider: Any = None  # LLMProvider | None
+    provider: Any = None         # low-level escape hatch; prefer llm=
     _prebuilt_node: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -225,16 +245,41 @@ class Agent:
         if self.policy is None:
             self.policy = policy_for_mode("standard")
 
+    def _resolve_provider(self) -> Any:
+        """Return the LLMProvider to use, in priority order:
+        1. llm= (LLM class or any LLMProvider)
+        2. provider= (raw LLMProvider)
+        3. model_to_provider(model) when model is set
+        4. auto_detect_provider() from environment
+        """
+        if self.llm is not None:
+            # LLM class forwards the protocol; any LLMProvider also accepted
+            return self.llm
+        if self.provider is not None:
+            return self.provider
+        # Let BaseAgent.__init__ handle inference via model name / env
+        return None
+
+    def _resolve_model(self) -> str:
+        """Return the canonical model string."""
+        if self.model:
+            return self.model
+        # If an LLM class was given, read its model attribute
+        if self.llm is not None and hasattr(self.llm, "model") and self.llm.model:
+            return self.llm.model
+        import os
+        return os.environ.get("MESHFLOW_MODEL", "claude-sonnet-4-6")
+
     def _build(self) -> _BuiltAgent:
         role = self.role if isinstance(self.role, AgentRole) else AgentRole.EXECUTOR
         prompt = self.system_prompt or _ROLE_PROMPTS.get(role, "")
         config = AgentConfig(
             agent_id=self.name,
             role=role,
-            model=self.model,
+            model=self._resolve_model(),
             system_prompt=prompt,
             tools=[getattr(t, "name", str(t)) for t in self.tools],
-            provider=self.provider,
+            provider=self._resolve_provider(),
         )
         return _BuiltAgent(config, self.policy, self.tools, self.memory)  # type: ignore[arg-type]
 

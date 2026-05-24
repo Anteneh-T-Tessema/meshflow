@@ -656,7 +656,13 @@ class BaseAgent:
     def __init__(self, config: AgentConfig, policy: Policy) -> None:
         self.config = config
         self.policy = policy
-        self._provider: LLMProvider = config.provider or _default_provider()
+        if config.provider is not None:
+            self._provider: LLMProvider = config.provider
+        else:
+            # Infer provider from model name first (CrewAI pattern),
+            # fall back to environment-based auto-detection.
+            from meshflow.agents.providers import model_to_provider
+            self._provider = model_to_provider(config.model) if config.model else _default_provider()
         self._state = AgentState(
             agent_id=config.agent_id,
             role=config.role,

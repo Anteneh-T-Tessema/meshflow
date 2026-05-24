@@ -61,6 +61,8 @@ from meshflow.agents.providers import (
     LiteLLMProvider,
     provider_for,
     auto_detect_provider,
+    model_to_provider,
+    LLM,
     PROVIDER_NAMES,
 )
 from meshflow.intelligence.memory import AgentMemory, MemoryItem
@@ -220,6 +222,8 @@ __all__ = [
     "AzureOpenAIProvider",    # AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT
     "OllamaProvider",         # local Ollama, no API key
     "LiteLLMProvider",        # 100+ models via LiteLLM
+    "LLM",                    # unified entry point: LLM("gpt-4o") / LLM("llama3.2")
+    "model_to_provider",      # infer provider from model name string
     "provider_for",           # factory: provider_for("ollama", model="llama3.2")
     "auto_detect_provider",   # auto-pick based on available keys / services
     "PROVIDER_NAMES",         # list of all supported provider names
