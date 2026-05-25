@@ -142,15 +142,16 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
             principal = key_store.verify(raw_key)
             if principal:
                 return principal
-        # Fall back to legacy env-var check for backward compatibility
-        if not raw_key and _check_auth(request.headers, api_keys):
-            # open-mode or legacy key accepted — treat as operator
-            return KeyRecord(key_id="legacy", name="legacy", role="operator",
-                             tenant_id="", created_at="", last_used_at="", revoked=False)
-        # Open mode (no keys configured anywhere)
-        if key_store.open_mode and not api_keys:
-            return KeyRecord(key_id="open", name="open", role="admin",
-                             tenant_id="", created_at="", last_used_at="", revoked=False)
+        # Fall back to the api_keys set passed directly to _build_app / serve()
+        if _check_auth(request.headers, api_keys):
+            if api_keys:
+                # A specific set of keys is configured and the request matched
+                return KeyRecord(key_id="legacy", name="legacy", role="operator",
+                                 tenant_id="", created_at="", last_used_at="", revoked=False)
+            # Open mode: no keys configured anywhere
+            if key_store.open_mode:
+                return KeyRecord(key_id="open", name="open", role="admin",
+                                 tenant_id="", created_at="", last_used_at="", revoked=False)
         return None
 
     def _require_auth(request: Any) -> bool:

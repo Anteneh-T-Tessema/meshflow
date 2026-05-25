@@ -74,30 +74,41 @@ class KeyStore:
     def __init__(self, db_path: str = "meshflow_runs.db") -> None:
         self._db_path = db_path
         self._static_keys: set[str] = _load_static_keys()
+        # Cache the connection for :memory: so the schema persists across calls
+        if db_path == ":memory:":
+            self._mem_conn: sqlite3.Connection | None = sqlite3.connect(
+                ":memory:", check_same_thread=False
+            )
+            self._mem_conn.row_factory = sqlite3.Row
+        else:
+            self._mem_conn = None
         self._ensure_table()
 
     # ── Schema ────────────────────────────────────────────────────────────────
 
     def _conn(self) -> sqlite3.Connection:
+        if self._mem_conn is not None:
+            return self._mem_conn
         con = sqlite3.connect(self._db_path, check_same_thread=False)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA journal_mode=WAL")
         return con
 
     def _ensure_table(self) -> None:
-        with self._conn() as con:
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS api_keys (
-                    key_id      TEXT PRIMARY KEY,
-                    name        TEXT NOT NULL,
-                    key_hash    TEXT NOT NULL,
-                    role        TEXT NOT NULL DEFAULT 'operator',
-                    tenant_id   TEXT NOT NULL DEFAULT '',
-                    created_at  TEXT NOT NULL,
-                    last_used_at TEXT NOT NULL DEFAULT '',
-                    revoked     INTEGER NOT NULL DEFAULT 0
-                )
-            """)
+        con = self._conn()
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                key_id      TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                key_hash    TEXT NOT NULL,
+                role        TEXT NOT NULL DEFAULT 'operator',
+                tenant_id   TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL,
+                last_used_at TEXT NOT NULL DEFAULT '',
+                revoked     INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        con.commit()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
