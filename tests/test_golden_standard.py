@@ -702,4 +702,4 @@ def test_top_level_imports():
     assert hasattr(meshflow, "EvalSuite")
     assert hasattr(meshflow, "run_eval")
     assert hasattr(meshflow, "agents")
-    assert meshflow.__version__ == "0.46.0"
+    assert meshflow.__version__ == "0.47.0"

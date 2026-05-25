@@ -483,6 +483,30 @@ def main() -> None:
     p_sched_runs_cmd.add_argument("--limit", type=int, default=20)
     p_sched_runs_cmd.add_argument("--db", default="meshflow_schedules.db")
 
+    # ratelimit
+    p_rl = sub.add_parser("ratelimit", help="Manage per-agent and per-team rate limit policies")
+    p_rl_sub = p_rl.add_subparsers(dest="ratelimit_cmd", required=True)
+
+    p_rl_list = p_rl_sub.add_parser("list", help="List all rate limit policies")
+    p_rl_list.add_argument("--db", default="meshflow_ratelimits.db")
+
+    p_rl_set = p_rl_sub.add_parser("set", help="Set a rate limit policy for an agent or team")
+    p_rl_set.add_argument("key", help="Agent name, team slug, or '*' for global default")
+    p_rl_set.add_argument("--max-requests", type=int, default=0, dest="max_requests",
+                          help="Max requests per window (0 = unlimited)")
+    p_rl_set.add_argument("--max-tokens", type=int, default=0, dest="max_tokens",
+                          help="Max LLM tokens per window (0 = unlimited)")
+    p_rl_set.add_argument("--window", type=float, default=60.0, dest="window_s",
+                          help="Window duration in seconds (default: 60)")
+    p_rl_set.add_argument("--warn-at", type=float, default=0.80, dest="warn_at",
+                          help="Warn threshold as fraction of limit (default: 0.80)")
+
+    p_rl_remove = p_rl_sub.add_parser("remove", help="Remove a rate limit policy")
+    p_rl_remove.add_argument("key", help="Agent name, team slug, or '*'")
+
+    p_rl_status = p_rl_sub.add_parser("status", help="Show current window usage for a key")
+    p_rl_status.add_argument("key", help="Agent name or team slug")
+
     p_bench = sub.add_parser("bench", help="Run performance benchmarks (no API key required)")
     p_bench.add_argument(
         "--concurrency", nargs="+", type=int, default=[10, 100, 1000],
@@ -534,6 +558,7 @@ def main() -> None:
         "budget":        _cmd_budget,
         "registry":      _cmd_registry,
         "schedule":      _cmd_schedule,
+        "ratelimit":     _cmd_ratelimit,
     }
     dispatch[args.cmd](args)
 
@@ -2610,3 +2635,62 @@ def _cmd_schedule(args: argparse.Namespace) -> None:
         for r in runs:
             fired = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(r.fired_at))
             print(f"  {r.run_id:<14} {fired:<22} {r.status:<12} {r.task_id or '—'}")
+
+
+# ── ratelimit ─────────────────────────────────────────────────────────────────
+
+def _cmd_ratelimit(args: argparse.Namespace) -> None:
+    from meshflow.ratelimit.store_db import RateLimitPolicyDB
+    from meshflow.ratelimit.window import RateLimitPolicy
+
+    db = RateLimitPolicyDB(args.db)
+
+    if args.ratelimit_cmd == "list":
+        policies = db.list()
+        if not policies:
+            print("  No rate limit policies configured.")
+            return
+        print(f"\n  {'KEY':<28} {'MAX REQ':<10} {'MAX TOK':<12} {'WINDOW(s)':<12} WARN")
+        print("  " + "-" * 68)
+        for p in policies:
+            req  = str(p["max_requests"]) if p["max_requests"] else "∞"
+            tok  = str(p["max_tokens"])   if p["max_tokens"]   else "∞"
+            warn = f"{int(p['warn_at'] * 100)}%"
+            print(f"  {p['key']:<28} {req:<10} {tok:<12} {p['window_s']:<12} {warn}")
+
+    elif args.ratelimit_cmd == "set":
+        policy = RateLimitPolicy(
+            max_requests=args.max_requests,
+            max_tokens=args.max_tokens,
+            window_s=args.window_s,
+            warn_at=args.warn_at,
+        )
+        db.save(args.key, policy)
+        req  = str(policy.max_requests) if policy.max_requests else "∞"
+        tok  = str(policy.max_tokens)   if policy.max_tokens   else "∞"
+        print(f"  Rate limit saved for '{args.key}'")
+        print(f"    requests : {req} / {policy.window_s}s window")
+        print(f"    tokens   : {tok} / {policy.window_s}s window")
+        print(f"    warn at  : {int(policy.warn_at * 100)}%")
+
+    elif args.ratelimit_cmd == "remove":
+        if db.delete(args.key):
+            print(f"  Rate limit for '{args.key}' removed.")
+        else:
+            print(f"  No policy found for '{args.key}'.")
+            sys.exit(1)
+
+    elif args.ratelimit_cmd == "status":
+        policy = db.load(args.key)
+        if policy is None:
+            # fall back to wildcard
+            policy = db.load("*")
+        if policy is None:
+            print(f"  No rate limit policy found for '{args.key}'.")
+            return
+        req  = str(policy.max_requests) if policy.max_requests else "∞"
+        tok  = str(policy.max_tokens)   if policy.max_tokens   else "∞"
+        print(f"\n  Policy for '{args.key}':")
+        print(f"    max requests : {req} / {policy.window_s}s")
+        print(f"    max tokens   : {tok} / {policy.window_s}s")
+        print(f"    warn at      : {int(policy.warn_at * 100)}%")

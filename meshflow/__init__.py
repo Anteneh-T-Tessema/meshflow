@@ -204,8 +204,18 @@ from meshflow.scheduler import (
     ScheduleRun,
     ScheduleStore,
 )
+from meshflow.ratelimit import (
+    RateLimitPolicy,
+    RateLimitResult,
+    RateLimitStore,
+    RateLimitPolicyDB,
+    RateLimitGuardrail,
+    TeamRateLimitGuardrail,
+    get_rate_limit_store,
+    reset_rate_limit_store,
+)
 
-__version__ = "0.46.0"
+__version__ = "0.47.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -521,4 +531,13 @@ __all__ = [
     "ScheduledTask",
     "ScheduleRun",
     "ScheduleStore",
+    # ── Per-agent / per-team rate limiting ────────────────────────────────────
+    "RateLimitPolicy",
+    "RateLimitResult",
+    "RateLimitStore",
+    "RateLimitPolicyDB",
+    "RateLimitGuardrail",
+    "TeamRateLimitGuardrail",
+    "get_rate_limit_store",
+    "reset_rate_limit_store",
 ]

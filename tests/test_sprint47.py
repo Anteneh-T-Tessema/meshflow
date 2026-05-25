@@ -537,4 +537,4 @@ class TestPublicExports:
 
     def test_version_bumped(self):
         import meshflow
-        assert meshflow.__version__ == "0.46.0"
+        assert meshflow.__version__ == "0.47.0"
