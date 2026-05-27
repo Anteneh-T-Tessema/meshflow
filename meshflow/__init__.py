@@ -214,8 +214,110 @@ from meshflow.ratelimit import (
     get_rate_limit_store,
     reset_rate_limit_store,
 )
+from meshflow.security.injection import (
+    InjectionMatch,
+    InjectionResult,
+    PromptInjectionDetector,
+    PromptInjectionGuardrail,
+)
+from meshflow.security.secrets import (
+    SecretMatch,
+    SecretScanResult,
+    SecretScanner,
+    SecretScanGuardrail,
+)
+from meshflow.intelligence.embedding import (
+    EmbeddingProvider,
+    HashEmbeddingProvider,
+    SentenceTransformerProvider,
+    cosine_similarity,
+    get_embedding_provider,
+    reset_embedding_provider,
+    embed_text,
+)
+from meshflow.intelligence.semantic_memory import (
+    SemanticMemoryEntry,
+    SemanticSearchResult,
+    SemanticMemoryStore,
+)
+from meshflow.resilience import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitBreakerOpenError,
+    CircuitBreakerState,
+    CircuitBreakerStats,
+    CircuitBreakerRegistry,
+    CircuitBreakerRecord,
+    CircuitBreakerStore,
+    get_circuit_registry,
+    reset_circuit_registry,
+)
+from meshflow.observability.webhook_queue import (
+    WebhookDelivery,
+    WebhookRetryQueue,
+    WebhookReliableDeliverer,
+)
+from meshflow.alerting import (
+    MetricPoint,
+    MetricStore,
+    AlertRule,
+    AlertRecord,
+    AlertRuleStore,
+    AlertStore,
+    AlertEngine,
+)
+from meshflow.locking import (
+    LockRecord,
+    LockStore,
+    DistributedLock,
+    LockAcquisitionError,
+)
+from meshflow.lineage import LineageNode, LineageEdge, LineageGraph
+from meshflow.identity import (
+    AgentIdentity,
+    AgentToken,
+    IdentityStore,
+    sign_token,
+    verify_token,
+    decode_token,
+)
+from meshflow.canary import (
+    CanaryConfig,
+    CanaryOutcome,
+    CanaryStats,
+    CanaryStore,
+    CanaryRouter,
+)
+from meshflow.flags import (
+    FlagDefinition,
+    FlagRule,
+    FlagStore,
+    FlagEvaluator,
+)
+from meshflow.vault import VaultSecret, VaultAuditLog, VaultStore
+from meshflow.tenant import Tenant, TenantContext, TenantStore, TenantGuard, scoped_db_path
+from meshflow.tracing import TraceContext, Span, SpanKind, SpanStatus, TraceStore, Tracer
+from meshflow.policy import (
+    PolicyAction,
+    ConditionOp,
+    PolicyCondition,
+    PolicyRule,
+    PolicyDecision,
+    PolicyStore,
+    PolicyEngine,
+    PolicyLoader,
+)
+from meshflow.sla import SLAContract, LatencyRecord, SLAStats, SLABreach, SLAStore, SLATracker
+from meshflow.snapshot import SnapshotManifest, SnapshotBundle, SnapshotExporter
+from meshflow.security.dasc_gate import (
+    AutoRiskClassifier,
+    TaintGraph,
+    CompensationExecutor,
+    AuditLedger,
+    DascGate,
+)
 
-__version__ = "0.47.0"
+__version__ = "0.65.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -540,4 +642,118 @@ __all__ = [
     "TeamRateLimitGuardrail",
     "get_rate_limit_store",
     "reset_rate_limit_store",
+    # ── Prompt injection detection ────────────────────────────────────────────
+    "InjectionMatch",
+    "InjectionResult",
+    "PromptInjectionDetector",
+    "PromptInjectionGuardrail",
+    # ── Secret & credential scanner ───────────────────────────────────────────
+    "SecretMatch",
+    "SecretScanResult",
+    "SecretScanner",
+    "SecretScanGuardrail",
+    # ── Semantic memory / embedding ───────────────────────────────────────────
+    "EmbeddingProvider",
+    "HashEmbeddingProvider",
+    "SentenceTransformerProvider",
+    "cosine_similarity",
+    "get_embedding_provider",
+    "reset_embedding_provider",
+    "embed_text",
+    "SemanticMemoryEntry",
+    "SemanticSearchResult",
+    "SemanticMemoryStore",
+    # ── Circuit breaker / resilience ──────────────────────────────────────────
+    "CircuitBreaker",
+    "CircuitBreakerConfig",
+    "CircuitBreakerOpenError",
+    "CircuitBreakerState",
+    "CircuitBreakerStats",
+    "CircuitBreakerRegistry",
+    "CircuitBreakerRecord",
+    "CircuitBreakerStore",
+    "get_circuit_registry",
+    "reset_circuit_registry",
+    # ── Durable webhook retry queue ───────────────────────────────────────────
+    "WebhookDelivery",
+    "WebhookRetryQueue",
+    "WebhookReliableDeliverer",
+    # ── Alert engine + metric store ───────────────────────────────────────────
+    "MetricPoint",
+    "MetricStore",
+    "AlertRule",
+    "AlertRecord",
+    "AlertRuleStore",
+    "AlertStore",
+    "AlertEngine",
+    # ── Distributed locking ───────────────────────────────────────────────────
+    "LockRecord",
+    "LockStore",
+    "DistributedLock",
+    "LockAcquisitionError",
+    # ── Data lineage (GDPR Article 30) ────────────────────────────────────────
+    "LineageNode",
+    "LineageEdge",
+    "LineageGraph",
+    # ── Agent identity + zero-trust auth ─────────────────────────────────────
+    "AgentIdentity",
+    "AgentToken",
+    "IdentityStore",
+    "sign_token",
+    "verify_token",
+    "decode_token",
+    # ── Canary agent router ───────────────────────────────────────────────────
+    "CanaryConfig",
+    "CanaryOutcome",
+    "CanaryStats",
+    "CanaryStore",
+    "CanaryRouter",
+    # ── Feature flags ─────────────────────────────────────────────────────────
+    "FlagDefinition",
+    "FlagRule",
+    "FlagStore",
+    "FlagEvaluator",
+    # ── Secret vault (Sprint 60) ──────────────────────────────────────────────
+    "VaultSecret",
+    "VaultAuditLog",
+    "VaultStore",
+    # ── Tenant isolation (Sprint 61) ──────────────────────────────────────────
+    "Tenant",
+    "TenantContext",
+    "TenantStore",
+    "TenantGuard",
+    "scoped_db_path",
+    # ── Distributed tracing (Sprint 62) ──────────────────────────────────────
+    "TraceContext",
+    "Span",
+    "SpanKind",
+    "SpanStatus",
+    "TraceStore",
+    "Tracer",
+    # ── Policy-as-Code engine (Sprint 63) ─────────────────────────────────────
+    "PolicyAction",
+    "ConditionOp",
+    "PolicyCondition",
+    "PolicyRule",
+    "PolicyDecision",
+    "PolicyStore",
+    "PolicyEngine",
+    "PolicyLoader",
+    # ── Agent SLA tracker (Sprint 64) ─────────────────────────────────────────
+    "SLAContract",
+    "LatencyRecord",
+    "SLAStats",
+    "SLABreach",
+    "SLAStore",
+    "SLATracker",
+    # ── Compliance snapshot (Sprint 65) ───────────────────────────────────────
+    "SnapshotManifest",
+    "SnapshotBundle",
+    "SnapshotExporter",
+    # ── DASC-core risk governance ─────────────────────────────────────────────
+    "AutoRiskClassifier",
+    "TaintGraph",
+    "CompensationExecutor",
+    "AuditLedger",
+    "DascGate",
 ]

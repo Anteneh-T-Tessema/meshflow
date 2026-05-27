@@ -721,7 +721,7 @@ class TestQueueWorker:
 class TestVersionBump:
     def test_version_is_023(self):
         import meshflow
-        assert meshflow.__version__ == "0.47.0"
+        assert meshflow.__version__ == "0.65.0"
 
     def test_new_exports_accessible(self):
         import meshflow

@@ -300,6 +300,20 @@ def main() -> None:
     p_wh_remove.add_argument("--server", default="http://localhost:8000")
     p_wh_remove.add_argument("--api-key", default="", dest="api_key")
 
+    p_wh_queue = p_webhooks_sub.add_parser("queue", help="Show pending delivery queue")
+    p_wh_queue.add_argument("--db", default="meshflow_webhooks.db", help="Webhook queue SQLite path")
+    p_wh_queue.add_argument("--limit", type=int, default=20, help="Max rows to show")
+    p_wh_queue.add_argument("--json", action="store_true", dest="json_output", help="Output raw JSON")
+
+    p_wh_dead = p_webhooks_sub.add_parser("dead", help="Show dead-letter deliveries")
+    p_wh_dead.add_argument("--db", default="meshflow_webhooks.db", help="Webhook queue SQLite path")
+    p_wh_dead.add_argument("--limit", type=int, default=20, help="Max rows to show")
+    p_wh_dead.add_argument("--json", action="store_true", dest="json_output", help="Output raw JSON")
+
+    p_wh_replay = p_webhooks_sub.add_parser("replay", help="Re-queue a dead or failed delivery")
+    p_wh_replay.add_argument("delivery_id", help="Delivery ID to replay")
+    p_wh_replay.add_argument("--db", default="meshflow_webhooks.db", help="Webhook queue SQLite path")
+
     # keys
     p_keys = sub.add_parser("keys", help="Manage API keys (requires admin role)")
     p_keys_sub = p_keys.add_subparsers(dest="keys_cmd", required=True)
@@ -507,6 +521,235 @@ def main() -> None:
     p_rl_status = p_rl_sub.add_parser("status", help="Show current window usage for a key")
     p_rl_status.add_argument("key", help="Agent name or team slug")
 
+    # circuit
+    p_circ = sub.add_parser("circuit", help="Manage circuit breakers for resilient agent calls")
+    p_circ_sub = p_circ.add_subparsers(dest="circuit_cmd", required=True)
+
+    p_circ_list = p_circ_sub.add_parser("list", help="List all persisted circuit breakers")
+    p_circ_list.add_argument("--db", default="meshflow_circuits.db")
+
+    p_circ_status = p_circ_sub.add_parser("status", help="Show status of a circuit breaker")
+    p_circ_status.add_argument("name", help="Circuit breaker name")
+    p_circ_status.add_argument("--db", default="meshflow_circuits.db")
+
+    p_circ_reset = p_circ_sub.add_parser("reset", help="Force a circuit breaker to CLOSED")
+    p_circ_reset.add_argument("name", help="Circuit breaker name")
+    p_circ_reset.add_argument("--db", default="meshflow_circuits.db")
+
+    p_circ_trip = p_circ_sub.add_parser("trip", help="Force a circuit breaker to OPEN")
+    p_circ_trip.add_argument("name", help="Circuit breaker name")
+    p_circ_trip.add_argument("--db", default="meshflow_circuits.db")
+
+    p_circ_remove = p_circ_sub.add_parser("remove", help="Delete a circuit breaker record")
+    p_circ_remove.add_argument("name", help="Circuit breaker name")
+    p_circ_remove.add_argument("--db", default="meshflow_circuits.db")
+
+    # security
+    p_sec = sub.add_parser("security", help="Security utilities — prompt injection scanning, PII detection")
+    p_sec_sub = p_sec.add_subparsers(dest="security_cmd", required=True)
+
+    p_sec_scan = p_sec_sub.add_parser("scan", help="Scan text for prompt injection attacks")
+    p_sec_scan.add_argument("text", nargs="?", default=None, help="Text to scan (reads stdin if omitted)")
+    p_sec_scan.add_argument("--threshold",       type=float, default=0.3,  help="Detection threshold (default 0.3)")
+    p_sec_scan.add_argument("--block-threshold", type=float, default=0.6,  dest="block_threshold",
+                            help="Block threshold (default 0.6)")
+    p_sec_scan.add_argument("--categories", nargs="+", default=None,
+                            help="Restrict to specific categories (default: all)")
+    p_sec_scan.add_argument("--json", action="store_true", dest="json_output",
+                            help="Output raw JSON result")
+
+    p_sec_secrets = p_sec_sub.add_parser("secrets", help="Scan text for leaked credentials and secrets")
+    p_sec_secrets.add_argument("text", nargs="?", default=None, help="Text to scan (reads stdin if omitted)")
+    p_sec_secrets.add_argument("--categories", nargs="+", default=None,
+                               help="Restrict to specific categories (default: all)")
+    p_sec_secrets.add_argument("--min-confidence", type=float, default=0.70, dest="min_confidence",
+                               help="Minimum pattern confidence to report (default: 0.70)")
+    p_sec_secrets.add_argument("--redact", action="store_true",
+                               help="Output redacted text instead of blocking")
+    p_sec_secrets.add_argument("--json", action="store_true", dest="json_output",
+                               help="Output raw JSON result")
+
+    # memory
+    p_mem = sub.add_parser("memory", help="Manage semantic memory store")
+    p_mem_sub = p_mem.add_subparsers(dest="memory_cmd", required=True)
+
+    p_mem_search = p_mem_sub.add_parser("search", help="Search memory by semantic similarity")
+    p_mem_search.add_argument("query", help="Natural-language search query")
+    p_mem_search.add_argument("--k",          type=int,   default=5,    help="Max results (default 5)")
+    p_mem_search.add_argument("--min-score",  type=float, default=-1.0, dest="min_score",
+                              help="Minimum cosine similarity (default -1 = no filter)")
+    p_mem_search.add_argument("--provider",   default="auto",
+                              choices=["auto", "hash"], help="Embedding provider (default auto)")
+    p_mem_search.add_argument("--db",         default="meshflow_memory.db")
+    p_mem_search.add_argument("--json",       action="store_true", dest="json_output")
+
+    p_mem_store = p_mem_sub.add_parser("store", help="Store a text entry in semantic memory")
+    p_mem_store.add_argument("key",  help="Unique key for this memory entry")
+    p_mem_store.add_argument("text", help="Text to embed and store")
+    p_mem_store.add_argument("--meta", default="{}", help="JSON metadata object (default '{}')")
+    p_mem_store.add_argument("--provider", default="auto", choices=["auto", "hash"])
+    p_mem_store.add_argument("--db", default="meshflow_memory.db")
+
+    p_mem_get = p_mem_sub.add_parser("get", help="Retrieve a memory entry by exact key")
+    p_mem_get.add_argument("key", help="Memory entry key")
+    p_mem_get.add_argument("--db", default="meshflow_memory.db")
+
+    p_mem_list = p_mem_sub.add_parser("list", help="List stored memory entries")
+    p_mem_list.add_argument("--limit",  type=int, default=20)
+    p_mem_list.add_argument("--offset", type=int, default=0)
+    p_mem_list.add_argument("--db",     default="meshflow_memory.db")
+
+    p_mem_delete = p_mem_sub.add_parser("delete", help="Delete a memory entry by key")
+    p_mem_delete.add_argument("key", help="Memory entry key")
+    p_mem_delete.add_argument("--db", default="meshflow_memory.db")
+
+    p_mem_clear = p_mem_sub.add_parser("clear", help="Delete all memory entries")
+    p_mem_clear.add_argument("--db",    default="meshflow_memory.db")
+    p_mem_clear.add_argument("--yes",   action="store_true", help="Skip confirmation")
+
+    # identity
+    p_id = sub.add_parser("identity", help="Agent identity registry and zero-trust token management")
+    p_id_sub = p_id.add_subparsers(dest="identity_cmd", required=True)
+
+    p_id_create = p_id_sub.add_parser("create", help="Register a new agent identity")
+    p_id_create.add_argument("name", help="Agent name (must be unique)")
+    p_id_create.add_argument("--capabilities", nargs="*", default=[], metavar="CAP")
+    p_id_create.add_argument("--issuer", default="meshflow")
+    p_id_create.add_argument("--db", default="meshflow_identity.db")
+
+    p_id_list = p_id_sub.add_parser("list", help="List registered agent identities")
+    p_id_list.add_argument("--active-only", action="store_true", dest="active_only")
+    p_id_list.add_argument("--db", default="meshflow_identity.db")
+    p_id_list.add_argument("--json", action="store_true", dest="json_output")
+
+    p_id_get = p_id_sub.add_parser("get", help="Show identity by name")
+    p_id_get.add_argument("name", help="Agent name")
+    p_id_get.add_argument("--db", default="meshflow_identity.db")
+
+    p_id_revoke = p_id_sub.add_parser("revoke", help="Revoke an agent identity")
+    p_id_revoke.add_argument("agent_id", help="Agent ID to revoke")
+    p_id_revoke.add_argument("--db", default="meshflow_identity.db")
+
+    p_id_sign = p_id_sub.add_parser("sign", help="Issue a signed token for an agent")
+    p_id_sign.add_argument("name", help="Agent name")
+    p_id_sign.add_argument("--secret", required=True, help="HMAC signing secret")
+    p_id_sign.add_argument("--ttl", type=float, default=3600.0, dest="ttl_s")
+    p_id_sign.add_argument("--db", default="meshflow_identity.db")
+
+    p_id_verify = p_id_sub.add_parser("verify", help="Verify a token string")
+    p_id_verify.add_argument("token", help="Token string to verify")
+    p_id_verify.add_argument("--secret", required=True, help="HMAC signing secret")
+
+    # lineage
+    p_lin = sub.add_parser("lineage", help="Data lineage graph — GDPR Article 30 provenance")
+    p_lin_sub = p_lin.add_subparsers(dest="lineage_cmd", required=True)
+
+    p_lin_show = p_lin_sub.add_parser("show", help="Show a lineage node by ID")
+    p_lin_show.add_argument("node_id", help="Node ID")
+    p_lin_show.add_argument("--db", default="meshflow_lineage.db")
+    p_lin_show.add_argument("--json", action="store_true", dest="json_output")
+
+    p_lin_trace = p_lin_sub.add_parser("trace", help="Trace upstream provenance for a node")
+    p_lin_trace.add_argument("node_id", help="Node ID to trace from")
+    p_lin_trace.add_argument("--db", default="meshflow_lineage.db")
+    p_lin_trace.add_argument("--json", action="store_true", dest="json_output")
+
+    p_lin_impact = p_lin_sub.add_parser("impact", help="Impact analysis — downstream of a node")
+    p_lin_impact.add_argument("node_id", help="Node ID to analyse")
+    p_lin_impact.add_argument("--db", default="meshflow_lineage.db")
+    p_lin_impact.add_argument("--json", action="store_true", dest="json_output")
+
+    p_lin_run = p_lin_sub.add_parser("run", help="List all lineage nodes for a run")
+    p_lin_run.add_argument("run_id", help="Run ID")
+    p_lin_run.add_argument("--db", default="meshflow_lineage.db")
+    p_lin_run.add_argument("--json", action="store_true", dest="json_output")
+
+    p_lin_delete = p_lin_sub.add_parser("delete", help="GDPR erasure — delete all nodes for a subject")
+    p_lin_delete.add_argument("name", help="Data subject name")
+    p_lin_delete.add_argument("--db", default="meshflow_lineage.db")
+    p_lin_delete.add_argument("--yes", action="store_true", help="Skip confirmation")
+
+    p_lin_stats = p_lin_sub.add_parser("stats", help="Show lineage graph statistics")
+    p_lin_stats.add_argument("--db", default="meshflow_lineage.db")
+
+    # locks
+    p_locks = sub.add_parser("locks", help="Distributed lock management")
+    p_locks_sub = p_locks.add_subparsers(dest="locks_cmd", required=True)
+
+    p_locks_list = p_locks_sub.add_parser("list", help="List active locks")
+    p_locks_list.add_argument("--db", default="meshflow_locks.db")
+    p_locks_list.add_argument("--all", action="store_true", dest="show_all",
+                               help="Include expired entries")
+    p_locks_list.add_argument("--json", action="store_true", dest="json_output")
+
+    p_locks_status = p_locks_sub.add_parser("status", help="Show lock status for a resource")
+    p_locks_status.add_argument("resource_id", help="Resource ID to check")
+    p_locks_status.add_argument("--db", default="meshflow_locks.db")
+
+    p_locks_release = p_locks_sub.add_parser("release", help="Force-release a lock (admin)")
+    p_locks_release.add_argument("resource_id", help="Resource ID to release")
+    p_locks_release.add_argument("--db", default="meshflow_locks.db")
+
+    p_locks_purge = p_locks_sub.add_parser("purge", help="Delete all expired lock entries")
+    p_locks_purge.add_argument("--db", default="meshflow_locks.db")
+
+    # alerts
+    p_alerts = sub.add_parser("alerts", help="Alert engine — metric-threshold rules and fired alerts")
+    p_alerts_sub = p_alerts.add_subparsers(dest="alerts_cmd", required=True)
+
+    # alerts rules
+    p_alrt_rules = p_alerts_sub.add_parser("rules", help="Manage alert rules")
+    p_alrt_rules_sub = p_alrt_rules.add_subparsers(dest="rules_cmd", required=True)
+
+    p_alrt_rules_list = p_alrt_rules_sub.add_parser("list", help="List alert rules")
+    p_alrt_rules_list.add_argument("--agent", default="", dest="agent_name")
+    p_alrt_rules_list.add_argument("--enabled-only", action="store_true", dest="enabled_only")
+    p_alrt_rules_list.add_argument("--db", default="meshflow_alerts.db")
+    p_alrt_rules_list.add_argument("--json", action="store_true", dest="json_output")
+
+    p_alrt_rules_add = p_alrt_rules_sub.add_parser("add", help="Add an alert rule")
+    p_alrt_rules_add.add_argument("name", help="Rule name")
+    p_alrt_rules_add.add_argument("--agent", required=True, dest="agent_name")
+    p_alrt_rules_add.add_argument("--metric", required=True)
+    p_alrt_rules_add.add_argument("--operator", required=True,
+                                   choices=["gt", "lt", "gte", "lte", "eq"])
+    p_alrt_rules_add.add_argument("--threshold", required=True, type=float)
+    p_alrt_rules_add.add_argument("--window", type=float, default=60.0, dest="window_s",
+                                   help="Aggregation window in seconds (default 60)")
+    p_alrt_rules_add.add_argument("--agg", default="mean",
+                                   choices=["mean", "max", "min", "sum", "count"], dest="agg_fn")
+    p_alrt_rules_add.add_argument("--webhook-url", default="", dest="webhook_url")
+    p_alrt_rules_add.add_argument("--webhook-secret", default="", dest="webhook_secret")
+    p_alrt_rules_add.add_argument("--db", default="meshflow_alerts.db")
+
+    p_alrt_rules_remove = p_alrt_rules_sub.add_parser("remove", help="Delete an alert rule")
+    p_alrt_rules_remove.add_argument("rule_id", help="Rule ID to delete")
+    p_alrt_rules_remove.add_argument("--db", default="meshflow_alerts.db")
+
+    p_alrt_rules_enable = p_alrt_rules_sub.add_parser("enable", help="Enable a disabled rule")
+    p_alrt_rules_enable.add_argument("rule_id")
+    p_alrt_rules_enable.add_argument("--db", default="meshflow_alerts.db")
+
+    p_alrt_rules_disable = p_alrt_rules_sub.add_parser("disable", help="Disable a rule")
+    p_alrt_rules_disable.add_argument("rule_id")
+    p_alrt_rules_disable.add_argument("--db", default="meshflow_alerts.db")
+
+    # alerts list / ack / status
+    p_alrt_list = p_alerts_sub.add_parser("list", help="List fired alerts")
+    p_alrt_list.add_argument("--status", default="", choices=["", "firing", "resolved", "acked"])
+    p_alrt_list.add_argument("--agent", default="", dest="agent_name")
+    p_alrt_list.add_argument("--limit", type=int, default=20)
+    p_alrt_list.add_argument("--db", default="meshflow_alerts.db")
+    p_alrt_list.add_argument("--json", action="store_true", dest="json_output")
+
+    p_alrt_ack = p_alerts_sub.add_parser("ack", help="Acknowledge a firing alert")
+    p_alrt_ack.add_argument("alert_id", help="Alert ID to acknowledge")
+    p_alrt_ack.add_argument("--by", default="cli", dest="acked_by", help="Acknowledger identity")
+    p_alrt_ack.add_argument("--db", default="meshflow_alerts.db")
+
+    p_alrt_status = p_alerts_sub.add_parser("status", help="Show alert engine summary")
+    p_alrt_status.add_argument("--db", default="meshflow_alerts.db")
+
     p_bench = sub.add_parser("bench", help="Run performance benchmarks (no API key required)")
     p_bench.add_argument(
         "--concurrency", nargs="+", type=int, default=[10, 100, 1000],
@@ -520,6 +763,263 @@ def main() -> None:
         "--quick", action="store_true",
         help="Fast smoke-check (concurrency 10 only)",
     )
+
+    # canary
+    p_can = sub.add_parser("canary", help="Canary agent router — progressive traffic splitting")
+    p_can_sub = p_can.add_subparsers(dest="canary_cmd", required=True)
+
+    p_can_create = p_can_sub.add_parser("create", help="Create a new canary experiment")
+    p_can_create.add_argument("name", help="Experiment name (must be unique)")
+    p_can_create.add_argument("--stable", required=True, dest="stable_agent", help="Stable agent name")
+    p_can_create.add_argument("--canary", required=True, dest="canary_agent", help="Canary agent name")
+    p_can_create.add_argument("--split", type=float, default=0.1, help="Canary traffic fraction (0.0–1.0, default 0.1)")
+    p_can_create.add_argument("--min-requests", type=int, default=10, dest="min_requests")
+    p_can_create.add_argument("--promote-threshold", type=float, default=0.95, dest="promote_threshold")
+    p_can_create.add_argument("--rollback-threshold", type=float, default=0.80, dest="rollback_threshold")
+    p_can_create.add_argument("--db", default="meshflow_canary.db")
+
+    p_can_list = p_can_sub.add_parser("list", help="List canary experiments")
+    p_can_list.add_argument("--status", default="", choices=["", "active", "promoted", "rolled_back", "paused"])
+    p_can_list.add_argument("--db", default="meshflow_canary.db")
+    p_can_list.add_argument("--json", action="store_true", dest="json_output")
+
+    p_can_status = p_can_sub.add_parser("status", help="Show stats for a canary experiment")
+    p_can_status.add_argument("name", help="Experiment name")
+    p_can_status.add_argument("--db", default="meshflow_canary.db")
+
+    p_can_promote = p_can_sub.add_parser("promote", help="Promote a canary to stable")
+    p_can_promote.add_argument("name", help="Experiment name")
+    p_can_promote.add_argument("--db", default="meshflow_canary.db")
+
+    p_can_rollback = p_can_sub.add_parser("rollback", help="Roll back a canary experiment")
+    p_can_rollback.add_argument("name", help="Experiment name")
+    p_can_rollback.add_argument("--db", default="meshflow_canary.db")
+
+    p_can_pause = p_can_sub.add_parser("pause", help="Pause a canary experiment")
+    p_can_pause.add_argument("name", help="Experiment name")
+    p_can_pause.add_argument("--db", default="meshflow_canary.db")
+
+    # flags
+    p_flags = sub.add_parser("flags", help="Feature flags — targeted rollouts for agent behaviour")
+    p_flags_sub = p_flags.add_subparsers(dest="flags_cmd", required=True)
+
+    p_fl_define = p_flags_sub.add_parser("define", help="Define a new feature flag")
+    p_fl_define.add_argument("name", help="Flag name (must be unique)")
+    p_fl_define.add_argument("--type", default="bool", choices=["bool", "string", "number"], dest="flag_type")
+    p_fl_define.add_argument("--default", default="false", dest="default_value", help="Default value")
+    p_fl_define.add_argument("--description", default="")
+    p_fl_define.add_argument("--rollout", type=float, default=100.0, dest="rollout_pct",
+                              help="Rollout percentage 0–100 (default 100)")
+    p_fl_define.add_argument("--db", default="meshflow_flags.db")
+
+    p_fl_list = p_flags_sub.add_parser("list", help="List feature flags")
+    p_fl_list.add_argument("--enabled-only", action="store_true", dest="enabled_only")
+    p_fl_list.add_argument("--db", default="meshflow_flags.db")
+    p_fl_list.add_argument("--json", action="store_true", dest="json_output")
+
+    p_fl_get = p_flags_sub.add_parser("get", help="Show a flag by name")
+    p_fl_get.add_argument("name", help="Flag name")
+    p_fl_get.add_argument("--db", default="meshflow_flags.db")
+
+    p_fl_enable = p_flags_sub.add_parser("enable", help="Enable a flag")
+    p_fl_enable.add_argument("name", help="Flag name")
+    p_fl_enable.add_argument("--db", default="meshflow_flags.db")
+
+    p_fl_disable = p_flags_sub.add_parser("disable", help="Disable a flag")
+    p_fl_disable.add_argument("name", help="Flag name")
+    p_fl_disable.add_argument("--db", default="meshflow_flags.db")
+
+    p_fl_delete = p_flags_sub.add_parser("delete", help="Delete a flag and all its rules")
+    p_fl_delete.add_argument("name", help="Flag name")
+    p_fl_delete.add_argument("--db", default="meshflow_flags.db")
+
+    p_fl_rule = p_flags_sub.add_parser("add-rule", help="Add a targeting rule to a flag")
+    p_fl_rule.add_argument("name", help="Flag name")
+    p_fl_rule.add_argument("--key", required=True, dest="condition_key", help="Context key to match")
+    p_fl_rule.add_argument("--op", required=True, dest="condition_op",
+                            choices=["eq", "neq", "in", "gt", "lt", "gte", "lte", "contains"])
+    p_fl_rule.add_argument("--value", required=True, dest="condition_value", help="Value to compare against")
+    p_fl_rule.add_argument("--return", required=True, dest="return_value", help="Value to return when rule matches")
+    p_fl_rule.add_argument("--priority", type=int, default=0)
+    p_fl_rule.add_argument("--db", default="meshflow_flags.db")
+
+    p_fl_eval = p_flags_sub.add_parser("evaluate", help="Evaluate a flag for a context")
+    p_fl_eval.add_argument("name", help="Flag name")
+    p_fl_eval.add_argument("--context", default="{}", help="JSON context dict")
+    p_fl_eval.add_argument("--db", default="meshflow_flags.db")
+
+    # ── vault ─────────────────────────────────────────────────────────────────
+    p_vault = sub.add_parser("vault", help="Secret vault — store/retrieve/rotate encrypted secrets")
+    p_vault_sub = p_vault.add_subparsers(dest="vault_cmd", required=True)
+
+    p_vlt_store = p_vault_sub.add_parser("store", help="Encrypt and store a secret")
+    p_vlt_store.add_argument("name", help="Secret name (unique key)")
+    p_vlt_store.add_argument("value", help="Plaintext secret value")
+    p_vlt_store.add_argument("--category", default="generic")
+    p_vlt_store.add_argument("--description", default="")
+    p_vlt_store.add_argument("--passphrase", default="meshflow-vault")
+    p_vlt_store.add_argument("--db", default="meshflow_vault.db")
+
+    p_vlt_get = p_vault_sub.add_parser("retrieve", help="Decrypt and retrieve a secret")
+    p_vlt_get.add_argument("name", help="Secret name")
+    p_vlt_get.add_argument("--passphrase", default="meshflow-vault")
+    p_vlt_get.add_argument("--db", default="meshflow_vault.db")
+
+    p_vlt_rot = p_vault_sub.add_parser("rotate", help="Re-encrypt a secret with a new value")
+    p_vlt_rot.add_argument("name", help="Secret name")
+    p_vlt_rot.add_argument("new_value", help="New plaintext value")
+    p_vlt_rot.add_argument("--passphrase", default="meshflow-vault")
+    p_vlt_rot.add_argument("--db", default="meshflow_vault.db")
+
+    p_vlt_del = p_vault_sub.add_parser("delete", help="Delete a secret")
+    p_vlt_del.add_argument("name", help="Secret name")
+    p_vlt_del.add_argument("--passphrase", default="meshflow-vault")
+    p_vlt_del.add_argument("--db", default="meshflow_vault.db")
+
+    p_vlt_list = p_vault_sub.add_parser("list", help="List secrets (metadata only, no values)")
+    p_vlt_list.add_argument("--category", default="")
+    p_vlt_list.add_argument("--db", default="meshflow_vault.db")
+    p_vlt_list.add_argument("--passphrase", default="meshflow-vault")
+
+    p_vlt_audit = p_vault_sub.add_parser("audit", help="Show vault audit log")
+    p_vlt_audit.add_argument("--name", default="", help="Filter by secret name")
+    p_vlt_audit.add_argument("--limit", type=int, default=20)
+    p_vlt_audit.add_argument("--db", default="meshflow_vault.db")
+    p_vlt_audit.add_argument("--passphrase", default="meshflow-vault")
+
+    # ── tenant ────────────────────────────────────────────────────────────────
+    p_tenant = sub.add_parser("tenant", help="Multi-tenant management")
+    p_tenant_sub = p_tenant.add_subparsers(dest="tenant_cmd", required=True)
+
+    p_ten_create = p_tenant_sub.add_parser("create", help="Create a new tenant")
+    p_ten_create.add_argument("name", help="Display name")
+    p_ten_create.add_argument("slug", help="URL-safe slug (unique)")
+    p_ten_create.add_argument("--plan", default="free", choices=["free", "pro", "enterprise"])
+    p_ten_create.add_argument("--db", default="meshflow_tenants.db")
+
+    p_ten_list = p_tenant_sub.add_parser("list", help="List tenants")
+    p_ten_list.add_argument("--status", default="", choices=["", "active", "suspended", "deleted"])
+    p_ten_list.add_argument("--db", default="meshflow_tenants.db")
+
+    p_ten_get = p_tenant_sub.add_parser("get", help="Get tenant by slug")
+    p_ten_get.add_argument("slug", help="Tenant slug")
+    p_ten_get.add_argument("--db", default="meshflow_tenants.db")
+
+    p_ten_suspend = p_tenant_sub.add_parser("suspend", help="Suspend a tenant")
+    p_ten_suspend.add_argument("slug", help="Tenant slug")
+    p_ten_suspend.add_argument("--db", default="meshflow_tenants.db")
+
+    p_ten_plan = p_tenant_sub.add_parser("plan", help="Change tenant plan")
+    p_ten_plan.add_argument("slug", help="Tenant slug")
+    p_ten_plan.add_argument("plan", choices=["free", "pro", "enterprise"])
+    p_ten_plan.add_argument("--db", default="meshflow_tenants.db")
+
+    # ── tracing ───────────────────────────────────────────────────────────────
+    p_tracing = sub.add_parser("tracing", help="Distributed trace inspection")
+    p_tracing_sub = p_tracing.add_subparsers(dest="tracing_cmd", required=True)
+
+    p_tr_show = p_tracing_sub.add_parser("show", help="Show all spans for a trace ID")
+    p_tr_show.add_argument("trace_id", help="Trace ID (hex)")
+    p_tr_show.add_argument("--db", default="meshflow_traces.db")
+
+    p_tr_run = p_tracing_sub.add_parser("run", help="Show spans for a run ID")
+    p_tr_run.add_argument("run_id", help="Run ID")
+    p_tr_run.add_argument("--db", default="meshflow_traces.db")
+
+    p_tr_count = p_tracing_sub.add_parser("count", help="Count total spans stored")
+    p_tr_count.add_argument("--db", default="meshflow_traces.db")
+
+    # ── policy ────────────────────────────────────────────────────────────────
+    p_policy = sub.add_parser("policy", help="Policy-as-code engine")
+    p_policy_sub = p_policy.add_subparsers(dest="policy_cmd", required=True)
+
+    p_pol_add = p_policy_sub.add_parser("add", help="Add a policy rule")
+    p_pol_add.add_argument("name", help="Rule name (unique)")
+    p_pol_add.add_argument("--action", required=True, choices=["allow", "deny", "log", "alert"])
+    p_pol_add.add_argument("--framework", default="custom")
+    p_pol_add.add_argument("--priority", type=int, default=0)
+    p_pol_add.add_argument("--description", default="")
+    p_pol_add.add_argument("--condition", action="append", dest="conditions", metavar="FIELD:OP:VALUE",
+                            help="Condition in field:op:value format; repeatable")
+    p_pol_add.add_argument("--db", default="meshflow_policy.db")
+
+    p_pol_list = p_policy_sub.add_parser("list", help="List policy rules")
+    p_pol_list.add_argument("--framework", default="")
+    p_pol_list.add_argument("--enabled-only", action="store_true")
+    p_pol_list.add_argument("--db", default="meshflow_policy.db")
+
+    p_pol_enable = p_policy_sub.add_parser("enable", help="Enable a rule by name")
+    p_pol_enable.add_argument("name", help="Rule name")
+    p_pol_enable.add_argument("--db", default="meshflow_policy.db")
+
+    p_pol_disable = p_policy_sub.add_parser("disable", help="Disable a rule by name")
+    p_pol_disable.add_argument("name", help="Rule name")
+    p_pol_disable.add_argument("--db", default="meshflow_policy.db")
+
+    p_pol_eval = p_policy_sub.add_parser("evaluate", help="Evaluate context against policy")
+    p_pol_eval.add_argument("--context", required=True, help="JSON context dict")
+    p_pol_eval.add_argument("--framework", default="")
+    p_pol_eval.add_argument("--db", default="meshflow_policy.db")
+
+    # ── sla ───────────────────────────────────────────────────────────────────
+    p_sla = sub.add_parser("sla", help="Agent SLA contracts and breach tracking")
+    p_sla_sub = p_sla.add_subparsers(dest="sla_cmd", required=True)
+
+    p_sla_define = p_sla_sub.add_parser("define", help="Define an SLA contract for an agent")
+    p_sla_define.add_argument("agent_name", help="Agent name")
+    p_sla_define.add_argument("--p50", type=float, required=True, metavar="MS")
+    p_sla_define.add_argument("--p95", type=float, required=True, metavar="MS")
+    p_sla_define.add_argument("--p99", type=float, required=True, metavar="MS")
+    p_sla_define.add_argument("--error-rate", type=float, default=0.05)
+    p_sla_define.add_argument("--window", type=float, default=3600.0, metavar="SECONDS")
+    p_sla_define.add_argument("--db", default="meshflow_sla.db")
+
+    p_sla_stats = p_sla_sub.add_parser("stats", help="Show latency stats for an agent")
+    p_sla_stats.add_argument("agent_name", help="Agent name")
+    p_sla_stats.add_argument("--window", type=float, default=3600.0, metavar="SECONDS")
+    p_sla_stats.add_argument("--db", default="meshflow_sla.db")
+
+    p_sla_breaches = p_sla_sub.add_parser("breaches", help="List recent SLA breaches")
+    p_sla_breaches.add_argument("--agent", default="", help="Filter by agent name")
+    p_sla_breaches.add_argument("--limit", type=int, default=20)
+    p_sla_breaches.add_argument("--db", default="meshflow_sla.db")
+
+    p_sla_list = p_sla_sub.add_parser("list", help="List all SLA contracts")
+    p_sla_list.add_argument("--db", default="meshflow_sla.db")
+
+    # ── snapshot ──────────────────────────────────────────────────────────────
+    p_snapshot = sub.add_parser("snapshot", help="Compliance snapshot — ZIP export of all audit evidence")
+    p_snapshot_sub = p_snapshot.add_subparsers(dest="snapshot_cmd", required=True)
+
+    p_snap_export = p_snapshot_sub.add_parser("export", help="Export compliance snapshot to a ZIP file")
+    p_snap_export.add_argument("--output", default="meshflow_snapshot.zip", metavar="FILE")
+    p_snap_export.add_argument("--description", default="")
+    p_snap_export.add_argument("--created-by", default="cli")
+    p_snap_export.add_argument("--flags-db", default="meshflow_flags.db")
+    p_snap_export.add_argument("--policy-db", default="meshflow_policy.db")
+    p_snap_export.add_argument("--sla-db", default="meshflow_sla.db")
+    p_snap_export.add_argument("--vault-db", default="meshflow_vault.db")
+    p_snap_export.add_argument("--vault-passphrase", default="meshflow-vault")
+    p_snap_export.add_argument("--tenant-db", default="meshflow_tenants.db")
+
+    # ── dasc ──────────────────────────────────────────────────────────────────
+    p_dasc = sub.add_parser("dasc", help="DASC-core risk governance — classify, ledger, taint")
+    p_dasc_sub = p_dasc.add_subparsers(dest="dasc_cmd", required=True)
+
+    p_dasc_classify = p_dasc_sub.add_parser("classify", help="Classify the risk tier of an intent")
+    p_dasc_classify.add_argument("intent", help="Intent action string to classify")
+    p_dasc_classify.add_argument("--db", default="meshflow_dasc.db")
+
+    p_dasc_ledger = p_dasc_sub.add_parser("ledger", help="Show recent audit ledger entries")
+    p_dasc_ledger.add_argument("--limit", type=int, default=20)
+    p_dasc_ledger.add_argument("--db", default="meshflow_dasc.db")
+
+    p_dasc_verify = p_dasc_sub.add_parser("verify", help="Verify integrity of the audit ledger hash chain")
+    p_dasc_verify.add_argument("--db", default="meshflow_dasc.db")
+
+    p_dasc_taint = p_dasc_sub.add_parser("taint", help="Mark an agent as tainted")
+    p_dasc_taint.add_argument("agent_id", help="Agent ID to taint")
+    p_dasc_taint.add_argument("--db", default="meshflow_dasc.db")
 
     args = parser.parse_args()
 
@@ -559,6 +1059,22 @@ def main() -> None:
         "registry":      _cmd_registry,
         "schedule":      _cmd_schedule,
         "ratelimit":     _cmd_ratelimit,
+        "security":      _cmd_security,
+        "circuit":       _cmd_circuit,
+        "memory":        _cmd_memory,
+        "alerts":        _cmd_alerts,
+        "locks":         _cmd_locks,
+        "lineage":       _cmd_lineage,
+        "identity":      _cmd_identity,
+        "canary":        _cmd_canary,
+        "flags":         _cmd_flags,
+        "vault":         _cmd_vault,
+        "tenant":        _cmd_tenant,
+        "tracing":       _cmd_tracing,
+        "policy":        _cmd_policy,
+        "sla":           _cmd_sla,
+        "snapshot":      _cmd_snapshot,
+        "dasc":          _cmd_dasc,
     }
     dispatch[args.cmd](args)
 
@@ -2124,6 +2640,55 @@ def _cmd_webhooks(args: argparse.Namespace) -> None:
             sys.exit(1)
         print(f"  Webhook {data.get('deleted', args.id)} removed.")
 
+    elif args.webhooks_cmd == "queue":
+        from meshflow.observability.webhook_queue import WebhookRetryQueue
+        q = WebhookRetryQueue(args.db)
+        deliveries = q.pending(limit=args.limit)
+        counts = q.counts()
+        if getattr(args, "json_output", False):
+            print(json.dumps({"counts": counts, "deliveries": [d.to_dict() for d in deliveries]}, indent=2))
+            return
+        print(f"\n  Webhook delivery queue  (pending: {counts.get('pending', 0)}, "
+              f"success: {counts.get('success', 0)}, dead: {counts.get('dead', 0)})\n")
+        if not deliveries:
+            print("  Queue is empty.")
+            return
+        print(f"  {'DELIVERY_ID':<36}  {'WEBHOOK_ID':<12}  {'ATTEMPT':<7}  {'NEXT_RETRY_AT':<20}  EVENT")
+        print("  " + "─" * 100)
+        for d in deliveries:
+            import datetime
+            ts = datetime.datetime.fromtimestamp(d.next_retry_at).strftime("%Y-%m-%d %H:%M:%S")
+            print(f"  {d.delivery_id:<36}  {d.webhook_id[:12]:<12}  {d.attempt:<7}  {ts:<20}  {d.event_type}")
+        print()
+
+    elif args.webhooks_cmd == "dead":
+        from meshflow.observability.webhook_queue import WebhookRetryQueue
+        q = WebhookRetryQueue(args.db)
+        deliveries = q.dead_letters(limit=args.limit)
+        if getattr(args, "json_output", False):
+            print(json.dumps([d.to_dict() for d in deliveries], indent=2))
+            return
+        if not deliveries:
+            print("  No dead-letter deliveries.")
+            return
+        print(f"\n  Dead-letter deliveries ({len(deliveries)}):\n")
+        print(f"  {'DELIVERY_ID':<36}  {'ATTEMPTS':<8}  {'LAST_ERROR'}")
+        print("  " + "─" * 90)
+        for d in deliveries:
+            err = (d.last_error or "")[:50]
+            print(f"  {d.delivery_id:<36}  {d.attempt:<8}  {err}")
+        print()
+
+    elif args.webhooks_cmd == "replay":
+        from meshflow.observability.webhook_queue import WebhookRetryQueue
+        q = WebhookRetryQueue(args.db)
+        ok = q.replay(args.delivery_id)
+        if ok:
+            print(f"  Delivery {args.delivery_id} re-queued for immediate retry.")
+        else:
+            print(f"  No delivery found with ID {args.delivery_id}.")
+            sys.exit(1)
+
 
 # ── keys ─────────────────────────────────────────────────────────────────────
 
@@ -2694,3 +3259,1219 @@ def _cmd_ratelimit(args: argparse.Namespace) -> None:
         print(f"    max requests : {req} / {policy.window_s}s")
         print(f"    max tokens   : {tok} / {policy.window_s}s")
         print(f"    warn at      : {int(policy.warn_at * 100)}%")
+
+
+# ── security ──────────────────────────────────────────────────────────────────
+
+def _cmd_security(args: argparse.Namespace) -> None:
+    from meshflow.security.injection import PromptInjectionDetector
+
+    if args.security_cmd == "scan":
+        import json as _json
+        import sys as _sys
+
+        if args.text is not None:
+            text = args.text
+        else:
+            text = _sys.stdin.read()
+
+        detector = PromptInjectionDetector(
+            threshold=args.threshold,
+            block_threshold=args.block_threshold,
+            enabled_categories=args.categories,
+        )
+        result = detector.scan(text)
+
+        if args.json_output:
+            print(_json.dumps({
+                "detected": result.detected,
+                "blocked": result.blocked,
+                "score": round(result.score, 4),
+                "categories": result.categories,
+                "matches": [
+                    {
+                        "category": m.category,
+                        "pattern": m.pattern_name,
+                        "text": m.matched_text,
+                        "position": m.position,
+                        "confidence": m.confidence,
+                    }
+                    for m in result.matches
+                ],
+            }, indent=2))
+        else:
+            status = "BLOCKED" if result.blocked else ("WARN" if result.detected else "CLEAN")
+            colour = {"BLOCKED": "\033[31m", "WARN": "\033[33m", "CLEAN": "\033[32m"}[status]
+            reset = "\033[0m"
+            print(f"\n  Result  : {colour}{status}{reset}")
+            print(f"  Score   : {result.score:.3f}  (threshold={args.threshold}, block={args.block_threshold})")
+            if result.categories:
+                print(f"  Categories: {', '.join(result.categories)}")
+            if result.matches:
+                print(f"\n  {'CATEGORY':<22} {'PATTERN':<28} {'CONF':>5}  MATCHED TEXT")
+                print("  " + "-" * 82)
+                for m in result.matches[:20]:
+                    snippet = m.matched_text[:40].replace("\n", "↵")
+                    print(f"  {m.category:<22} {m.pattern_name:<28} {m.confidence:>4.0%}  {snippet}")
+                if len(result.matches) > 20:
+                    print(f"  … and {len(result.matches) - 20} more matches")
+            print()
+            if result.blocked:
+                _sys.exit(2)  # exit 2 = blocked (scriptable)
+            elif result.detected:
+                _sys.exit(1)  # exit 1 = suspicious
+
+    elif args.security_cmd == "secrets":
+        import json as _json
+        import sys as _sys
+
+        if args.text is not None:
+            text = args.text
+        else:
+            text = _sys.stdin.read()
+
+        from meshflow.security.secrets import SecretScanner
+
+        scanner = SecretScanner(
+            enabled_categories=args.categories,
+            min_confidence=args.min_confidence,
+            redact=args.redact,
+        )
+        result = scanner.scan(text)
+
+        if args.json_output:
+            print(_json.dumps({
+                "found":      result.found,
+                "categories": result.categories,
+                "matches": [
+                    {
+                        "category":   m.category,
+                        "pattern":    m.pattern_name,
+                        "preview":    m.matched_text,
+                        "confidence": m.confidence,
+                        "position":   m.position,
+                    }
+                    for m in result.matches
+                ],
+                "redacted_text": result.redacted_text,
+            }, indent=2))
+        else:
+            status = "CLEAN" if not result.found else "SECRETS FOUND"
+            colour = "\033[32m" if not result.found else "\033[31m"
+            reset  = "\033[0m"
+            print(f"\n  Result  : {colour}{status}{reset}")
+            if result.categories:
+                print(f"  Categories: {', '.join(result.categories)}")
+            if result.matches:
+                print(f"\n  {'CATEGORY':<18} {'PATTERN':<28} {'CONF':>5}  PREVIEW")
+                print("  " + "-" * 72)
+                for m in result.matches[:20]:
+                    print(f"  {m.category:<18} {m.pattern_name:<28} {m.confidence:>4.0%}  {m.matched_text}")
+                if len(result.matches) > 20:
+                    print(f"  … and {len(result.matches) - 20} more matches")
+            if args.redact and result.redacted_text is not None:
+                print(f"\n  Redacted output:\n  {result.redacted_text[:500]}")
+            print()
+            if result.found and not args.redact:
+                _sys.exit(1)
+
+
+# ── circuit ───────────────────────────────────────────────────────────────────
+
+def _cmd_circuit(args: argparse.Namespace) -> None:
+    import time as _time
+    from meshflow.resilience.store import CircuitBreakerStore, CircuitBreakerRecord
+    from meshflow.resilience.breaker import CircuitBreakerState
+
+    store = CircuitBreakerStore(args.db)
+
+    _STATE_COLOUR = {
+        "closed":    "\033[32m",   # green
+        "open":      "\033[31m",   # red
+        "half_open": "\033[33m",   # yellow
+    }
+    _RESET = "\033[0m"
+
+    def _coloured_state(state: str) -> str:
+        return f"{_STATE_COLOUR.get(state, '')}{state.upper()}{_RESET}"
+
+    if args.circuit_cmd == "list":
+        records = store.list()
+        if not records:
+            print("  No circuit breakers recorded.")
+            return
+        print(f"\n  {'NAME':<28} {'STATE':<12} {'CALLS':>7} {'FAIL':>6} {'REJ':>6}")
+        print("  " + "-" * 64)
+        for r in records:
+            print(
+                f"  {r.name:<28} {_coloured_state(r.state.value):<12} "
+                f"{r.total_calls:>7} {r.total_failures:>6} {r.total_rejected:>6}"
+            )
+
+    elif args.circuit_cmd == "status":
+        r = store.load(args.name)
+        if r is None:
+            print(f"  No record for circuit '{args.name}'.")
+            return
+        print(f"\n  Circuit  : {r.name}")
+        print(f"  State    : {_coloured_state(r.state.value)}")
+        print(f"  Calls    : {r.total_calls}")
+        print(f"  Failures : {r.total_failures}")
+        print(f"  Successes: {r.total_successes}")
+        print(f"  Rejected : {r.total_rejected}")
+        if r.opened_at:
+            import datetime
+            opened = datetime.datetime.fromtimestamp(r.opened_at).isoformat()
+            print(f"  Opened   : {opened}")
+
+    elif args.circuit_cmd == "reset":
+        r = store.load(args.name)
+        if r is None:
+            print(f"  No record for circuit '{args.name}'.")
+            return
+        r.state      = CircuitBreakerState.CLOSED
+        r.opened_at  = None
+        r.updated_at = _time.time()
+        store.save(r)
+        print(f"  Circuit '{args.name}' forced to CLOSED.")
+
+    elif args.circuit_cmd == "trip":
+        r = store.load(args.name)
+        now = _time.time()
+        if r is None:
+            r = CircuitBreakerRecord(
+                name=args.name,
+                state=CircuitBreakerState.OPEN,
+                opened_at=now,
+                total_calls=0,
+                total_failures=0,
+                total_successes=0,
+                total_rejected=0,
+                updated_at=now,
+            )
+        else:
+            r.state      = CircuitBreakerState.OPEN
+            r.opened_at  = now
+            r.updated_at = now
+        store.save(r)
+        print(f"  Circuit '{args.name}' forced to OPEN.")
+
+    elif args.circuit_cmd == "remove":
+        if store.delete(args.name):
+            print(f"  Circuit '{args.name}' removed.")
+        else:
+            print(f"  No record for '{args.name}'.")
+            import sys as _sys
+            _sys.exit(1)
+
+
+# ── memory ────────────────────────────────────────────────────────────────────
+
+def _cmd_memory(args: argparse.Namespace) -> None:
+    import json as _json
+    import sys as _sys
+    from meshflow.intelligence.semantic_memory import SemanticMemoryStore
+    from meshflow.intelligence.embedding import HashEmbeddingProvider, get_embedding_provider
+
+    provider_arg = getattr(args, "provider", "auto")
+    provider = HashEmbeddingProvider() if provider_arg == "hash" else get_embedding_provider()
+    store = SemanticMemoryStore(db_path=args.db, provider=provider)
+
+    if args.memory_cmd == "search":
+        results = store.search(args.query, k=args.k, min_score=args.min_score)
+        if args.json_output:
+            print(_json.dumps([
+                {
+                    "key":      r.key,
+                    "text":     r.text,
+                    "score":    round(r.score, 4),
+                    "metadata": r.metadata,
+                }
+                for r in results
+            ], indent=2))
+        else:
+            if not results:
+                print("  No matching memories found.")
+                return
+            print(f"\n  {'SCORE':>6}  {'KEY':<28}  TEXT")
+            print("  " + "-" * 70)
+            for r in results:
+                snippet = r.text[:50].replace("\n", " ")
+                print(f"  {r.score:>6.3f}  {r.key:<28}  {snippet}")
+            print()
+
+    elif args.memory_cmd == "store":
+        try:
+            meta = _json.loads(args.meta)
+        except _json.JSONDecodeError:
+            print(f"  Error: --meta must be valid JSON. Got: {args.meta!r}")
+            _sys.exit(1)
+        entry = store.store(args.key, args.text, metadata=meta)
+        print(f"  Stored '{entry.key}' ({len(entry.embedding)}-dim vector)")
+
+    elif args.memory_cmd == "get":
+        entry = store.get(args.key)
+        if entry is None:
+            print(f"  No memory entry found for key '{args.key}'.")
+            _sys.exit(1)
+        print(f"\n  Key      : {entry.key}")
+        print(f"  Text     : {entry.text[:120]}")
+        if entry.metadata:
+            print(f"  Metadata : {_json.dumps(entry.metadata)}")
+        import datetime
+        print(f"  Stored   : {datetime.datetime.fromtimestamp(entry.stored_at).isoformat()}")
+
+    elif args.memory_cmd == "list":
+        entries = store.list(limit=args.limit, offset=args.offset)
+        total   = store.count()
+        if not entries:
+            print("  Memory store is empty.")
+            return
+        print(f"\n  {'KEY':<28}  TEXT  ({total} total)")
+        print("  " + "-" * 60)
+        for e in entries:
+            snippet = e.text[:40].replace("\n", " ")
+            print(f"  {e.key:<28}  {snippet}")
+        print()
+
+    elif args.memory_cmd == "delete":
+        if store.delete(args.key):
+            print(f"  Deleted memory entry '{args.key}'.")
+        else:
+            print(f"  No entry found for key '{args.key}'.")
+            _sys.exit(1)
+
+    elif args.memory_cmd == "clear":
+        if not args.yes:
+            answer = input("  Delete ALL memory entries? [y/N] ").strip().lower()
+            if answer not in ("y", "yes"):
+                print("  Aborted.")
+                return
+        count = store.clear()
+        print(f"  Cleared {count} memory entries.")
+
+
+# ── alerts ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_alerts(args: argparse.Namespace) -> None:
+    from meshflow.alerting.rules import AlertRuleStore, AlertStore
+
+    db = args.db
+
+    if args.alerts_cmd == "rules":
+        rule_store = AlertRuleStore(db)
+
+        if args.rules_cmd == "list":
+            rules = rule_store.list_rules(
+                agent_name=getattr(args, "agent_name", ""),
+                enabled_only=getattr(args, "enabled_only", False),
+            )
+            if getattr(args, "json_output", False):
+                print(json.dumps([r.to_dict() for r in rules], indent=2))
+                return
+            if not rules:
+                print("  No alert rules defined.")
+                return
+            print(f"\n  Alert rules ({len(rules)}):\n")
+            print(f"  {'RULE_ID':<36}  {'NAME':<20}  {'AGENT':<18}  {'METRIC':<16}  {'OP':<4}  {'THRESH':>8}  EN")
+            print("  " + "─" * 115)
+            for r in rules:
+                print(
+                    f"  {r.rule_id:<36}  {r.name:<20}  {r.agent_name:<18}  "
+                    f"{r.metric:<16}  {r.operator:<4}  {r.threshold:>8.3g}  {'✓' if r.enabled else '✗'}"
+                )
+            print()
+
+        elif args.rules_cmd == "add":
+            rule = rule_store.add(
+                name=args.name,
+                agent_name=args.agent_name,
+                metric=args.metric,
+                operator=args.operator,
+                threshold=args.threshold,
+                window_s=args.window_s,
+                agg_fn=args.agg_fn,
+                webhook_url=getattr(args, "webhook_url", ""),
+                webhook_secret=getattr(args, "webhook_secret", ""),
+            )
+            print(f"\n  Alert rule '{rule.name}' created.")
+            print(f"  ID:        {rule.rule_id}")
+            print(f"  Condition: {rule.agent_name}.{rule.metric} {rule.operator} {rule.threshold}")
+            print(f"  Window:    {rule.window_s}s  Agg: {rule.agg_fn}\n")
+
+        elif args.rules_cmd == "remove":
+            ok = rule_store.delete(args.rule_id)
+            if ok:
+                print(f"  Rule {args.rule_id} deleted.")
+            else:
+                print(f"  Rule {args.rule_id} not found.")
+                sys.exit(1)
+
+        elif args.rules_cmd == "enable":
+            ok = rule_store.enable(args.rule_id)
+            print(f"  Rule {args.rule_id} {'enabled' if ok else 'not found'}.")
+            if not ok:
+                sys.exit(1)
+
+        elif args.rules_cmd == "disable":
+            ok = rule_store.disable(args.rule_id)
+            print(f"  Rule {args.rule_id} {'disabled' if ok else 'not found'}.")
+            if not ok:
+                sys.exit(1)
+
+    elif args.alerts_cmd == "list":
+        alert_store = AlertStore(db)
+        alerts = alert_store.list_alerts(
+            status=getattr(args, "status", ""),
+            agent_name=getattr(args, "agent_name", ""),
+            limit=getattr(args, "limit", 20),
+        )
+        if getattr(args, "json_output", False):
+            print(json.dumps([a.to_dict() for a in alerts], indent=2))
+            return
+        if not alerts:
+            print("  No alerts.")
+            return
+        print(f"\n  Alerts ({len(alerts)}):\n")
+        print(f"  {'ALERT_ID':<36}  {'RULE':<20}  {'STATUS':<10}  {'VALUE':>8}  MESSAGE")
+        print("  " + "─" * 100)
+        for a in alerts:
+            print(
+                f"  {a.alert_id:<36}  {a.rule_name:<20}  {a.status:<10}  "
+                f"{a.value:>8.3g}  {a.message[:50]}"
+            )
+        print()
+
+    elif args.alerts_cmd == "ack":
+        alert_store = AlertStore(db)
+        ok = alert_store.ack(args.alert_id, acked_by=getattr(args, "acked_by", "cli"))
+        if ok:
+            print(f"  Alert {args.alert_id} acknowledged.")
+        else:
+            print(f"  Alert {args.alert_id} not found or already acked.")
+            sys.exit(1)
+
+    elif args.alerts_cmd == "status":
+        rule_store = AlertRuleStore(db)
+        alert_store = AlertStore(db)
+        rules_count = rule_store.count()
+        counts = alert_store.counts()
+        print(f"\n  Alert engine status")
+        print(f"  {'─' * 30}")
+        print(f"  Rules defined:  {rules_count}")
+        print(f"  Firing:         {counts.get('firing', 0)}")
+        print(f"  Resolved:       {counts.get('resolved', 0)}")
+        print(f"  Acknowledged:   {counts.get('acked', 0)}")
+        print()
+
+
+# ── locks ─────────────────────────────────────────────────────────────────────
+
+
+def _cmd_locks(args: argparse.Namespace) -> None:
+    from meshflow.locking.store import LockStore
+
+    store = LockStore(args.db)
+
+    if args.locks_cmd == "list":
+        locks = store.list_locks(active_only=not getattr(args, "show_all", False))
+        if getattr(args, "json_output", False):
+            print(json.dumps([lk.to_dict() for lk in locks], indent=2))
+            return
+        if not locks:
+            print("  No active locks.")
+            return
+        print(f"\n  Active locks ({len(locks)}):\n")
+        print(f"  {'RESOURCE_ID':<30}  {'OWNER':<20}  {'TTL_S':>6}  REMAINING")
+        print("  " + "─" * 75)
+        for lk in locks:
+            print(f"  {lk.resource_id:<30}  {lk.owner:<20}  {lk.ttl_s:>6.1f}  {lk.remaining_s:.1f}s")
+        print()
+
+    elif args.locks_cmd == "status":
+        lk = store.get(args.resource_id)
+        if lk is None:
+            print(f"  '{args.resource_id}' is not locked.")
+        else:
+            print(f"\n  Lock: {args.resource_id}")
+            print(f"  Owner:      {lk.owner}")
+            print(f"  Lock ID:    {lk.lock_id}")
+            print(f"  TTL:        {lk.ttl_s}s")
+            print(f"  Remaining:  {lk.remaining_s:.1f}s\n")
+
+    elif args.locks_cmd == "release":
+        ok = store.force_release(args.resource_id)
+        if ok:
+            print(f"  Lock on '{args.resource_id}' force-released.")
+        else:
+            print(f"  No lock found for '{args.resource_id}'.")
+            sys.exit(1)
+
+    elif args.locks_cmd == "purge":
+        n = store.purge_expired()
+        print(f"  Purged {n} expired lock(s).")
+
+
+# ── lineage ───────────────────────────────────────────────────────────────────
+
+
+def _cmd_lineage(args: argparse.Namespace) -> None:
+    from meshflow.lineage.graph import LineageGraph
+
+    g = LineageGraph(args.db)
+
+    if args.lineage_cmd == "show":
+        node = g.get_node(args.node_id)
+        if node is None:
+            print(f"  Node '{args.node_id}' not found.")
+            sys.exit(1)
+        if getattr(args, "json_output", False):
+            print(json.dumps(node.to_dict(), indent=2))
+            return
+        print(f"\n  Node: {node.node_id}")
+        print(f"  Kind:  {node.kind}  Name: {node.name}")
+        print(f"  Run:   {node.run_id}  Agent: {node.agent_name}\n")
+
+    elif args.lineage_cmd == "trace":
+        nodes = g.trace_upstream(args.node_id)
+        if getattr(args, "json_output", False):
+            print(json.dumps([n.to_dict() for n in nodes], indent=2))
+            return
+        if not nodes:
+            print(f"  No upstream nodes for '{args.node_id}'.")
+            return
+        print(f"\n  Upstream lineage ({len(nodes)} nodes):\n")
+        for n in nodes:
+            print(f"  [{n.kind}] {n.name}  ({n.node_id[:8]}…)  agent={n.agent_name}")
+        print()
+
+    elif args.lineage_cmd == "impact":
+        nodes = g.impact_analysis(args.node_id)
+        if getattr(args, "json_output", False):
+            print(json.dumps([n.to_dict() for n in nodes], indent=2))
+            return
+        if not nodes:
+            print(f"  No downstream nodes for '{args.node_id}'.")
+            return
+        print(f"\n  Impact analysis ({len(nodes)} nodes):\n")
+        for n in nodes:
+            print(f"  [{n.kind}] {n.name}  ({n.node_id[:8]}…)  agent={n.agent_name}")
+        print()
+
+    elif args.lineage_cmd == "run":
+        nodes = g.for_run(args.run_id)
+        if getattr(args, "json_output", False):
+            print(json.dumps([n.to_dict() for n in nodes], indent=2))
+            return
+        if not nodes:
+            print(f"  No lineage data for run '{args.run_id}'.")
+            return
+        print(f"\n  Lineage for run {args.run_id} ({len(nodes)} nodes):\n")
+        for n in nodes:
+            print(f"  [{n.kind}] {n.name}  agent={n.agent_name}")
+        print()
+
+    elif args.lineage_cmd == "delete":
+        if not getattr(args, "yes", False):
+            answer = input(f"  Delete ALL lineage nodes for subject '{args.name}'? [y/N] ").strip().lower()
+            if answer not in ("y", "yes"):
+                print("  Aborted.")
+                return
+        n = g.delete_subject(args.name)
+        print(f"  Deleted {n} lineage node(s) for '{args.name}'.")
+
+    elif args.lineage_cmd == "stats":
+        print(f"\n  Lineage graph statistics")
+        print(f"  {'─' * 30}")
+        print(f"  Nodes: {g.node_count()}")
+        print(f"  Edges: {g.edge_count()}")
+        print()
+
+
+# ── identity ──────────────────────────────────────────────────────────────────
+
+
+def _cmd_identity(args: argparse.Namespace) -> None:
+    from meshflow.identity.core import IdentityStore, sign_token, verify_token
+
+    if args.identity_cmd == "create":
+        store = IdentityStore(args.db)
+        identity = store.register(
+            name=args.name,
+            capabilities=getattr(args, "capabilities", []),
+            issuer=getattr(args, "issuer", "meshflow"),
+        )
+        print(f"\n  Agent identity registered.")
+        print(f"  ID:           {identity.agent_id}")
+        print(f"  Name:         {identity.name}")
+        print(f"  Capabilities: {', '.join(identity.capabilities) or '(none)'}\n")
+
+    elif args.identity_cmd == "list":
+        store = IdentityStore(args.db)
+        identities = store.list_identities(active_only=getattr(args, "active_only", False))
+        if getattr(args, "json_output", False):
+            print(json.dumps([i.to_dict() for i in identities], indent=2))
+            return
+        if not identities:
+            print("  No identities registered.")
+            return
+        print(f"\n  Agent identities ({len(identities)}):\n")
+        print(f"  {'AGENT_ID':<36}  {'NAME':<24}  {'REVOKED'}")
+        print("  " + "─" * 72)
+        for i in identities:
+            print(f"  {i.agent_id:<36}  {i.name:<24}  {'yes' if i.revoked else 'no'}")
+        print()
+
+    elif args.identity_cmd == "get":
+        store = IdentityStore(args.db)
+        identity = store.get_by_name(args.name)
+        if identity is None:
+            print(f"  Identity '{args.name}' not found.")
+            sys.exit(1)
+        print(json.dumps(identity.to_dict(), indent=2))
+
+    elif args.identity_cmd == "revoke":
+        store = IdentityStore(args.db)
+        ok = store.revoke(args.agent_id)
+        if ok:
+            print(f"  Identity {args.agent_id} revoked.")
+        else:
+            print(f"  Identity {args.agent_id} not found.")
+            sys.exit(1)
+
+    elif args.identity_cmd == "sign":
+        store = IdentityStore(args.db)
+        identity = store.get_by_name(args.name)
+        if identity is None:
+            print(f"  Identity '{args.name}' not found.")
+            sys.exit(1)
+        if identity.revoked:
+            print(f"  Identity '{args.name}' is revoked — cannot issue token.")
+            sys.exit(1)
+        token = sign_token(identity, secret=args.secret, ttl_s=getattr(args, "ttl_s", 3600.0))
+        print(token)
+
+    elif args.identity_cmd == "verify":
+        claims = verify_token(args.token, secret=args.secret)
+        if claims is None:
+            print("  Token is INVALID or EXPIRED.")
+            sys.exit(1)
+        print(f"\n  Token is VALID.")
+        print(f"  Agent:  {claims.agent_name} ({claims.agent_id})")
+        print(f"  Issuer: {claims.issuer}")
+        print(f"  Caps:   {', '.join(claims.capabilities) or '(none)'}\n")
+
+
+# ── canary ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_canary(args: argparse.Namespace) -> None:
+    from meshflow.canary.router import CanaryStore, CanaryRouter
+
+    db = getattr(args, "db", "meshflow_canary.db")
+
+    if args.canary_cmd == "create":
+        store = CanaryStore(db)
+        exp = store.create_experiment(
+            name=args.name,
+            stable_agent=args.stable_agent,
+            canary_agent=args.canary_agent,
+            split=args.split,
+            min_requests=args.min_requests,
+            promote_threshold=args.promote_threshold,
+            rollback_threshold=args.rollback_threshold,
+        )
+        print(f"\n  Canary experiment created.")
+        print(f"  ID:         {exp.experiment_id}")
+        print(f"  Name:       {exp.name}")
+        print(f"  Stable:     {exp.stable_agent}")
+        print(f"  Canary:     {exp.canary_agent}")
+        print(f"  Split:      {exp.split:.1%}")
+        print(f"  Promote @:  {exp.promote_threshold:.0%}  Rollback @: {exp.rollback_threshold:.0%}\n")
+
+    elif args.canary_cmd == "list":
+        store = CanaryStore(db)
+        exps = store.list_experiments(status=getattr(args, "status", ""))
+        if getattr(args, "json_output", False):
+            print(json.dumps([e.to_dict() for e in exps], indent=2))
+            return
+        if not exps:
+            print("  No canary experiments found.")
+            return
+        print(f"\n  Canary experiments ({len(exps)}):\n")
+        print(f"  {'NAME':<24}  {'STATUS':<12}  {'STABLE':<18}  {'CANARY':<18}  SPLIT")
+        print("  " + "─" * 85)
+        for e in exps:
+            print(
+                f"  {e.name:<24}  {e.status:<12}  {e.stable_agent:<18}  "
+                f"{e.canary_agent:<18}  {e.split:.0%}"
+            )
+        print()
+
+    elif args.canary_cmd == "status":
+        store = CanaryStore(db)
+        exp = store.get_by_name(args.name)
+        if exp is None:
+            print(f"  Experiment '{args.name}' not found.")
+            sys.exit(1)
+        router = CanaryRouter(store)
+        stats = router.stats(exp.experiment_id)
+        stable = stats["stable"]
+        canary = stats["canary"]
+        print(f"\n  Canary experiment: {exp.name}")
+        print(f"  Status:  {exp.status}  Split: {exp.split:.0%}")
+        print(f"\n  {'COHORT':<8}  {'TOTAL':>6}  {'SUCCESS':>8}  {'ERROR':>6}  {'RATE':>6}  AVG_MS")
+        print("  " + "─" * 52)
+        for s in (stable, canary):
+            rate = f"{s.success_rate:.1%}" if s.total else "—"
+            print(
+                f"  {s.cohort:<8}  {s.total:>6}  {s.successes:>8}  {s.errors:>6}  {rate:>6}  {s.avg_latency:.1f}"
+            )
+        promote_ready = router.should_promote(exp.experiment_id)
+        rollback_ready = router.should_rollback(exp.experiment_id)
+        print(f"\n  Promote ready: {'yes' if promote_ready else 'no'}")
+        print(f"  Rollback ready: {'yes' if rollback_ready else 'no'}\n")
+
+    elif args.canary_cmd == "promote":
+        store = CanaryStore(db)
+        exp = store.get_by_name(args.name)
+        if exp is None:
+            print(f"  Experiment '{args.name}' not found.")
+            sys.exit(1)
+        ok = CanaryRouter(store).promote(exp.experiment_id)
+        if ok:
+            print(f"  Experiment '{args.name}' promoted to stable.")
+        else:
+            print(f"  Could not promote '{args.name}'.")
+            sys.exit(1)
+
+    elif args.canary_cmd == "rollback":
+        store = CanaryStore(db)
+        exp = store.get_by_name(args.name)
+        if exp is None:
+            print(f"  Experiment '{args.name}' not found.")
+            sys.exit(1)
+        ok = CanaryRouter(store).rollback(exp.experiment_id)
+        if ok:
+            print(f"  Experiment '{args.name}' rolled back.")
+        else:
+            print(f"  Could not roll back '{args.name}'.")
+            sys.exit(1)
+
+    elif args.canary_cmd == "pause":
+        store = CanaryStore(db)
+        exp = store.get_by_name(args.name)
+        if exp is None:
+            print(f"  Experiment '{args.name}' not found.")
+            sys.exit(1)
+        ok = CanaryRouter(store).pause(exp.experiment_id)
+        if ok:
+            print(f"  Experiment '{args.name}' paused.")
+        else:
+            print(f"  Could not pause '{args.name}'.")
+            sys.exit(1)
+
+
+# ── flags ─────────────────────────────────────────────────────────────────────
+
+
+def _cmd_flags(args: argparse.Namespace) -> None:
+    import json as _json
+    from meshflow.flags.store import FlagStore, FlagEvaluator
+
+    db = getattr(args, "db", "meshflow_flags.db")
+
+    def _parse_default(raw: str, flag_type: str):
+        if flag_type == "bool":
+            return raw.lower() not in ("false", "0", "no", "off", "")
+        if flag_type == "number":
+            try:
+                return float(raw)
+            except ValueError:
+                return 0.0
+        return raw
+
+    if args.flags_cmd == "define":
+        store = FlagStore(db)
+        default = _parse_default(args.default_value, args.flag_type)
+        flag = store.define(
+            name=args.name,
+            flag_type=args.flag_type,
+            default_value=default,
+            description=getattr(args, "description", ""),
+            rollout_pct=getattr(args, "rollout_pct", 100.0),
+        )
+        print(f"\n  Feature flag defined.")
+        print(f"  ID:          {flag.flag_id}")
+        print(f"  Name:        {flag.name}")
+        print(f"  Type:        {flag.flag_type}")
+        print(f"  Default:     {flag.default_val}")
+        print(f"  Rollout:     {flag.rollout_pct:.0f}%\n")
+
+    elif args.flags_cmd == "list":
+        store = FlagStore(db)
+        flags = store.list_flags(enabled_only=getattr(args, "enabled_only", False))
+        if getattr(args, "json_output", False):
+            print(_json.dumps([f.to_dict() for f in flags], indent=2))
+            return
+        if not flags:
+            print("  No feature flags defined.")
+            return
+        print(f"\n  Feature flags ({len(flags)}):\n")
+        print(f"  {'NAME':<28}  {'TYPE':<8}  {'DEFAULT':<12}  {'ROLLOUT':>7}  EN  DESCRIPTION")
+        print("  " + "─" * 80)
+        for f in flags:
+            en = "✓" if f.enabled else "✗"
+            print(
+                f"  {f.name:<28}  {f.flag_type:<8}  {str(f.default_val):<12}  "
+                f"{f.rollout_pct:>6.0f}%  {en}   {f.description[:30]}"
+            )
+        print()
+
+    elif args.flags_cmd == "get":
+        store = FlagStore(db)
+        flag = store.get_by_name(args.name)
+        if flag is None:
+            print(f"  Flag '{args.name}' not found.")
+            sys.exit(1)
+        rules = store.list_rules(flag.flag_id)
+        print(_json.dumps({**flag.to_dict(), "rules": [r.to_dict() for r in rules]}, indent=2))
+
+    elif args.flags_cmd == "enable":
+        store = FlagStore(db)
+        flag = store.get_by_name(args.name)
+        if flag is None:
+            print(f"  Flag '{args.name}' not found.")
+            sys.exit(1)
+        store.enable(flag.flag_id)
+        print(f"  Flag '{args.name}' enabled.")
+
+    elif args.flags_cmd == "disable":
+        store = FlagStore(db)
+        flag = store.get_by_name(args.name)
+        if flag is None:
+            print(f"  Flag '{args.name}' not found.")
+            sys.exit(1)
+        store.disable(flag.flag_id)
+        print(f"  Flag '{args.name}' disabled.")
+
+    elif args.flags_cmd == "delete":
+        store = FlagStore(db)
+        flag = store.get_by_name(args.name)
+        if flag is None:
+            print(f"  Flag '{args.name}' not found.")
+            sys.exit(1)
+        store.delete(flag.flag_id)
+        print(f"  Flag '{args.name}' deleted.")
+
+    elif args.flags_cmd == "add-rule":
+        store = FlagStore(db)
+        flag = store.get_by_name(args.name)
+        if flag is None:
+            print(f"  Flag '{args.name}' not found.")
+            sys.exit(1)
+        rule = store.add_rule(
+            flag_id=flag.flag_id,
+            condition_key=args.condition_key,
+            condition_op=args.condition_op,
+            condition_value=args.condition_value,
+            return_value=args.return_value,
+            priority=getattr(args, "priority", 0),
+        )
+        print(f"\n  Rule added to flag '{args.name}'.")
+        print(f"  Rule ID:  {rule.rule_id}")
+        print(f"  When {rule.condition_key} {rule.condition_op} {rule.condition_value!r} → {rule.return_value!r}\n")
+
+    elif args.flags_cmd == "evaluate":
+        store = FlagStore(db)
+        try:
+            ctx = _json.loads(getattr(args, "context", "{}"))
+        except _json.JSONDecodeError:
+            print("  Error: --context must be valid JSON.")
+            sys.exit(1)
+        evaluator = FlagEvaluator(store)
+        try:
+            value = evaluator.evaluate(args.name, ctx)
+        except KeyError:
+            print(f"  Flag '{args.name}' not found.")
+            sys.exit(1)
+        print(f"  {args.name} = {value!r}")
+
+
+# ── _cmd_vault ────────────────────────────────────────────────────────────────
+
+def _cmd_vault(args: argparse.Namespace) -> None:
+    import json as _json
+    from meshflow.vault.store import VaultStore
+    db = getattr(args, "db", "meshflow_vault.db")
+    passphrase = getattr(args, "passphrase", "meshflow-vault")
+
+    if args.vault_cmd == "store":
+        store = VaultStore(db, passphrase=passphrase)
+        secret = store.store(
+            args.name, args.value,
+            category=getattr(args, "category", "generic"),
+            description=getattr(args, "description", ""),
+        )
+        print(f"\n  Secret stored.")
+        print(f"  Name:     {secret.name}")
+        print(f"  Category: {secret.category}")
+        print(f"  ID:       {secret.secret_id}\n")
+
+    elif args.vault_cmd == "retrieve":
+        store = VaultStore(db, passphrase=passphrase)
+        secret = store.retrieve(args.name)
+        if secret is None:
+            print(f"  Secret '{args.name}' not found.")
+            sys.exit(1)
+        print(f"\n  Name:  {secret.name}")
+        print(f"  Value: {secret.value}")
+        print(f"  Cat:   {secret.category}\n")
+
+    elif args.vault_cmd == "rotate":
+        store = VaultStore(db, passphrase=passphrase)
+        ok = store.rotate(args.name, args.new_value)
+        if ok:
+            print(f"  Secret '{args.name}' rotated successfully.")
+        else:
+            print(f"  Secret '{args.name}' not found.")
+            sys.exit(1)
+
+    elif args.vault_cmd == "delete":
+        store = VaultStore(db, passphrase=passphrase)
+        ok = store.delete(args.name)
+        if ok:
+            print(f"  Secret '{args.name}' deleted.")
+        else:
+            print(f"  Secret '{args.name}' not found.")
+            sys.exit(1)
+
+    elif args.vault_cmd == "list":
+        store = VaultStore(db, passphrase=passphrase)
+        secrets = store.list_secrets(category=getattr(args, "category", ""))
+        if not secrets:
+            print("  No secrets found.")
+            return
+        print(f"\n  {'NAME':<30} {'CATEGORY':<15} {'DESCRIPTION'}")
+        print(f"  {'-'*30} {'-'*15} {'-'*30}")
+        for s in secrets:
+            print(f"  {s['name']:<30} {s['category']:<15} {s.get('description','')}")
+        print()
+
+    elif args.vault_cmd == "audit":
+        store = VaultStore(db, passphrase=passphrase)
+        entries = store.audit_log(name=getattr(args, "name", ""), limit=args.limit)
+        if not entries:
+            print("  No audit entries found.")
+            return
+        print(f"\n  {'OP':<12} {'SECRET':<25} {'BY':<15} {'TS'}")
+        print(f"  {'-'*12} {'-'*25} {'-'*15} {'-'*20}")
+        import datetime
+        for e in entries:
+            ts = datetime.datetime.fromtimestamp(e.ts).strftime("%Y-%m-%d %H:%M:%S")
+            print(f"  {e.operation:<12} {e.secret_name:<25} {e.accessed_by:<15} {ts}")
+        print()
+
+
+# ── _cmd_tenant ───────────────────────────────────────────────────────────────
+
+def _cmd_tenant(args: argparse.Namespace) -> None:
+    import json as _json
+    from meshflow.tenant.store import TenantStore
+    db = getattr(args, "db", "meshflow_tenants.db")
+
+    if args.tenant_cmd == "create":
+        store = TenantStore(db)
+        tenant = store.create(args.name, args.slug, plan=getattr(args, "plan", "free"))
+        print(f"\n  Tenant created.")
+        print(f"  Name: {tenant.name}  Slug: {tenant.slug}")
+        print(f"  Plan: {tenant.plan}  ID: {tenant.tenant_id}\n")
+
+    elif args.tenant_cmd == "list":
+        store = TenantStore(db)
+        tenants = store.list_tenants(status=getattr(args, "status", ""))
+        if not tenants:
+            print("  No tenants found.")
+            return
+        print(f"\n  {'NAME':<25} {'SLUG':<20} {'PLAN':<12} {'STATUS'}")
+        print(f"  {'-'*25} {'-'*20} {'-'*12} {'-'*10}")
+        for t in tenants:
+            print(f"  {t.name:<25} {t.slug:<20} {t.plan:<12} {t.status}")
+        print()
+
+    elif args.tenant_cmd == "get":
+        store = TenantStore(db)
+        tenant = store.get_by_slug(args.slug)
+        if tenant is None:
+            print(f"  Tenant '{args.slug}' not found.")
+            sys.exit(1)
+        import json
+        print(f"\n{json.dumps(tenant.to_dict(), indent=2)}\n")
+
+    elif args.tenant_cmd == "suspend":
+        store = TenantStore(db)
+        tenant = store.get_by_slug(args.slug)
+        if tenant is None:
+            print(f"  Tenant '{args.slug}' not found.")
+            sys.exit(1)
+        store.update_status(tenant.tenant_id, "suspended")
+        print(f"  Tenant '{args.slug}' suspended.")
+
+    elif args.tenant_cmd == "plan":
+        store = TenantStore(db)
+        tenant = store.get_by_slug(args.slug)
+        if tenant is None:
+            print(f"  Tenant '{args.slug}' not found.")
+            sys.exit(1)
+        store.update_plan(tenant.tenant_id, args.plan)
+        print(f"  Tenant '{args.slug}' plan updated to '{args.plan}'.")
+
+
+# ── _cmd_tracing ──────────────────────────────────────────────────────────────
+
+def _cmd_tracing(args: argparse.Namespace) -> None:
+    from meshflow.tracing.context import TraceStore
+    db = getattr(args, "db", "meshflow_traces.db")
+    store = TraceStore(db)
+
+    if args.tracing_cmd == "show":
+        spans = store.get_trace(args.trace_id)
+        if not spans:
+            print(f"  No spans for trace '{args.trace_id}'.")
+            return
+        print(f"\n  Trace: {args.trace_id}  ({len(spans)} spans)")
+        print(f"  {'SPAN':<18} {'PARENT':<18} {'NAME':<30} {'KIND':<10} {'STATUS':<8} {'MS'}")
+        print(f"  {'-'*18} {'-'*18} {'-'*30} {'-'*10} {'-'*8} {'-'*8}")
+        for s in spans:
+            ms = f"{s.duration_ms:.1f}" if s.duration_ms is not None else "—"
+            parent = (s.parent_id or "")[:16]
+            print(f"  {s.span_id[:16]:<18} {parent:<18} {s.name[:28]:<30} {s.kind.value:<10} {s.status.value:<8} {ms}")
+        print()
+
+    elif args.tracing_cmd == "run":
+        spans = store.get_for_run(args.run_id)
+        if not spans:
+            print(f"  No spans for run '{args.run_id}'.")
+            return
+        print(f"\n  Run: {args.run_id}  ({len(spans)} spans)")
+        for s in spans:
+            ms = f"{s.duration_ms:.1f}" if s.duration_ms is not None else "—"
+            print(f"  {s.span_id[:12]}  {s.name:<35} {s.kind.value:<10} {ms}ms")
+        print()
+
+    elif args.tracing_cmd == "count":
+        n = store.count()
+        print(f"  Total spans: {n}")
+
+
+# ── _cmd_policy ───────────────────────────────────────────────────────────────
+
+def _cmd_policy(args: argparse.Namespace) -> None:
+    import json as _json
+    from meshflow.policy.engine import PolicyStore, PolicyEngine, PolicyAction
+    db = getattr(args, "db", "meshflow_policy.db")
+
+    if args.policy_cmd == "add":
+        store = PolicyStore(db)
+        engine = PolicyEngine(store, audit=False)
+        raw_conditions = []
+        for cond_str in (getattr(args, "conditions", None) or []):
+            parts = cond_str.split(":", 2)
+            if len(parts) != 3:
+                print(f"  Error: condition must be FIELD:OP:VALUE — got '{cond_str}'")
+                sys.exit(1)
+            raw_conditions.append((parts[0], parts[1], parts[2]))
+        rule = engine.add_rule(
+            name=args.name,
+            action=PolicyAction(args.action),
+            conditions=raw_conditions,
+            framework=getattr(args, "framework", "custom"),
+            priority=getattr(args, "priority", 0),
+            description=getattr(args, "description", ""),
+        )
+        print(f"\n  Policy rule '{rule.name}' added.")
+        print(f"  Action:    {rule.action.value}")
+        print(f"  Framework: {rule.framework}  Priority: {rule.priority}")
+        print(f"  Conditions: {len(rule.conditions)}\n")
+
+    elif args.policy_cmd == "list":
+        store = PolicyStore(db)
+        rules = store.list_rules(
+            framework=getattr(args, "framework", ""),
+            enabled_only=getattr(args, "enabled_only", False),
+        )
+        if not rules:
+            print("  No policy rules found.")
+            return
+        print(f"\n  {'NAME':<30} {'ACTION':<8} {'FRAMEWORK':<12} {'PRI':>4} {'EN'}")
+        print(f"  {'-'*30} {'-'*8} {'-'*12} {'-'*4} {'-'*3}")
+        for r in rules:
+            en = "Y" if r.enabled else "N"
+            print(f"  {r.name:<30} {r.action.value:<8} {r.framework:<12} {r.priority:>4} {en}")
+        print()
+
+    elif args.policy_cmd in ("enable", "disable"):
+        store = PolicyStore(db)
+        rule = store.get_by_name(args.name)
+        if rule is None:
+            print(f"  Rule '{args.name}' not found.")
+            sys.exit(1)
+        if args.policy_cmd == "enable":
+            store.enable_rule(rule.rule_id)
+            print(f"  Rule '{args.name}' enabled.")
+        else:
+            store.disable_rule(rule.rule_id)
+            print(f"  Rule '{args.name}' disabled.")
+
+    elif args.policy_cmd == "evaluate":
+        store = PolicyStore(db)
+        engine = PolicyEngine(store)
+        try:
+            ctx = _json.loads(args.context)
+        except _json.JSONDecodeError:
+            print("  Error: --context must be valid JSON.")
+            sys.exit(1)
+        decision = engine.evaluate(ctx, framework=getattr(args, "framework", ""))
+        print(f"\n  Action:    {decision.action.value}")
+        print(f"  Rule:      {decision.rule_name or '(none)'}")
+        print(f"  Reason:    {decision.reason}")
+        print(f"  Allowed:   {decision.is_allowed}\n")
+
+
+# ── _cmd_sla ──────────────────────────────────────────────────────────────────
+
+def _cmd_sla(args: argparse.Namespace) -> None:
+    from meshflow.sla.tracker import SLAStore, SLATracker
+    db = getattr(args, "db", "meshflow_sla.db")
+
+    if args.sla_cmd == "define":
+        store = SLAStore(db)
+        contract = store.define_contract(
+            agent_name=args.agent_name,
+            p50_ms=args.p50,
+            p95_ms=args.p95,
+            p99_ms=args.p99,
+            error_rate=getattr(args, "error_rate", 0.05),
+            window_s=getattr(args, "window", 3600.0),
+        )
+        print(f"\n  SLA contract defined for '{contract.agent_name}'.")
+        print(f"  p50={contract.p50_ms}ms  p95={contract.p95_ms}ms  p99={contract.p99_ms}ms")
+        print(f"  Error rate: {contract.error_rate*100:.1f}%  Window: {contract.window_s}s\n")
+
+    elif args.sla_cmd == "stats":
+        store = SLAStore(db)
+        tracker = SLATracker(store)
+        stats = tracker.stats(args.agent_name, window_s=getattr(args, "window", 3600.0))
+        if stats.total == 0:
+            print(f"  No observations for '{args.agent_name}'.")
+            return
+        print(f"\n  Agent: {stats.agent_name}  ({stats.total} observations)")
+        print(f"  p50={stats.p50_ms:.1f}ms  p95={stats.p95_ms:.1f}ms  p99={stats.p99_ms:.1f}ms")
+        print(f"  avg={stats.avg_ms:.1f}ms  error_rate={stats.error_rate*100:.2f}%\n")
+
+    elif args.sla_cmd == "breaches":
+        store = SLAStore(db)
+        breaches = store.list_breaches(agent_name=getattr(args, "agent", ""), limit=args.limit)
+        if not breaches:
+            print("  No SLA breaches recorded.")
+            return
+        print(f"\n  {'AGENT':<25} {'TYPE':<12} {'OBSERVED':>10} {'THRESHOLD':>10}")
+        print(f"  {'-'*25} {'-'*12} {'-'*10} {'-'*10}")
+        for b in breaches:
+            print(f"  {b.agent_name:<25} {b.breach_type:<12} {b.observed:>10.2f} {b.threshold:>10.2f}")
+        print()
+
+    elif args.sla_cmd == "list":
+        store = SLAStore(db)
+        contracts = store.list_contracts()
+        if not contracts:
+            print("  No SLA contracts defined.")
+            return
+        print(f"\n  {'AGENT':<25} {'P50':>8} {'P95':>8} {'P99':>8} {'ERR%':>6} {'EN'}")
+        print(f"  {'-'*25} {'-'*8} {'-'*8} {'-'*8} {'-'*6} {'-'*3}")
+        for c in contracts:
+            en = "Y" if c.enabled else "N"
+            print(f"  {c.agent_name:<25} {c.p50_ms:>8.1f} {c.p95_ms:>8.1f} {c.p99_ms:>8.1f} {c.error_rate*100:>5.1f}% {en}")
+        print()
+
+
+# ── _cmd_snapshot ─────────────────────────────────────────────────────────────
+
+def _cmd_snapshot(args: argparse.Namespace) -> None:
+    if args.snapshot_cmd == "export":
+        from meshflow.snapshot.bundle import SnapshotExporter
+        from meshflow.flags.store import FlagStore
+        from meshflow.policy.engine import PolicyStore
+        from meshflow.sla.tracker import SLAStore
+        from meshflow.vault.store import VaultStore
+        from meshflow.tenant.store import TenantStore
+
+        exporter = SnapshotExporter(
+            flag_store=FlagStore(getattr(args, "flags_db", "meshflow_flags.db")),
+            policy_store=PolicyStore(getattr(args, "policy_db", "meshflow_policy.db")),
+            sla_store=SLAStore(getattr(args, "sla_db", "meshflow_sla.db")),
+            vault_store=VaultStore(
+                getattr(args, "vault_db", "meshflow_vault.db"),
+                passphrase=getattr(args, "vault_passphrase", "meshflow-vault"),
+            ),
+            tenant_store=TenantStore(getattr(args, "tenant_db", "meshflow_tenants.db")),
+        )
+        output = getattr(args, "output", "meshflow_snapshot.zip")
+        bundle = exporter.export_to_file(
+            output,
+            created_by=getattr(args, "created_by", "cli"),
+            description=getattr(args, "description", ""),
+        )
+        print(f"\n  Compliance snapshot exported.")
+        print(f"  File:     {output}")
+        print(f"  ID:       {bundle.manifest.snapshot_id}")
+        print(f"  Sections: {len(bundle.sections)}")
+        print(f"  Records:  {bundle.total_records()}\n")
+
+
+# ── _cmd_dasc ─────────────────────────────────────────────────────────────────
+
+def _cmd_dasc(args: argparse.Namespace) -> None:
+    from meshflow.security.dasc_gate import AutoRiskClassifier, AuditLedger, TaintGraph
+    from meshflow.core.schemas import RiskTier
+    db = getattr(args, "db", "meshflow_dasc.db")
+
+    if args.dasc_cmd == "classify":
+        from meshflow.core.schemas import Intent, RiskTier
+        classifier = AutoRiskClassifier()
+        intent_obj = Intent(action=args.intent, payload={}, evidence=[], agent_id="cli", risk_tier=RiskTier.READ_ONLY)
+        tier = classifier.classify(intent_obj)
+        names = {1: "READ_ONLY", 2: "INTERNAL", 3: "EXTERNAL_IO", 4: "IRREVERSIBLE"}
+        print(f"\n  Intent:    {args.intent}")
+        print(f"  Risk tier: {int(tier)}  ({names.get(int(tier), '?')})\n")
+
+    elif args.dasc_cmd == "ledger":
+        ledger = AuditLedger(db)
+        total = ledger.count()
+        if total == 0:
+            print("  Audit ledger is empty.")
+            return
+        rows = ledger._conn.execute(
+            "SELECT agent_id, action, verdict, effective_tier FROM ledger ORDER BY rowid DESC LIMIT ?",
+            (args.limit,),
+        ).fetchall()
+        print(f"\n  {'AGENT':<20} {'ACTION':<30} {'VERDICT':<10} {'TIER'}")
+        print(f"  {'-'*20} {'-'*30} {'-'*10} {'-'*5}")
+        for row in rows:
+            print(f"  {row[0][:18]:<20} {row[1][:28]:<30} {row[2]:<10} {row[3]}")
+        print()
+
+    elif args.dasc_cmd == "verify":
+        ledger = AuditLedger(db)
+        ok = ledger.verify_chain()
+        if ok:
+            print(f"  Audit ledger chain is VALID ({ledger.count()} entries).")
+        else:
+            print("  INTEGRITY FAILURE: audit ledger chain is broken!")
+            sys.exit(1)
+
+    elif args.dasc_cmd == "taint":
+        taint_graph = TaintGraph()
+        taint_graph.mark_tainted(args.agent_id)
+        print(f"  Agent '{args.agent_id}' marked as tainted.")
