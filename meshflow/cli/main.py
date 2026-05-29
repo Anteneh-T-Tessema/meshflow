@@ -189,6 +189,7 @@ def main() -> None:
     p_eval.add_argument("--fail-on-regression", action="store_true", help="Exit 1 if regressions found vs baseline")
     p_eval.add_argument("--db", default="meshflow_runs.db", help="Ledger path (for eval result storage)")
     p_eval.add_argument("--save-to-ledger", action="store_true", help="Persist eval result in the ledger")
+    p_eval.add_argument("--max-cost-delta", type=float, default=-1.0, help="Exit 1 if cost change vs baseline exceeds threshold")
 
     # eval history
     p_eval_history = sub.add_parser("eval-history", help="List stored eval results from the ledger")
@@ -2207,6 +2208,16 @@ async def _async_eval(args: argparse.Namespace) -> None:
         new = EvalBaseline.from_result(result)
         diff = old.diff(new)
         print(diff.report())
+
+        # Check cost/token regression delta
+        max_cost_delta = getattr(args, "max_cost_delta", -1.0)
+        if max_cost_delta > 0.0 and old.total_tokens > 0:
+            token_change = (new.total_tokens - old.total_tokens) / old.total_tokens
+            print(f"  [eval] Token budget change: {token_change:+.1%} (threshold: {max_cost_delta:+.1%})")
+            if token_change > max_cost_delta:
+                print(f"  [eval] FAILED: Token increase {token_change:+.1%} exceeds maximum permitted threshold {max_cost_delta:+.1%}")
+                sys.exit(1)
+
         if getattr(args, "fail_on_regression", False) and diff.has_regressions:
             print(f"  [eval] FAILED: {len(diff.regressions)} regression(s) detected")
             sys.exit(1)

@@ -333,6 +333,14 @@ class AgentKnowledge:
                 if chunk not in seen:
                     seen.add(chunk)
                     results.append(chunk)
+
+        # Dynamic context trimming based on active_tracker limits
+        from meshflow.optimization.tracker import active_tracker
+        tracker = active_tracker.get()
+        if tracker is not None and tracker.max_tokens > 0:
+            limit = int(tracker.max_tokens * 0.15)
+            results = tracker.trim_rag_context(results, limit)
+
         return results[:self._top_k]
 
     def context_string(self, query: str, max_chars: int = 2000) -> str:

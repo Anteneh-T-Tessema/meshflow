@@ -17,6 +17,7 @@ Eval agents:        run_eval(agent, "evals.yaml")
 from meshflow.client import MeshFlowClient, PolicyConfig as ClientPolicyConfig
 from meshflow.core.mesh import Mesh, MeshEvent
 from meshflow.core.govern import GovernedApp, govern
+from meshflow.optimization import token_budget
 from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
 from meshflow.core.contracts import core_contract_schemas
 from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult
@@ -321,6 +322,7 @@ __version__ = "0.65.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
+    "token_budget",
     "Team",
     "MessageBus",
     "agents",

@@ -664,42 +664,54 @@ class Agent:
         If the agent was imported from an external framework (LangGraph, IBM,
         OpenAI, A2A, etc.) the prebuilt node runs instead of a new Claude call.
         """
-        if self._prebuilt_node is not None:
-            from meshflow.core.node import NodeInput, NodeOutput
+        if context is None:
+            context = {}
+        from meshflow.optimization.tracker import active_tracker
+        tracker = context.get("_optimization_tracker")
+        token_cvar = None
+        if tracker is not None:
+            token_cvar = active_tracker.set(tracker)
 
-            node_in = NodeInput(task=task, context=context or {})
-            out: NodeOutput = await self._prebuilt_node.run(node_in)
-            return {
-                "result": out.content,
-                "agent_name": self.name,
-                "role": str(self.role.value if isinstance(self.role, AgentRole) else self.role),
-                "tokens": out.tokens_used,
-                "cost_usd": 0.0,
-                "stated_confidence": out.confidence,
-                "structured": out.structured,
-            }
-        import time as _time
-        _t0 = _time.monotonic()
-        agent = self._build()
-        result = await agent.step(task, context or {})
-        _dur_ms = (_time.monotonic() - _t0) * 1000
         try:
-            from meshflow.observability.genai import record_agent_step, is_enabled
-            if is_enabled():
-                record_agent_step(
-                    agent_name=self.name,
-                    role=str(self.role.value if isinstance(self.role, AgentRole) else self.role),
-                    model=self._resolve_model(),
-                    tokens_in=result.get("tokens", 0) // 2,
-                    tokens_out=result.get("tokens", 0) - result.get("tokens", 0) // 2,
-                    cost_usd=result.get("cost_usd", 0.0),
-                    confidence=result.get("stated_confidence", 1.0),
-                    blocked=result.get("blocked", False),
-                    run_id=str(context.get("run_id", "") if context else ""),
-                )
-        except Exception:
-            pass
-        return result
+            if self._prebuilt_node is not None:
+                from meshflow.core.node import NodeInput, NodeOutput
+
+                node_in = NodeInput(task=task, context=context)
+                out: NodeOutput = await self._prebuilt_node.run(node_in)
+                return {
+                    "result": out.content,
+                    "agent_name": self.name,
+                    "role": str(self.role.value if isinstance(self.role, AgentRole) else self.role),
+                    "tokens": out.tokens_used,
+                    "cost_usd": 0.0,
+                    "stated_confidence": out.confidence,
+                    "structured": out.structured,
+                }
+            import time as _time
+            _t0 = _time.monotonic()
+            agent = self._build()
+            result = await agent.step(task, context)
+            _dur_ms = (_time.monotonic() - _t0) * 1000
+            try:
+                from meshflow.observability.genai import record_agent_step, is_enabled
+                if is_enabled():
+                    record_agent_step(
+                        agent_name=self.name,
+                        role=str(self.role.value if isinstance(self.role, AgentRole) else self.role),
+                        model=self._resolve_model(),
+                        tokens_in=result.get("tokens", 0) // 2,
+                        tokens_out=result.get("tokens", 0) - result.get("tokens", 0) // 2,
+                        cost_usd=result.get("cost_usd", 0.0),
+                        confidence=result.get("stated_confidence", 1.0),
+                        blocked=result.get("blocked", False),
+                        run_id=str(context.get("run_id", "") if context else ""),
+                    )
+            except Exception:
+                pass
+            return result
+        finally:
+            if token_cvar is not None:
+                active_tracker.reset(token_cvar)
 
     async def run_multimodal(
         self,

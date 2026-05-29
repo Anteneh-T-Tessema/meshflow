@@ -691,10 +691,21 @@ class BaseAgent:
         system: str | None = None,
     ) -> tuple[str, int, float]:
         """Single LLM call — returns (content, tokens, cost_usd)."""
+        from meshflow.optimization.tracker import active_tracker
+        tracker = active_tracker.get()
+
+        model = self.config.model
+        if tracker is not None and tracker.should_degrade():
+            model = tracker.fallback_model
+
         sys = system or self.config.system_prompt
+        msgs = messages
+        if tracker is not None:
+            sys, msgs = tracker.compress_prompt(sys, msgs)
+
         content, tokens, cost = await self._provider.complete(
-            model=self.config.model,
-            messages=cast(Any, messages),
+            model=model,
+            messages=cast(Any, msgs),
             system=sys,
             max_tokens=self.config.max_tokens,
         )
@@ -703,6 +714,10 @@ class BaseAgent:
         self._total_cost += cost
         self._state.token_count += tokens
         self._state.cost_usd += cost
+
+        if tracker is not None:
+            tracker.add_usage(tokens, cost)
+
         return content, tokens, cost
 
     async def think_with_tools(
@@ -713,10 +728,21 @@ class BaseAgent:
         system: str | None = None,
     ) -> tuple[str, int, float]:
         """LLM call with real tool dispatch loop — returns (content, tokens, cost_usd)."""
+        from meshflow.optimization.tracker import active_tracker
+        tracker = active_tracker.get()
+
+        model = self.config.model
+        if tracker is not None and tracker.should_degrade():
+            model = tracker.fallback_model
+
         sys = system or self.config.system_prompt
+        msgs = messages
+        if tracker is not None:
+            sys, msgs = tracker.compress_prompt(sys, msgs)
+
         content, tokens, cost = await self._provider.complete_with_tools(
-            model=self.config.model,
-            messages=cast(Any, messages),
+            model=model,
+            messages=cast(Any, msgs),
             system=sys,
             max_tokens=self.config.max_tokens,
             tool_schemas=tool_schemas,
@@ -727,6 +753,10 @@ class BaseAgent:
         self._total_cost += cost
         self._state.token_count += tokens
         self._state.cost_usd += cost
+
+        if tracker is not None:
+            tracker.add_usage(tokens, cost)
+
         return content, tokens, cost
 
     # ── Protocol helpers ──────────────────────────────────────────────────────
