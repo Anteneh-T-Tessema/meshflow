@@ -219,3 +219,52 @@ def test_cli_cost_regression_gate_breached():
                     import asyncio
                     asyncio.run(_async_eval(args))
                     mock_exit.assert_called_with(1)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_prompt_caching_integration():
+    from meshflow.agents.base import AnthropicProvider
+    from meshflow.optimization.tracker import active_tracker
+    
+    with patch("meshflow.agents.base._require_anthropic") as mock_require:
+        mock_client = MagicMock()
+        mock_messages = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="Mock response", type="text")]
+        mock_response.usage = MagicMock(input_tokens=10, output_tokens=5)
+        
+        mock_messages.create = AsyncMock(return_value=mock_response)
+        mock_client.messages = mock_messages
+        mock_require.return_value.AsyncAnthropic.return_value = mock_client
+        
+        provider = AnthropicProvider()
+        
+        # Scenario A: No active tracker
+        await provider.complete(
+            model="claude-3-5-sonnet",
+            messages=[{"role": "user", "content": "Hi"}],
+            system="system prompt",
+            max_tokens=100
+        )
+        kwargs = mock_messages.create.call_args[1]
+        assert kwargs["system"] == "system prompt"
+        assert kwargs.get("extra_headers") is None
+        
+        # Scenario B: With active tracker
+        tracker = OptimizationTracker(max_tokens=1000)
+        token_cvar = active_tracker.set(tracker)
+        try:
+            await provider.complete(
+                model="claude-3-5-sonnet",
+                messages=[{"role": "user", "content": "Hi"}],
+                system="system prompt",
+                max_tokens=100
+            )
+            kwargs = mock_messages.create.call_args[1]
+            assert isinstance(kwargs["system"], list)
+            assert kwargs["system"][0]["text"] == "system prompt"
+            assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
+            assert kwargs["extra_headers"] == {"anthropic-beta": "prompt-caching-2024-07-31"}
+        finally:
+            active_tracker.reset(token_cvar)
+

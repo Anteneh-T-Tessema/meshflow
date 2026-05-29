@@ -126,11 +126,27 @@ class AnthropicProvider(LLMProvider):
         system: str,
         max_tokens: int,
     ) -> tuple[str, int, float]:
+        system_param: Any = system
+        extra_headers = None
+
+        from meshflow.optimization.tracker import active_tracker
+        tracker = active_tracker.get()
+        if tracker is not None and system:
+            system_param = [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ]
+            extra_headers = {"anthropic-beta": "prompt-caching-2024-07-31"}
+
         response = await self._client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            system=system,
+            system=system_param,
             messages=cast(Any, messages),
+            extra_headers=extra_headers,
         )
         first = cast(Any, response.content[0]) if response.content else None
         content = str(getattr(first, "text", "")) if first else ""
@@ -151,13 +167,34 @@ class AnthropicProvider(LLMProvider):
         total_in = total_out = 0
         max_rounds = 10
 
+        system_param: Any = system
+        extra_headers = None
+        current_tool_schemas = tool_schemas
+
+        from meshflow.optimization.tracker import active_tracker
+        tracker = active_tracker.get()
+        if tracker is not None:
+            extra_headers = {"anthropic-beta": "prompt-caching-2024-07-31"}
+            if system:
+                system_param = [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]
+            if tool_schemas:
+                current_tool_schemas = [dict(t) for t in tool_schemas]
+                current_tool_schemas[-1]["cache_control"] = {"type": "ephemeral"}
+
         for _ in range(max_rounds):
             response = await self._client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                system=system,
+                system=system_param,
                 messages=cast(Any, msgs),
-                tools=cast(Any, tool_schemas),
+                tools=cast(Any, current_tool_schemas),
+                extra_headers=extra_headers,
             )
             total_in += response.usage.input_tokens
             total_out += response.usage.output_tokens
