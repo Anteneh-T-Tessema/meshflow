@@ -113,8 +113,8 @@ async def run_docker_sandbox_demo():
     # If docker executable is found, it executes inside the container; otherwise runs locally
     python_code = "import sys; print(f'Running Python version {sys.version_info.major}.{sys.version_info.minor} inside container')"
     print(f"Executing Python script via Docker-sandboxed interpreter...")
-    result = interpreter._run(python_code)
-    print(f"Code execution result:\n{result.strip()}")
+    result = interpreter.run(python_code)
+    print(f"Code execution result:\n{str(result).strip()}")
 
 
 async def main():
