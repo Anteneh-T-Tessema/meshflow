@@ -57,5 +57,16 @@ edges:
         assert 'edges.add(new TransitionEdge("researcher", "checker"));' in java_code
         assert 'edges.add(new TransitionEdge("checker", "webhook"));' in java_code
 
+        # Test Go
+        go_code = gen.generate_go()
+        assert "package sdk" in go_code
+        assert "type DemoCodegenFlowWorkflow struct {" in go_code
+        assert "Name  string" in go_code
+        assert 'Name: "demo-codegen-flow",' in go_code
+        assert '{Id: "researcher", Kind: NodeKindNative, Role: "researcher", Model: "claude-sonnet-4-6"}' in go_code
+        assert '{Id: "webhook", Kind: NodeKindHttp, Url: "https://api.example.com/webhook"}' in go_code
+        assert '{From: "researcher", To: "checker"}' in go_code
+        assert '{From: "checker", To: "webhook"}' in go_code
+
     finally:
         os.unlink(path)

@@ -223,3 +223,89 @@ class SDKCodeGenerator:
         ])
 
         return "\n".join(code)
+
+    def generate_go(self) -> str:
+        """Generate Go wrapper structs for the workflow."""
+        name = self.data.get("name", "UnnamedWorkflow")
+        class_name = "".join(part.capitalize() for part in name.replace("-", "_").split("_"))
+        
+        nodes = self.data.get("nodes", [])
+        edges = self.data.get("edges", [])
+
+        code = [
+            "package sdk",
+            "",
+            "type NodeKind string",
+            "",
+            "const (",
+            '\tNodeKindNative   NodeKind = "NATIVE"',
+            '\tNodeKindHttp     NodeKind = "HTTP"',
+            '\tNodeKindSubgraph NodeKind = "SUBGRAPH"',
+            ")",
+            "",
+            "type AgentNode struct {",
+            '\tId          string   `json:"id"`',
+            '\tKind        NodeKind `json:"kind"`',
+            '\tRole        string   `json:"role,omitempty"`',
+            '\tModel       string   `json:"model,omitempty"`',
+            '\tUrl         string   `json:"url,omitempty"`',
+            '\tWorkflowRef string   `json:"workflow_ref,omitempty"`',
+            "}",
+            "",
+            "type TransitionEdge struct {",
+            '\tFrom string `json:"from"`',
+            '\tTo   string `json:"to"`',
+            "}",
+            "",
+            f"type {class_name}Workflow struct {{",
+            "\tName  string",
+            "\tNodes []AgentNode",
+            "\tEdges []TransitionEdge",
+            "}",
+            "",
+            f"func New{class_name}Workflow() *{class_name}Workflow {{",
+            f"\treturn &{class_name}Workflow{{",
+            f'\t\tName: "{name}",',
+            "\t\tNodes: []AgentNode{",
+        ]
+
+        for n in nodes:
+            node_id = n.get("id", "unnamed")
+            kind = n.get("kind", "native")
+            
+            if kind == "native":
+                agent = n.get("agent", {})
+                role = agent.get("role", "executor")
+                model = agent.get("model", "claude-sonnet-4-6")
+                code.append(
+                    f'\t\t\t{{Id: "{node_id}", Kind: NodeKindNative, Role: "{role}", Model: "{model}"}},'
+                )
+            elif kind == "http":
+                url = n.get("url", "")
+                code.append(
+                    f'\t\t\t{{Id: "{node_id}", Kind: NodeKindHttp, Url: "{url}"}},'
+                )
+            elif kind == "subgraph":
+                wf_ref = n.get("workflow", "")
+                code.append(
+                    f'\t\t\t{{Id: "{node_id}", Kind: NodeKindSubgraph, WorkflowRef: "{wf_ref}"}},'
+                )
+
+        code.extend([
+            "\t\t},",
+            "\t\tEdges: []TransitionEdge{",
+        ])
+
+        for e in edges:
+            frm = e.get("from", "")
+            to = e.get("to", "")
+            code.append(f'\t\t\t{{From: "{frm}", To: "{to}"}},')
+
+        code.extend([
+            "\t\t},",
+            "\t}",
+            "}",
+        ])
+
+        return "\n".join(code)
+

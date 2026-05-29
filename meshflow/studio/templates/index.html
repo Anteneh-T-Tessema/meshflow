@@ -453,12 +453,85 @@
       overflow-x: auto;
     }
 
-    .modal-footer {
-      padding: 1.25rem 1.5rem;
-      border-top: 1px solid var(--border);
+    .navigation-tabs {
       display: flex;
-      justify-content: flex-end;
-      gap: 0.75rem;
+      gap: 0.5rem;
+      margin-left: 2rem;
+      flex: 1;
+    }
+    .tab-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-muted);
+      padding: 0.5rem 1rem;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: inherit;
+    }
+    .tab-btn:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .tab-btn.active {
+      color: var(--text-main);
+      background: rgba(99, 102, 241, 0.12);
+      border-color: rgba(99, 102, 241, 0.3);
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+
+    .marketplace-card {
+      background: rgba(20, 22, 35, 0.4);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      backdrop-filter: blur(8px);
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      position: relative;
+      overflow: hidden;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .marketplace-card::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      width: 4px;
+      background: var(--accent);
+      opacity: 0.7;
+    }
+    .marketplace-card:hover {
+      transform: translateY(-4px);
+      border-color: var(--border-focus);
+      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.4), 0 0 15px var(--accent-glow);
+    }
+    .marketplace-card.role-researcher::before { background: #8b5cf6; }
+    .marketplace-card.role-critic::before { background: var(--accent-pink); }
+    .marketplace-card.role-orchestrator::before { background: var(--accent-green); }
+    .marketplace-card.role-executor::before { background: var(--accent); }
+    
+    .card-meta-badge {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+    .tag-badge {
+      font-size: 0.7rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      background: rgba(99, 102, 241, 0.1);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.2);
     }
   </style>
 </head>
@@ -469,104 +542,141 @@
       <div class="logo-badge">STUDIO</div>
       <div class="logo-text">MeshFlow Designer</div>
     </div>
+    <div class="navigation-tabs">
+      <button class="tab-btn active" id="tab-btn-designer" onclick="switchTab('designer')">Canvas Designer</button>
+      <button class="tab-btn" id="tab-btn-marketplace" onclick="switchTab('marketplace')">Agent Marketplace</button>
+    </div>
     <div class="header-actions">
       <button class="btn btn-primary" onclick="exportYAML()">Export YAML</button>
     </div>
   </header>
 
-  <main>
-    <!-- Left Sidebar: toolbox -->
-    <div class="sidebar-left">
-      <div>
-        <h3 class="section-title">Add Node</h3>
-        <div class="node-templates">
-          <div class="node-template-card kind-native" onclick="addNode('native')">
-            <div class="node-template-title">Native Agent Node</div>
-            <div class="node-template-desc">Standard LLM agent containing prompt, config, and tools.</div>
+  <main style="display: flex; flex-direction: column; flex: 1; min-height: 0; height: calc(100vh - 75px);">
+    <!-- Canvas Designer Panel -->
+    <div id="designer-view" style="display: grid; grid-template-columns: 280px 1fr 340px; flex: 1; min-height: 0;">
+      <!-- Left Sidebar: toolbox -->
+      <div class="sidebar-left">
+        <div>
+          <h3 class="section-title">Add Node</h3>
+          <div class="node-templates">
+            <div class="node-template-card kind-native" onclick="addNode('native')">
+              <div class="node-template-title">Native Agent Node</div>
+              <div class="node-template-desc">Standard LLM agent containing prompt, config, and tools.</div>
+            </div>
+            <div class="node-template-card kind-http" onclick="addNode('http')">
+              <div class="node-template-title">HTTP Endpoint Node</div>
+              <div class="node-template-desc">Delegates tasks to external webhooks or API services.</div>
+            </div>
+            <div class="node-template-card kind-subgraph" onclick="addNode('subgraph')">
+              <div class="node-template-title">Subgraph Node</div>
+              <div class="node-template-desc">Wraps an entire child workflow as a single node.</div>
+            </div>
           </div>
-          <div class="node-template-card kind-http" onclick="addNode('http')">
-            <div class="node-template-title">HTTP Endpoint Node</div>
-            <div class="node-template-desc">Delegates tasks to external webhooks or API services.</div>
+        </div>
+      </div>
+
+      <!-- Center: Designer Workspace -->
+      <div class="canvas-container">
+        <div class="canvas-header">
+          <div class="canvas-title">Workflow Editor Canvas</div>
+          <div class="canvas-actions">
+            <button class="btn" style="padding: 0.4rem 0.8rem;" onclick="clearCanvas()">Clear All</button>
           </div>
-          <div class="node-template-card kind-subgraph" onclick="addNode('subgraph')">
-            <div class="node-template-title">Subgraph Node</div>
-            <div class="node-template-desc">Wraps an entire child workflow as a single node.</div>
+        </div>
+        <div class="canvas-body" id="canvas">
+          <!-- Nodes are spawned here programmatically -->
+        </div>
+      </div>
+
+      <!-- Right Sidebar: Configuration panel -->
+      <div class="sidebar-right">
+        <!-- Workflow details -->
+        <div>
+          <h3 class="section-title">Workflow Config</h3>
+          <div class="form-group">
+            <label class="form-label">Workflow Name</label>
+            <input type="text" class="form-control" id="wf-name" value="my-orchestration-flow">
           </div>
+          <div class="form-group">
+            <label class="form-label">Max Cost (USD)</label>
+            <input type="number" step="0.01" class="form-control" id="wf-max-cost" value="1.50">
+          </div>
+        </div>
+
+        <!-- Node configuration -->
+        <div id="node-config-section" style="display: none;">
+          <h3 class="section-title">Node Configuration</h3>
+          <div class="form-group">
+            <label class="form-label">Node ID</label>
+            <input type="text" class="form-control" id="node-id" oninput="updateActiveNode()">
+          </div>
+          <div class="form-group" id="group-role">
+            <label class="form-label">Agent Role</label>
+            <select class="form-control" id="node-role" onchange="updateActiveNode()">
+              <option value="executor">Executor</option>
+              <option value="researcher">Researcher</option>
+              <option value="critic">Critic</option>
+              <option value="checker">Checker</option>
+            </select>
+          </div>
+          <div class="form-group" id="group-model">
+            <label class="form-label">LLM Model</label>
+            <input type="text" class="form-control" id="node-model" value="claude-sonnet-4-6" oninput="updateActiveNode()">
+          </div>
+          <div class="form-group" id="group-url" style="display: none;">
+            <label class="form-label">HTTP URL</label>
+            <input type="text" class="form-control" id="node-url" value="https://api.example.com/agent" oninput="updateActiveNode()">
+          </div>
+          <div class="form-group" id="group-workflow" style="display: none;">
+            <label class="form-label">Workflow Ref</label>
+            <input type="text" class="form-control" id="node-workflow" value="child_workflow" oninput="updateActiveNode()">
+          </div>
+        </div>
+
+        <!-- Edges / Transitions -->
+        <div>
+          <h3 class="section-title">Transitions (Edges)</h3>
+          <div class="form-group">
+            <label class="form-label">Source Node</label>
+            <select class="form-control" id="edge-source"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Target Node</label>
+            <select class="form-control" id="edge-target"></select>
+          </div>
+          <button class="btn btn-primary" style="width: 100%;" onclick="addEdge()">Add Link</button>
+          <div class="edge-list" id="edge-list-container" style="margin-top: 1rem;"></div>
         </div>
       </div>
     </div>
 
-    <!-- Center: Designer Workspace -->
-    <div class="canvas-container">
-      <div class="canvas-header">
-        <div class="canvas-title">Workflow Editor Canvas</div>
-        <div class="canvas-actions">
-          <button class="btn" style="padding: 0.4rem 0.8rem;" onclick="clearCanvas()">Clear All</button>
+    <!-- Agent Marketplace Panel -->
+    <div id="marketplace-view" style="display: none; flex-direction: column; padding: 2rem; gap: 1.5rem; flex: 1; min-height: 0; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1.5rem;">
+        <div>
+          <h1 style="font-family: 'Space Grotesk', sans-serif; font-size: 1.8rem; font-weight: 600; background: linear-gradient(to right, #fff, #9ca3af); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Agent Marketplace & Registry</h1>
+          <p style="color: var(--text-muted); font-size: 0.95rem; margin-top: 0.25rem;">Browse, share, and import pre-built agent templates into your workflow canvas.</p>
         </div>
-      </div>
-      <div class="canvas-body" id="canvas">
-        <!-- Nodes are spawned here programmatically -->
-      </div>
-    </div>
-
-    <!-- Right Sidebar: Configuration panel -->
-    <div class="sidebar-right">
-      <!-- Workflow details -->
-      <div>
-        <h3 class="section-title">Workflow Config</h3>
-        <div class="form-group">
-          <label class="form-label">Workflow Name</label>
-          <input type="text" class="form-control" id="wf-name" value="my-orchestration-flow">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Max Cost (USD)</label>
-          <input type="number" step="0.01" class="form-control" id="wf-max-cost" value="1.50">
+        <div>
+          <button class="btn btn-primary" onclick="openPublishModal()">Publish New Template</button>
         </div>
       </div>
 
-      <!-- Node configuration -->
-      <div id="node-config-section" style="display: none;">
-        <h3 class="section-title">Node Configuration</h3>
-        <div class="form-group">
-          <label class="form-label">Node ID</label>
-          <input type="text" class="form-control" id="node-id" oninput="updateActiveNode()">
+      <!-- Search & Filter Controls -->
+      <div style="display: flex; gap: 1rem; align-items: center;">
+        <div style="flex: 1; position: relative;">
+          <input type="text" class="form-control" id="search-templates-input" placeholder="Search templates by role, tag, name, or description..." oninput="filterTemplates()">
         </div>
-        <div class="form-group" id="group-role">
-          <label class="form-label">Agent Role</label>
-          <select class="form-control" id="node-role" onchange="updateActiveNode()">
-            <option value="executor">Executor</option>
-            <option value="researcher">Researcher</option>
-            <option value="critic">Critic</option>
-            <option value="checker">Checker</option>
-          </select>
-        </div>
-        <div class="form-group" id="group-model">
-          <label class="form-label">LLM Model</label>
-          <input type="text" class="form-control" id="node-model" value="claude-sonnet-4-6" oninput="updateActiveNode()">
-        </div>
-        <div class="form-group" id="group-url" style="display: none;">
-          <label class="form-label">HTTP URL</label>
-          <input type="text" class="form-control" id="node-url" value="https://api.example.com/agent" oninput="updateActiveNode()">
-        </div>
-        <div class="form-group" id="group-workflow" style="display: none;">
-          <label class="form-label">Workflow Ref</label>
-          <input type="text" class="form-control" id="node-workflow" value="child_workflow" oninput="updateActiveNode()">
-        </div>
+        <select class="form-control" id="filter-registry-select" onchange="filterTemplates()" style="width: 220px;">
+          <option value="all">All Registries</option>
+          <option value="local">Local Registry Only</option>
+          <option value="shared">Community Marketplace</option>
+        </select>
       </div>
 
-      <!-- Edges / Transitions -->
-      <div>
-        <h3 class="section-title">Transitions (Edges)</h3>
-        <div class="form-group">
-          <label class="form-label">Source Node</label>
-          <select class="form-control" id="edge-source"></select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Target Node</label>
-          <select class="form-control" id="edge-target"></select>
-        </div>
-        <button class="btn btn-primary" style="width: 100%;" onclick="addEdge()">Add Link</button>
-        <div class="edge-list" id="edge-list-container" style="margin-top: 1rem;"></div>
+      <!-- Marketplace Cards Grid -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1.5rem;" id="templates-grid">
+        <!-- Loaded dynamically -->
       </div>
     </div>
   </main>
@@ -584,6 +694,70 @@
       <div class="modal-footer">
         <button class="btn" onclick="closeModal()">Close</button>
         <button class="btn btn-primary" onclick="downloadYAML()">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal for Publishing Template -->
+  <div class="modal-overlay" id="publish-modal">
+    <div class="modal-card" style="width: 550px;">
+      <div class="modal-header">
+        <h2 style="font-family: 'Space Grotesk', sans-serif;">Publish Agent Template</h2>
+        <button onclick="closePublishModal()" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.5rem;">&times;</button>
+      </div>
+      <div class="modal-body" style="display: flex; flex-direction: column; gap: 1rem;">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Template Name (slug)</label>
+          <input type="text" class="form-control" id="pub-name" placeholder="e.g. lead-validator">
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Agent Role</label>
+            <select class="form-control" id="pub-role">
+              <option value="executor">Executor</option>
+              <option value="researcher">Researcher</option>
+              <option value="critic">Critic</option>
+              <option value="checker">Checker</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">LLM Model</label>
+            <input type="text" class="form-control" id="pub-model" value="claude-sonnet-4-6">
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Description</label>
+          <input type="text" class="form-control" id="pub-desc" placeholder="Briefly describe what this agent does...">
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">System Prompt</label>
+          <textarea class="form-control" id="pub-prompt" rows="3" placeholder="You are an expert..."></textarea>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Author</label>
+            <input type="text" class="form-control" id="pub-author" placeholder="Your name">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Version</label>
+            <input type="text" class="form-control" id="pub-version" value="1.0.0">
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Tags (comma-separated)</label>
+          <input type="text" class="form-control" id="pub-tags" placeholder="e.g. finance, analytics">
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Publish Target</label>
+          <select class="form-control" id="pub-target">
+            <option value="local">Local Registry Only</option>
+            <option value="shared">Community Marketplace (Shared)</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer" style="padding-top: 1rem; margin-top: auto;">
+        <button class="btn" onclick="closePublishModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="submitTemplate()">Publish</button>
       </div>
     </div>
   </div>
@@ -849,8 +1023,243 @@
       URL.revokeObjectURL(url);
     }
 
+    // ── Template Registry & Marketplace Functions ──
+    let localTemplates = [];
+    let sharedTemplates = [];
+
+    async function loadTemplates() {
+      try {
+        const localRes = await fetch('/api/templates');
+        if (localRes.ok) {
+          localTemplates = await localRes.json();
+        }
+      } catch (e) {
+        console.error("Failed to load local templates:", e);
+      }
+
+      try {
+        const sharedRes = await fetch('/api/shared-templates');
+        if (sharedRes.ok) {
+          sharedTemplates = await sharedRes.json();
+        }
+      } catch (e) {
+        console.error("Failed to load shared templates:", e);
+      }
+      
+      renderTemplates();
+    }
+
+    function switchTab(tab) {
+      const dev = document.getElementById('designer-view');
+      const mkt = document.getElementById('marketplace-view');
+      const btnDev = document.getElementById('tab-btn-designer');
+      const btnMkt = document.getElementById('tab-btn-marketplace');
+
+      if (tab === 'designer') {
+        dev.style.display = 'grid';
+        mkt.style.display = 'none';
+        btnDev.classList.add('active');
+        btnMkt.classList.remove('active');
+      } else {
+        dev.style.display = 'none';
+        mkt.style.display = 'flex';
+        btnDev.classList.remove('active');
+        btnMkt.classList.add('active');
+        loadTemplates();
+      }
+    }
+
+    function renderTemplates() {
+      const container = document.getElementById('templates-grid');
+      container.innerHTML = '';
+
+      const query = document.getElementById('search-templates-input').value.toLowerCase().trim();
+      const registryFilter = document.getElementById('filter-registry-select').value;
+
+      let listToRender = [];
+
+      if (registryFilter === 'all' || registryFilter === 'local') {
+        localTemplates.forEach(t => listToRender.push({ ...t, isShared: false }));
+      }
+      if (registryFilter === 'all' || registryFilter === 'shared') {
+        sharedTemplates.forEach(t => {
+          if (!listToRender.some(existing => existing.name === t.name && existing.isShared === false)) {
+            listToRender.push({ ...t, isShared: true });
+          }
+        });
+      }
+
+      if (query) {
+        listToRender = listToRender.filter(t => {
+          const nameMatch = t.name.toLowerCase().includes(query);
+          const descMatch = t.description.toLowerCase().includes(query);
+          const roleMatch = t.role.toLowerCase().includes(query);
+          const tagsMatch = t.tags && t.tags.some(tag => tag.toLowerCase().includes(query));
+          return nameMatch || descMatch || roleMatch || tagsMatch;
+        });
+      }
+
+      if (listToRender.length === 0) {
+        container.innerHTML = `<div style="grid-column: 1/-1; text-align: center; color: var(--text-muted); padding: 3rem;">No templates found matching the current criteria.</div>`;
+        return;
+      }
+
+      listToRender.forEach(t => {
+        const card = document.createElement('div');
+        card.className = `marketplace-card role-${t.role || 'executor'}`;
+        
+        let tagsHtml = '';
+        if (t.tags && t.tags.length > 0) {
+          tagsHtml = `<div style="display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.5rem;">` +
+            t.tags.map(tag => `<span class="tag-badge">${tag}</span>`).join('') +
+            `</div>`;
+        }
+
+        const authorText = t.author ? `by ${t.author}` : '';
+        const registryBadge = t.isShared 
+          ? `<span class="card-meta-badge" style="border-color: var(--accent-pink); color: #f472b6;">Community Marketplace</span>`
+          : `<span class="card-meta-badge" style="border-color: var(--accent); color: #818cf8;">Local Registry</span>`;
+
+        card.innerHTML = `
+          <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div>
+              <h3 style="font-family: 'Space Grotesk', sans-serif; font-size: 1.15rem; font-weight: 600; margin-bottom: 0.25rem;">${t.name}</h3>
+              <span style="font-size: 0.8rem; color: var(--text-muted);">${authorText} (v${t.version || '1.0.0'})</span>
+            </div>
+            ${registryBadge}
+          </div>
+          <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.4; flex: 1;">${t.description || 'No description provided.'}</p>
+          <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border); padding-top: 0.75rem; margin-top: auto;">
+            <span class="card-meta-badge">${t.role || 'executor'} • ${t.model || 'claude-sonnet-4-6'}</span>
+            <div style="display: flex; gap: 0.5rem;">
+              ${!t.isShared ? `<button class="btn" style="padding: 0.35rem 0.7rem; font-size: 0.8rem;" onclick="shareLocalToCommunity('${t.name}')">Share</button>` : ''}
+              <button class="btn btn-primary" style="padding: 0.35rem 0.7rem; font-size: 0.8rem;" onclick="spawnTemplate('${t.name}', ${t.isShared})">Import</button>
+            </div>
+          </div>
+          ${tagsHtml}
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    function filterTemplates() {
+      renderTemplates();
+    }
+
+    function spawnTemplate(name, isShared) {
+      const list = isShared ? sharedTemplates : localTemplates;
+      const tmpl = list.find(t => t.name === name);
+      if (!tmpl) return;
+
+      const id = tmpl.name + '_' + Math.random().toString(36).substr(2, 5);
+      const node = {
+        id: id,
+        kind: 'native',
+        role: tmpl.role || 'executor',
+        model: tmpl.model || 'claude-sonnet-4-6',
+        x: 100 + Math.random() * 200,
+        y: 100 + Math.random() * 200
+      };
+      
+      nodes.push(node);
+      switchTab('designer');
+      render();
+      selectNode(id);
+    }
+
+    function openPublishModal() {
+      document.getElementById('publish-modal').style.display = 'flex';
+    }
+
+    function closePublishModal() {
+      document.getElementById('publish-modal').style.display = 'none';
+    }
+
+    async function submitTemplate() {
+      const name = document.getElementById('pub-name').value.trim();
+      const role = document.getElementById('pub-role').value;
+      const model = document.getElementById('pub-model').value.trim();
+      const desc = document.getElementById('pub-desc').value.trim();
+      const prompt = document.getElementById('pub-prompt').value.trim();
+      const author = document.getElementById('pub-author').value.trim();
+      const version = document.getElementById('pub-version').value.trim();
+      const tagsStr = document.getElementById('pub-tags').value;
+      const target = document.getElementById('pub-target').value;
+
+      if (!name) {
+        alert("Template name is required.");
+        return;
+      }
+
+      const tags = tagsStr.split(',').map(t => t.trim()).filter(t => t.length > 0);
+
+      const payload = {
+        name,
+        role,
+        model,
+        description: desc,
+        system_prompt: prompt,
+        author,
+        version,
+        tags
+      };
+
+      const url = target === 'shared' ? '/api/shared-templates' : '/api/templates';
+
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+          closePublishModal();
+          document.getElementById('pub-name').value = '';
+          document.getElementById('pub-desc').value = '';
+          document.getElementById('pub-prompt').value = '';
+          document.getElementById('pub-author').value = '';
+          document.getElementById('pub-tags').value = '';
+          await loadTemplates();
+        } else {
+          const err = await response.json();
+          alert("Error publishing template: " + (err.error || "unknown error"));
+        }
+      } catch (e) {
+        alert("Network error: " + e.message);
+      }
+    }
+
+    async function shareLocalToCommunity(name) {
+      const tmpl = localTemplates.find(t => t.name === name);
+      if (!tmpl) return;
+
+      try {
+        const response = await fetch('/api/shared-templates', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(tmpl)
+        });
+
+        if (response.ok) {
+          alert(`Successfully shared template "${name}" to Community Marketplace!`);
+          await loadTemplates();
+        } else {
+          const err = await response.json();
+          alert("Error sharing template: " + (err.error || "unknown error"));
+        }
+      } catch (e) {
+        alert("Network error: " + e.message);
+      }
+    }
+
     // Initial render
     render();
+    loadTemplates();
   </script>
 </body>
 </html>

@@ -138,8 +138,8 @@ def main() -> None:
     p_studio.add_argument("--port", type=int, default=8765)
 
     # codegen
-    p_codegen = sub.add_parser("codegen", help="Generate C# (.NET) or Java SDK wrappers from workflow YAML")
-    p_codegen.add_argument("language", choices=["dotnet", "java"], help="Target SDK language")
+    p_codegen = sub.add_parser("codegen", help="Generate C# (.NET), Java, or Go SDK wrappers from workflow YAML")
+    p_codegen.add_argument("language", choices=["dotnet", "java", "go"], help="Target SDK language")
     p_codegen.add_argument("yaml", help="Path to workflow YAML file")
 
     # trace
@@ -1117,6 +1117,9 @@ def main() -> None:
 
     p_tmpl_delete = p_tmpl_sub.add_parser("delete", help="Remove a template from the local registry")
     p_tmpl_delete.add_argument("name", help="Template name to remove")
+
+    p_tmpl_share = p_tmpl_sub.add_parser("share", help="Share a template from the local registry to the community marketplace")
+    p_tmpl_share.add_argument("name", help="Template name to share")
 
     # ── lint ──────────────────────────────────────────────────────────────────
     p_lint = sub.add_parser("lint", help="Static validate a workflow YAML before running")
@@ -2267,6 +2270,8 @@ def _cmd_codegen(args: argparse.Namespace) -> None:
         print(gen.generate_dotnet())
     elif args.language == "java":
         print(gen.generate_java())
+    elif args.language == "go":
+        print(gen.generate_go())
 
 
 # ── schema ────────────────────────────────────────────────────────────────────
@@ -4792,6 +4797,7 @@ def _worker_status(args: argparse.Namespace) -> None:
 
 
 def _cmd_templates(args: argparse.Namespace) -> None:
+    import os
     from meshflow.registry.templates import AgentTemplate, TemplateRegistry
 
     reg = TemplateRegistry()
@@ -4835,6 +4841,17 @@ def _cmd_templates(args: argparse.Namespace) -> None:
             print(f"  Removed template {args.name!r}")
         else:
             print(f"  Template {args.name!r} not found in registry")
+            sys.exit(1)
+
+    elif args.templates_cmd == "share":
+        try:
+            tmpl = reg.pull(args.name)
+            shared_dir = os.path.expanduser("~/.meshflow/shared_templates")
+            shared_reg = TemplateRegistry(registry_dir=shared_dir)
+            shared_path = shared_reg.publish(tmpl)
+            print(f"  Shared template {tmpl.name!r} with the community marketplace → {shared_path}")
+        except KeyError as exc:
+            print(f"  ERROR: {exc}")
             sys.exit(1)
 
 
