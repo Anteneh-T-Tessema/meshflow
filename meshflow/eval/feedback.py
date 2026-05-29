@@ -282,4 +282,77 @@ def _to_finetune_example(rec: FeedbackRecord, fmt: str) -> dict[str, Any]:
     }
 
 
-__all__ = ["FeedbackRecord", "FeedbackStore"]
+class FeedbackCollector:
+    """Aggregates human feedback from a :class:`FeedbackStore`.
+
+    Bridges HITL feedback into fine-tuning preparation by exposing per-run
+    summaries and exportable (prompt, output, correction) training pairs.
+
+    Usage::
+
+        from meshflow.eval.feedback import FeedbackCollector, FeedbackStore
+
+        store = FeedbackStore("meshflow_feedback.db")
+        collector = FeedbackCollector(store)
+
+        print(collector.summary("run-abc123"))
+        pairs = collector.export_training_pairs()
+    """
+
+    def __init__(self, store: FeedbackStore) -> None:
+        self._store = store
+
+    def summary(self, run_id: str) -> dict[str, Any]:
+        """Return aggregate statistics for all feedback on *run_id*."""
+        records = self._store.list(limit=10_000)
+        run_records = [r for r in records if r.run_id == run_id]
+        if not run_records:
+            return {"run_id": run_id, "count": 0, "avg_score": 0.0, "corrections": 0}
+        scores = [r.score for r in run_records]
+        return {
+            "run_id": run_id,
+            "count": len(run_records),
+            "avg_score": round(sum(scores) / len(scores), 4),
+            "min_score": min(scores),
+            "max_score": max(scores),
+            "corrections": sum(1 for r in run_records if r.has_correction),
+            "correction_rate": round(
+                sum(1 for r in run_records if r.has_correction) / len(run_records), 4
+            ),
+        }
+
+    def export_training_pairs(
+        self,
+        *,
+        agent_name: str = "",
+        corrections_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Export (prompt, output, correction) tuples suitable for fine-tuning JSONL.
+
+        Parameters
+        ----------
+        agent_name:       Filter to a specific agent (empty → all agents).
+        corrections_only: Only include records that carry a human correction.
+        """
+        records = self._store.list(agent_name=agent_name, limit=100_000)
+        if corrections_only:
+            records = [r for r in records if r.has_correction]
+        return [
+            {
+                "prompt":      r.task,
+                "output":      r.original_output,
+                "correction":  r.correction,
+                "score":       r.score,
+                "agent_name":  r.agent_name,
+                "run_id":      r.run_id,
+                "reviewer":    r.reviewer,
+            }
+            for r in records
+        ]
+
+    def global_summary(self) -> dict[str, Any]:
+        """Return aggregate statistics across all stored feedback."""
+        return self._store.stats()
+
+
+__all__ = ["FeedbackRecord", "FeedbackStore", "FeedbackCollector"]

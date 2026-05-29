@@ -220,16 +220,30 @@ class _BuiltAgent(BaseAgent):
         if recalled:
             recall_ctx = "\n\n[Retrieved]\n" + "\n".join(f"• {r}" for r in recalled)
 
-        # ── Knowledge retrieval (RAG) ─────────────────────────────────────────
+        # ── Knowledge retrieval (RAG) with optional prompt-caching ───────────
         knowledge_ctx = ""
+        knowledge_blocks: list[Any] = []
         if self._knowledge:
-            k_text = self._knowledge.context_string(task, max_chars=1500)
-            if k_text:
-                knowledge_ctx = f"\n\n[Knowledge]\n{k_text}"
+            # Use cache_control blocks when the provider supports it (Anthropic)
+            # so frequently-retrieved knowledge chunks are cached by the API.
+            try:
+                knowledge_blocks = self._knowledge.context_blocks_cached(task, max_chars=1500)
+            except AttributeError:
+                pass
+            if not knowledge_blocks:
+                k_text = self._knowledge.context_string(task, max_chars=1500)
+                if k_text:
+                    knowledge_ctx = f"\n\n[Knowledge]\n{k_text}"
 
-        messages = [
-            {"role": "user", "content": f"Task: {task}\nContext: {context}{mem_ctx}{recall_ctx}{knowledge_ctx}"}
-        ]
+        text_body = f"Task: {task}\nContext: {context}{mem_ctx}{recall_ctx}{knowledge_ctx}"
+        _attachments: list[Any] = list(context.get("__attachments__", []))
+
+        if knowledge_blocks or _attachments:
+            # Multi-part content: cache_control knowledge blocks + attachments + text
+            _user_content: Any = [*knowledge_blocks, *_attachments, {"type": "text", "text": text_body}]
+        else:
+            _user_content = text_body
+        messages = [{"role": "user", "content": _user_content}]  # type: ignore[assignment]
 
         if self._tools:
             tool_schemas = [_build_tool_schema(t) for t in self._tools if hasattr(t, "name")]
@@ -341,6 +355,7 @@ class Agent:
     memory_session_id: str = ""    # defaults to agent.name when empty
     cache: Any = None              # LLMCache instance, True (→ InMemoryCache), or False
     healing: Any = None            # HealingPolicy instance or None (disabled)
+    teachable: bool = False        # wrap with TeachableAgent to learn from corrections
     handoffs: list[Any] = field(default_factory=list)  # peer agents this agent can transfer to
     delegates: list[Agent] = field(default_factory=list)  # peer agents this agent can delegate subtasks to
     system_prompt: str = ""
@@ -663,7 +678,15 @@ class Agent:
 
         If the agent was imported from an external framework (LangGraph, IBM,
         OpenAI, A2A, etc.) the prebuilt node runs instead of a new Claude call.
+        When ``teachable=True`` the call is routed through a :class:`TeachableAgent`
+        that auto-learns from user corrections and prepends any stored teachings.
         """
+        if self.teachable:
+            import dataclasses
+            from meshflow.agents.teachable import TeachableAgent
+            base = dataclasses.replace(self, teachable=False)
+            return await TeachableAgent(base).run(task, context)
+
         if context is None:
             context = {}
         from meshflow.optimization.tracker import active_tracker

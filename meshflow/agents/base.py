@@ -735,12 +735,31 @@ class BaseAgent:
         if tracker is not None and tracker.should_degrade():
             model = tracker.fallback_model
 
+        # ── Health auto-recovery: swap to healthiest fallback if primary is degraded ──
+        try:
+            from meshflow.agents.health import get_health_tracker
+            _health = get_health_tracker()
+            if _health.is_degraded(model):
+                from meshflow.agents.router import ProviderRouter
+                _router = ProviderRouter()
+                _router.set_fallback_chain(
+                    "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"
+                )
+                _role = getattr(self.config, "role", None)
+                _role_str = _role.value if hasattr(_role, "value") else str(_role or "executor")
+                _, model = _router.route_with_health(_role_str, tracker=_health)
+        except Exception:
+            pass  # best-effort; never blocks execution
+
         sys = system or self.config.system_prompt
         msgs = messages
         if tracker is not None:
             sys, msgs = tracker.compress_prompt(sys, msgs)
 
-        content, tokens, cost = await self._provider.complete(
+        from meshflow.resilience.rate_limit import with_rate_limit_retry, get_default_policy
+        content, tokens, cost = await with_rate_limit_retry(
+            self._provider.complete,
+            policy=get_default_policy(),
             model=model,
             messages=cast(Any, msgs),
             system=sys,

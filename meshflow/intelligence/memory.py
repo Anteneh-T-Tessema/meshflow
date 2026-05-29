@@ -133,11 +133,26 @@ class AgentMemory:
         max_working: int = 10,
         max_episodic: int = 50,
         enabled: bool = True,
+        auto_consolidate: bool = True,
+        consolidate_at_chars: int = 20_000,
     ) -> None:
+        """
+        Parameters
+        ----------
+        auto_consolidate:
+            When True (default), automatically prune episodic memory when the
+            total character footprint of all tiers exceeds *consolidate_at_chars*.
+            The consolidation keeps the most-important half of episodic entries
+            (scored by recency + content length) and drops the rest.
+        consolidate_at_chars:
+            Character budget that triggers auto-consolidation (default 20 000).
+        """
         self._agent_id = agent_id
         self._enabled = enabled
         self._max_working = max_working
         self._max_episodic = max_episodic
+        self._auto_consolidate = auto_consolidate
+        self._consolidate_at_chars = consolidate_at_chars
 
         # Tier 1 — working (deque for O(1) append/evict)
         self._working: deque[MemoryItem] = deque(maxlen=max_working)
@@ -183,6 +198,10 @@ class AgentMemory:
         if tier_hint != "procedural":
             self._index.add(content)
 
+        # Auto-consolidate when total char footprint exceeds budget
+        if self._auto_consolidate and self._enabled:
+            self._maybe_consolidate()
+
     def record_outcome(
         self, node_id: str, success: bool, confidence: float, verifier_score: float = 0.0
     ) -> None:
@@ -200,6 +219,49 @@ class AgentMemory:
         self._episodic.append(item)
         if len(self._episodic) > self._max_episodic:
             self._episodic.pop(0)
+
+    def _total_chars(self) -> int:
+        return (
+            sum(len(i.content) for i in self._working)
+            + sum(len(i.content) for i in self._episodic)
+            + sum(len(i.content) for i in self._procedural)
+        )
+
+    def _maybe_consolidate(self) -> None:
+        """Trim episodic memory when char footprint exceeds the budget."""
+        if not self._episodic:
+            return
+        if self._total_chars() <= self._consolidate_at_chars:
+            return
+        self.consolidate()
+
+    def consolidate(self) -> int:
+        """Prune the lower-importance half of episodic memory now.
+
+        Importance score = recency (newer = higher) + content length (longer = more signal).
+        Returns the number of entries dropped.
+        """
+        if not self._episodic:
+            return 0
+        n = len(self._episodic)
+        keep_n = max(1, n // 2)
+
+        # Score: normalise step position (recency) + normalised char length
+        max_len = max(len(i.content) for i in self._episodic) or 1
+        scored = [
+            (
+                (idx / max(n - 1, 1)) * 0.6        # recency weight
+                + (len(item.content) / max_len) * 0.4,  # length weight
+                item,
+            )
+            for idx, item in enumerate(self._episodic)
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        kept = [item for _, item in scored[:keep_n]]
+        # Preserve original chronological order
+        kept_set = {id(i) for i in kept}
+        self._episodic = [i for i in self._episodic if id(i) in kept_set]
+        return n - len(self._episodic)
 
     # ── Read ──────────────────────────────────────────────────────────────────
 
@@ -246,28 +308,6 @@ class AgentMemory:
         items = list(self._working)[-n:]
         return [item.content for item in reversed(items)]
 
-    def context_string(self, max_chars: int = 800) -> str:
-        """Format working + top episodic memories as a context block for the LLM.
-
-        Caps output to *max_chars* to avoid bloating the context window.
-        """
-        if not self._enabled:
-            return ""
-
-        parts: list[str] = []
-        total = 0
-
-        for item in reversed(self._working):
-            entry = f"[step {item.metadata.get('step', '?')}] {item.content}"
-            if total + len(entry) > max_chars:
-                break
-            parts.append(entry)
-            total += len(entry)
-
-        if not parts:
-            return ""
-        return "\n".join(reversed(parts))
-
     # ── Introspection ─────────────────────────────────────────────────────────
 
     @property
@@ -299,3 +339,70 @@ class AgentMemory:
         self._procedural.clear()
         self._index = _BM25Index()
         self._step_count = 0
+        if hasattr(self, "_entity"):
+            from meshflow.intelligence.entity_memory import EntityMemory
+            self._entity = EntityMemory()
+
+    # ── Snapshot helpers (thin wrappers for ergonomic API) ────────────────────
+
+    def to_snapshot(self) -> dict[str, Any]:
+        """Serialise all tiers to a dict (inverse of :meth:`from_snapshot`)."""
+        from meshflow.intelligence.memory_backends import snapshot_from_memory
+        return snapshot_from_memory(self)
+
+    def from_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """Restore all tiers from a *snapshot* dict (inverse of :meth:`to_snapshot`)."""
+        from meshflow.intelligence.memory_backends import restore_memory
+        restore_memory(self, snapshot)
+
+    # ── Tier 5 — Entity memory ────────────────────────────────────────────────
+
+    @property
+    def entity(self) -> Any:
+        """Tier 5 entity memory (lazy-initialised in-process store)."""
+        if not hasattr(self, "_entity"):
+            from meshflow.intelligence.entity_memory import EntityMemory
+            self._entity = EntityMemory()
+        return self._entity
+
+    def remember_entity(self, entity: str, fact_key: str, fact_value: str) -> None:
+        """Store a structured fact about a named entity."""
+        self.entity.remember(entity, fact_key, fact_value)
+
+    def recall_entity(self, entity: str) -> dict[str, str]:
+        """Return all known facts for *entity*."""
+        return self.entity.recall_entity(entity)
+
+    def context_string(self, max_chars: int = 800, query: str = "") -> str:
+        """Format working + episodic memories as an LLM context block.
+
+        When *query* is supplied, relevant entity facts are appended under
+        ``[Entities]``.  Output is capped to *max_chars*.
+        """
+        if not self._enabled:
+            return ""
+
+        # Build working-memory string (newest-first iteration → join oldest-first)
+        working_parts: list[str] = []
+        total = 0
+        for item in reversed(self._working):
+            entry = f"[step {item.metadata.get('step', '?')}] {item.content}"
+            if total + len(entry) > max_chars:
+                break
+            working_parts.append(entry)
+            total += len(entry)
+
+        mem_str = "\n".join(reversed(working_parts)) if working_parts else ""
+
+        # Append entity context when a query is provided
+        if query and hasattr(self, "_entity"):
+            relevant = self._entity.entities_in_text(query)
+            if relevant:
+                entity_str = self._entity.to_context_string(
+                    relevant, max_chars=max(100, max_chars - total)
+                )
+                if entity_str:
+                    suffix = f"[Entities]\n{entity_str}"
+                    mem_str = f"{mem_str}\n{suffix}" if mem_str else suffix
+
+        return mem_str

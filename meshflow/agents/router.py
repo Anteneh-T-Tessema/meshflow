@@ -198,6 +198,64 @@ class ProviderRouter:
         best = health.best_model(chain)
         return AnthropicProvider(), best
 
+    def route_with_latency(
+        self,
+        role: str | AgentRole,
+        budget_usd: float = 1.0,
+        compliance: str = "",
+        *,
+        max_p95_latency_ms: float = 0.0,
+        prefer: str = "quality",
+        tracker: "Any | None" = None,
+    ) -> tuple[LLMProvider, str]:
+        """Route to the fastest model that meets quality and latency constraints.
+
+        Parameters
+        ----------
+        max_p95_latency_ms: Maximum acceptable p95 latency.
+                            0 = no latency constraint (behaves like route_with_health).
+        prefer:             ``"quality"`` — prefer highest quality within latency budget.
+                            ``"speed"``   — prefer lowest latency above quality floor.
+        tracker:            Optional :class:`~meshflow.agents.health.ModelHealthTracker`.
+
+        How it works
+        ------------
+        1. Get the default model from ``route()``.
+        2. Build a candidate chain and filter out:
+           - Models where ``health.is_degraded()`` is True.
+           - Models where ``p95_latency_ms > max_p95_latency_ms`` (when constrained).
+        3. Among passing candidates, pick the one with the best quality (health_score)
+           or the lowest latency, depending on *prefer*.
+        """
+        from meshflow.agents.health import get_health_tracker
+        health = tracker or get_health_tracker()
+
+        provider, primary = self.route(role, budget_usd, compliance)
+        chain = [primary] + [m for m in (self._fallback_chain or []) if m != primary]
+
+        candidates: list[tuple[str, float, float]] = []  # (model, health, p95)
+        for model in chain:
+            if health.is_degraded(model):
+                continue
+            summ = health.summary(model)
+            p95 = summ.p95_latency_ms
+            if max_p95_latency_ms > 0 and p95 > max_p95_latency_ms and p95 > 0:
+                continue
+            candidates.append((model, summ.health_score, p95))
+
+        if not candidates:
+            # Nothing meets constraints — fall back to best-health model
+            return AnthropicProvider(), health.best_model(chain)
+
+        if prefer == "speed":
+            # Sort by latency ascending; use 99999 for untracked (no latency data)
+            candidates.sort(key=lambda x: x[2] if x[2] > 0 else 99999)
+        else:
+            # Sort by health score descending (highest quality first)
+            candidates.sort(key=lambda x: x[1], reverse=True)
+
+        return AnthropicProvider(), candidates[0][0]
+
     def explain(
         self,
         role: str | AgentRole,

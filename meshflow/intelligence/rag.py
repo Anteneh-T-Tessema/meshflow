@@ -149,8 +149,21 @@ class DocumentStore:
                 results.append(dataclasses.replace(chunk, score=score))
         return results
 
-    async def retrieve_text(self, query: str, top_k: int = 5) -> str:
-        """Retrieve and join chunk texts as a formatted context block."""
+    async def retrieve_text(
+        self,
+        query: str,
+        top_k: int = 5,
+        max_chars: int = 0,
+        max_tokens: int = 0,
+    ) -> str:
+        """Retrieve and join chunk texts as a formatted context block.
+
+        Parameters
+        ----------
+        max_chars:  Hard cap on total retrieved context characters (0 = unlimited).
+        max_tokens: Approximate token cap (1 token ≈ 4 chars). Overrides max_chars
+                    when both are set.
+        """
         chunks = await self.retrieve(query, top_k)
         if not chunks:
             return ""
@@ -158,6 +171,28 @@ class DocumentStore:
             f"[Source: {c.doc_id}, chunk {c.chunk_index}, score={c.score:.2f}]\n{c.text}"
             for c in chunks
         ]
+
+        # Compute effective char budget
+        char_budget = 0
+        if max_tokens > 0:
+            char_budget = max_tokens * 4  # ~4 chars per token
+        elif max_chars > 0:
+            char_budget = max_chars
+
+        if char_budget > 0:
+            # Greedily include highest-scoring chunks until budget is exhausted
+            budget_parts: list[str] = []
+            used = 0
+            for part in parts:
+                if used + len(part) > char_budget:
+                    remaining = char_budget - used
+                    if remaining > 80:
+                        budget_parts.append(part[:remaining] + "\n[...truncated]")
+                    break
+                budget_parts.append(part)
+                used += len(part)
+            parts = budget_parts
+
         return "\n\n---\n\n".join(parts)
 
 
@@ -183,7 +218,15 @@ class RAGNode(MeshNode):
         node_id: str = "",
         top_k: int = 5,
         context_prefix: str = "Retrieved context:\n",
+        max_chars: int = 0,
+        max_tokens: int = 0,
     ) -> None:
+        """
+        Parameters
+        ----------
+        max_chars:  Hard cap on retrieved context characters (0 = unlimited).
+        max_tokens: Approximate token cap (4 chars/token); overrides max_chars.
+        """
         super().__init__(
             id=node_id or f"rag_{uuid.uuid4().hex[:6]}",
             kind=NodeKind.PYTHON,
@@ -192,9 +235,16 @@ class RAGNode(MeshNode):
         self._store = store
         self._top_k = top_k
         self._prefix = context_prefix
+        self._max_chars = max_chars
+        self._max_tokens = max_tokens
 
     async def run(self, node_input: NodeInput) -> NodeOutput:
-        context_text = await self._store.retrieve_text(node_input.task, self._top_k)
+        context_text = await self._store.retrieve_text(
+            node_input.task,
+            self._top_k,
+            max_chars=self._max_chars,
+            max_tokens=self._max_tokens,
+        )
         if context_text:
             enriched = f"{self._prefix}\n{context_text}\n\n---\n\nQuery: {node_input.task}"
         else:

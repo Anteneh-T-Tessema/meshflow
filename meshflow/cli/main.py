@@ -80,6 +80,15 @@ def main() -> None:
         default="",
         help="Archive the run export to an S3 URI, e.g. s3://bucket/meshflow",
     )
+    # Time-travel: rewind to a step and re-run with optional overrides
+    p_replay.add_argument("--rewind", type=int, default=0, metavar="STEP",
+                          help="Rewind to step N (1-based) and re-run from there")
+    p_replay.add_argument("--model", default="", dest="rewind_model",
+                          help="Override model for the rewound portion")
+    p_replay.add_argument("--prompt", default="", dest="rewind_prompt",
+                          help="Prepend text to every agent system prompt in the rewound run")
+    p_replay.add_argument("--yaml", default="", dest="rewind_yaml",
+                          help="Workflow YAML to use for the rewound run")
 
     # conformance
     p_conf = sub.add_parser(
@@ -123,12 +132,26 @@ def main() -> None:
     p_dev.add_argument("--port", type=int, default=8765)
     p_dev.add_argument("--ledger", default=":memory:")
 
+    # studio
+    p_studio = sub.add_parser("studio", help="Start the MeshFlow Studio visual designer")
+    p_studio.add_argument("--host", default="127.0.0.1")
+    p_studio.add_argument("--port", type=int, default=8765)
+
+    # codegen
+    p_codegen = sub.add_parser("codegen", help="Generate C# (.NET) or Java SDK wrappers from workflow YAML")
+    p_codegen.add_argument("language", choices=["dotnet", "java"], help="Target SDK language")
+    p_codegen.add_argument("yaml", help="Path to workflow YAML file")
+
     # trace
     p_trace = sub.add_parser("trace", help="View a run trace in the terminal")
     p_trace.add_argument("run_id", help="Run ID to inspect")
     p_trace.add_argument("--db", default="meshflow_runs.db")
     p_trace.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
     p_trace.add_argument("--export", default="", metavar="FILE", help="Export trace to file")
+    p_trace.add_argument("--format", default="terminal",
+                         choices=["terminal", "langsmith", "json"],
+                         dest="trace_format",
+                         help="Output format: terminal (default), langsmith (LangSmith JSON), json (raw dict)")
 
     # runs
     p_runs = sub.add_parser("runs", help="List recent runs (alias for logs)")
@@ -608,6 +631,18 @@ def main() -> None:
     p_mem_clear.add_argument("--db",    default="meshflow_memory.db")
     p_mem_clear.add_argument("--yes",   action="store_true", help="Skip confirmation")
 
+    p_mem_export = p_mem_sub.add_parser("export", help="Export agent memory snapshot to a JSON file")
+    p_mem_export.add_argument("--agent", required=True, help="Agent name (session ID)")
+    p_mem_export.add_argument("--output", default="", metavar="FILE",
+                              help="Output JSON file (default: <agent>_memory.json)")
+    p_mem_export.add_argument("--db", default="meshflow_memory.db")
+
+    p_mem_import = p_mem_sub.add_parser("import", help="Restore agent memory from a JSON snapshot")
+    p_mem_import.add_argument("file", help="JSON snapshot file to restore from")
+    p_mem_import.add_argument("--agent", default="",
+                              help="Override the agent name from the snapshot")
+    p_mem_import.add_argument("--db", default="meshflow_memory.db")
+
     # identity
     p_id = sub.add_parser("identity", help="Agent identity registry and zero-trust token management")
     p_id_sub = p_id.add_subparsers(dest="identity_cmd", required=True)
@@ -1022,6 +1057,81 @@ def main() -> None:
     p_dasc_taint.add_argument("agent_id", help="Agent ID to taint")
     p_dasc_taint.add_argument("--db", default="meshflow_dasc.db")
 
+    # ── dashboard ─────────────────────────────────────────────────────────────
+    p_dash = sub.add_parser("dashboard", help="Terminal cost/metrics dashboard (no Streamlit needed)")
+    p_dash.add_argument("--db", default="meshflow_runs.db", help="Ledger SQLite path")
+    p_dash.add_argument("--limit", type=int, default=20, help="Max runs to show")
+    p_dash.add_argument("--refresh", type=float, default=0.0, metavar="SECONDS",
+                        help="Auto-refresh interval in seconds (0 = one-shot)")
+
+    # ── sweep ─────────────────────────────────────────────────────────────────
+    p_sweep = sub.add_parser("sweep", help="Run a workflow across a parameter grid")
+    p_sweep.add_argument("yaml", help="Workflow YAML path")
+    p_sweep.add_argument("--task", default="", help="Base task string")
+    p_sweep.add_argument("--models", nargs="+", default=[],
+                         metavar="MODEL", help="Model list to sweep (e.g. claude-sonnet-4-6 claude-haiku-4-5-20251001)")
+    p_sweep.add_argument("--concurrency", type=int, default=4)
+    p_sweep.add_argument("--db", default="meshflow_sweep.db")
+
+    # ── eval-feedback ─────────────────────────────────────────────────────────
+    p_ef = sub.add_parser("eval-feedback", help="Show aggregated human feedback statistics")
+    p_ef.add_argument("--db", default="meshflow_feedback.db", help="Feedback SQLite path")
+    p_ef.add_argument("--agent", default="", help="Filter to a specific agent name")
+    p_ef.add_argument("--run-id", default="", dest="run_id", help="Show stats for a single run_id")
+    p_ef.add_argument("--export-jsonl", default="", dest="export_jsonl", metavar="PATH",
+                      help="Export (prompt, output, correction) JSONL to PATH")
+    p_ef.add_argument("--corrections-only", action="store_true", dest="corrections_only",
+                      help="Include only records with a human correction")
+
+    # ── worker ────────────────────────────────────────────────────────────────
+    p_worker = sub.add_parser("worker", help="Distributed task execution workers")
+    p_worker_sub = p_worker.add_subparsers(dest="worker_cmd", required=True)
+
+    p_w_start = p_worker_sub.add_parser("start", help="Start a distributed worker process")
+    p_w_start.add_argument("--queue", default="sqlite://meshflow_tasks.db",
+                           help="Queue URL: sqlite://path.db or redis://host:port/db")
+    p_w_start.add_argument("--concurrency", type=int, default=4,
+                           help="Max parallel agent executions")
+    p_w_start.add_argument("--poll", type=float, default=1.0, dest="poll_interval",
+                           help="Poll interval in seconds when queue is idle")
+
+    p_w_status = p_worker_sub.add_parser("status", help="Show task queue status")
+    p_w_status.add_argument("--queue", default="sqlite://meshflow_tasks.db")
+    p_w_status.add_argument("--limit", type=int, default=20)
+
+    # ── templates ─────────────────────────────────────────────────────────────
+    p_tmpl = sub.add_parser("templates", help="Agent template registry")
+    p_tmpl_sub = p_tmpl.add_subparsers(dest="templates_cmd", required=True)
+
+    p_tmpl_sub.add_parser("list", help="List all templates in the local registry")
+
+    p_tmpl_pub = p_tmpl_sub.add_parser("publish", help="Publish a template YAML to the local registry")
+    p_tmpl_pub.add_argument("yaml", help="Path to template YAML file")
+
+    p_tmpl_pull = p_tmpl_sub.add_parser("pull", help="Retrieve a template by name")
+    p_tmpl_pull.add_argument("name", help="Template name")
+
+    p_tmpl_search = p_tmpl_sub.add_parser("search", help="BM25 search over template descriptions")
+    p_tmpl_search.add_argument("query", help="Search query")
+    p_tmpl_search.add_argument("--top", type=int, default=5, help="Max results")
+
+    p_tmpl_delete = p_tmpl_sub.add_parser("delete", help="Remove a template from the local registry")
+    p_tmpl_delete.add_argument("name", help="Template name to remove")
+
+    # ── lint ──────────────────────────────────────────────────────────────────
+    p_lint = sub.add_parser("lint", help="Static validate a workflow YAML before running")
+    p_lint.add_argument("yaml", help="Workflow YAML path")
+    p_lint.add_argument("--strict", action="store_true",
+                        help="Treat warnings as errors (exit 1 on any warning)")
+    p_lint.add_argument("--json", dest="as_json", action="store_true",
+                        help="Output issues as JSON array")
+
+    # ── diff ──────────────────────────────────────────────────────────────────
+    p_diff = sub.add_parser("diff", help="Compare two workflow YAML topologies")
+    p_diff.add_argument("yaml_a", help="First workflow YAML")
+    p_diff.add_argument("yaml_b", help="Second workflow YAML")
+    p_diff.add_argument("--json", dest="as_json", action="store_true")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -1038,6 +1148,8 @@ def main() -> None:
         "schema": _cmd_schema,
         "serve": _cmd_serve,
         "dev": _cmd_dev,
+        "studio": _cmd_studio,
+        "codegen": _cmd_codegen,
         "describe": _cmd_describe,
         "eval": _cmd_eval,
         "eval-diff": _cmd_eval_diff,
@@ -1076,6 +1188,13 @@ def main() -> None:
         "sla":           _cmd_sla,
         "snapshot":      _cmd_snapshot,
         "dasc":          _cmd_dasc,
+        "dashboard":     _cmd_dashboard,
+        "lint":          _cmd_lint,
+        "diff":          _cmd_diff,
+        "sweep":         _cmd_sweep,
+        "eval-feedback": _cmd_eval_feedback,
+        "worker":        _cmd_worker,
+        "templates":     _cmd_templates,
     }
     dispatch[args.cmd](args)
 
@@ -1651,9 +1770,41 @@ async def _async_replay(args: argparse.Namespace) -> None:
     if is_paused:
         checkpoint = await ledger.load_checkpoint_data(args.run_id)
         paused_node = checkpoint.get("paused_at_node", "?") if checkpoint else "?"
-        print(f"  ⏸  Paused at node '{paused_node}' — awaiting human approval.")
+        print(f"  Paused at node '{paused_node}' — awaiting human approval.")
         print(f"     Run: meshflow approve {args.run_id} {paused_node}")
         print()
+
+    # ── Time-travel rewind ────────────────────────────────────────────────────
+    if getattr(args, "rewind", 0):
+        from meshflow.core.time_travel import RewindEngine
+
+        engine = RewindEngine(args.db)
+        print(f"\n  [rewind] Rewinding to step {args.rewind}...")
+        if args.rewind_model:
+            print(f"           model    → {args.rewind_model}")
+        if args.rewind_prompt:
+            print(f"           prompt   → {args.rewind_prompt[:60]}")
+        print()
+        if not args.rewind_yaml:
+            print("  [rewind] ERROR: --yaml <path> is required for rewind.")
+            print("           Example: meshflow replay <run_id> --rewind 3 --yaml mesh.yaml")
+            return
+        try:
+            result = await engine.rewind(
+                run_id=args.run_id,
+                to_step=args.rewind,
+                workflow_yaml=args.rewind_yaml,
+                model_override=args.rewind_model,
+                prompt_override=args.rewind_prompt,
+            )
+            status = "COMPLETED" if result.completed else "PARTIAL"
+            print(f"  [rewind] {status}  run_id={result.rewind_run_id}")
+            print(f"           steps={result.steps_replayed}  "
+                  f"cost=${result.total_cost_usd:.5f}  "
+                  f"tokens={result.total_tokens}")
+            print(f"\n  Output:\n  {result.output[:400]}")
+        except Exception as exc:
+            print(f"  [rewind] ERROR: {exc}")
 
     if args.archive_s3:
         archive = await ledger.archive_run(args.run_id, args.archive_s3)
@@ -1966,6 +2117,26 @@ async def _async_trace(args: argparse.Namespace) -> None:
     summary = await ledger.run_summary(args.run_id)
     chain = await ledger.verify_chain(args.run_id)
 
+    # ── New: structured trace formats ─────────────────────────────────────────
+    fmt = getattr(args, "trace_format", "terminal")
+    if fmt in ("langsmith",) or (args.as_json and fmt == "terminal"):
+        from meshflow.observability.trace_viewer import TraceViewer
+        viewer = TraceViewer(args.db)
+        if fmt == "langsmith":
+            payload = await viewer.export_langsmith_json(args.run_id)
+        else:
+            payload = json.dumps(
+                {"run_id": args.run_id, "summary": summary, "steps": steps},
+                indent=2,
+            )
+        if args.export:
+            with open(args.export, "w") as fh:
+                fh.write(payload)
+            print(f"  Exported trace ({fmt}) → {args.export}")
+        else:
+            print(payload)
+        return
+
     if args.as_json or args.export:
         payload = json.dumps(
             {
@@ -2077,6 +2248,25 @@ def _cmd_dev(args: argparse.Namespace) -> None:
         api_keys=set(),
         ledger_path=getattr(args, "ledger", ":memory:"),
     )
+
+
+def _cmd_studio(args: argparse.Namespace) -> None:
+    from meshflow.cli.studio import start_studio_server
+    start_studio_server(host=args.host, port=args.port)
+
+
+def _cmd_codegen(args: argparse.Namespace) -> None:
+    from meshflow.core.codegen import SDKCodeGenerator
+    import os as _os
+    if not _os.path.exists(args.yaml):
+        print(f"  [codegen] YAML file not found: {args.yaml}")
+        sys.exit(1)
+    
+    gen = SDKCodeGenerator(args.yaml)
+    if args.language == "dotnet":
+        print(gen.generate_dotnet())
+    elif args.language == "java":
+        print(gen.generate_java())
 
 
 # ── schema ────────────────────────────────────────────────────────────────────
@@ -3561,6 +3751,42 @@ def _cmd_memory(args: argparse.Namespace) -> None:
         count = store.clear()
         print(f"  Cleared {count} memory entries.")
 
+    elif args.memory_cmd == "export":
+        from meshflow.intelligence.memory_backends import SQLiteMemoryBackend
+        import json as _json
+
+        backend = SQLiteMemoryBackend(args.db)
+        agent_name = args.agent
+        snapshot_data = backend.load(agent_name)
+
+        if snapshot_data is None:
+            print(f"  No memory found for agent {agent_name!r} in {args.db}")
+            sys.exit(1)
+
+        output_file = args.output or f"{agent_name}_memory.json"
+        with open(output_file, "w") as fh:
+            _json.dump(snapshot_data, fh, indent=2)
+        print(f"  Exported memory for {agent_name!r} → {output_file}")
+        items = sum(len(snapshot_data.get(k, [])) for k in ("working", "episodic", "procedural"))
+        print(f"  ({items} memory items)")
+
+    elif args.memory_cmd == "import":
+        from meshflow.intelligence.memory_backends import SQLiteMemoryBackend
+        import json as _json
+
+        with open(args.file) as fh:
+            snapshot_data = _json.load(fh)
+
+        agent_name = args.agent or snapshot_data.get("agent_id", "")
+        if not agent_name:
+            print("  ERROR: Cannot determine agent name. Use --agent <name>")
+            sys.exit(1)
+
+        backend = SQLiteMemoryBackend(args.db)
+        backend.save(agent_name, snapshot_data)
+        items = sum(len(snapshot_data.get(k, [])) for k in ("working", "episodic", "procedural"))
+        print(f"  Imported {items} memory item(s) for {agent_name!r} → {args.db}")
+
 
 # ── alerts ────────────────────────────────────────────────────────────────────
 
@@ -4486,3 +4712,229 @@ def _cmd_dasc(args: argparse.Namespace) -> None:
         taint_graph = TaintGraph()
         taint_graph.mark_tainted(args.agent_id)
         print(f"  Agent '{args.agent_id}' marked as tainted.")
+
+
+# ── eval-feedback ─────────────────────────────────────────────────────────────
+
+
+def _cmd_eval_feedback(args: argparse.Namespace) -> None:
+    from meshflow.eval.feedback import FeedbackCollector, FeedbackStore
+
+    store = FeedbackStore(args.db)
+    collector = FeedbackCollector(store)
+
+    if args.run_id:
+        summary = collector.summary(args.run_id)
+        print(f"\n  Feedback summary for run {args.run_id!r}:")
+        for k, v in summary.items():
+            print(f"    {k}: {v}")
+    else:
+        summary = store.stats(agent_name=args.agent)
+        print(f"\n  Feedback stats{f' (agent={args.agent!r})' if args.agent else ''}:")
+        for k, v in summary.items():
+            print(f"    {k}: {v}")
+
+    if args.export_jsonl:
+        pairs = collector.export_training_pairs(
+            agent_name=args.agent,
+            corrections_only=args.corrections_only,
+        )
+        with open(args.export_jsonl, "w") as fh:
+            for pair in pairs:
+                fh.write(json.dumps(pair) + "\n")
+        print(f"\n  Exported {len(pairs)} training pair(s) → {args.export_jsonl}")
+
+
+# ── worker ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_worker(args: argparse.Namespace) -> None:
+    if args.worker_cmd == "start":
+        asyncio.run(_async_worker_start(args))
+    elif args.worker_cmd == "status":
+        _worker_status(args)
+
+
+async def _async_worker_start(args: argparse.Namespace) -> None:
+    from meshflow.runtime.distributed import DistributedWorker
+
+    worker = DistributedWorker(
+        queue_url=args.queue,
+        concurrency=args.concurrency,
+        poll_interval=args.poll_interval,
+    )
+    print(f"  [worker] Starting with queue={args.queue!r}  concurrency={args.concurrency}  poll={args.poll_interval}s")
+    print("  [worker] Press Ctrl-C to stop.")
+    try:
+        await worker.start()
+    except KeyboardInterrupt:
+        worker.stop()
+        print("\n  [worker] Stopped.")
+
+
+def _worker_status(args: argparse.Namespace) -> None:
+    from meshflow.runtime.distributed import DistributedPool
+
+    pool = DistributedPool(queue_url=args.queue)
+    tasks = pool.list_tasks(limit=args.limit)
+    pending = pool.pending_count()
+    print(f"\n  Queue: {args.queue}  —  pending: {pending}  (showing last {args.limit})")
+    if not tasks:
+        print("  (no tasks)")
+        return
+    print(f"  {'task_id':<14} {'agent':<20} {'status':<10} task")
+    print("  " + "-" * 70)
+    for t in tasks:
+        print(f"  {t.task_id[:12]:<14} {t.agent_name[:18]:<20} {t.status:<10} {t.task[:40]}")
+
+
+# ── templates ─────────────────────────────────────────────────────────────────
+
+
+def _cmd_templates(args: argparse.Namespace) -> None:
+    from meshflow.registry.templates import AgentTemplate, TemplateRegistry
+
+    reg = TemplateRegistry()
+
+    if args.templates_cmd == "list":
+        templates = reg.list()
+        if not templates:
+            print("  (no templates in local registry)")
+            return
+        print(f"\n  Local registry: {reg._dir}  ({len(templates)} template(s))")
+        print(f"  {'name':<28} {'role':<14} {'version':<10} description")
+        print("  " + "-" * 80)
+        for t in templates:
+            print(f"  {t.name[:26]:<28} {t.role[:12]:<14} {t.version:<10} {t.description[:40]}")
+
+    elif args.templates_cmd == "publish":
+        tmpl = AgentTemplate.from_yaml(args.yaml)
+        path = reg.publish(tmpl)
+        print(f"  Published template {tmpl.name!r} → {path}")
+
+    elif args.templates_cmd == "pull":
+        try:
+            tmpl = reg.pull(args.name)
+            print(tmpl.to_yaml())
+        except KeyError as exc:
+            print(f"  ERROR: {exc}")
+            sys.exit(1)
+
+    elif args.templates_cmd == "search":
+        results = reg.search(args.query, top_k=args.top)
+        if not results:
+            print(f"  No templates matched {args.query!r}")
+            return
+        print(f"\n  Search results for {args.query!r}:")
+        for t in results:
+            print(f"  • {t.name} ({t.role}) — {t.description[:60]}")
+
+    elif args.templates_cmd == "delete":
+        removed = reg.delete(args.name)
+        if removed:
+            print(f"  Removed template {args.name!r}")
+        else:
+            print(f"  Template {args.name!r} not found in registry")
+            sys.exit(1)
+
+
+# ── dashboard ─────────────────────────────────────────────────────────────────
+
+
+def _cmd_dashboard(args: argparse.Namespace) -> None:
+    asyncio.run(_async_dashboard(args))
+
+
+async def _async_dashboard(args: argparse.Namespace) -> None:
+    from meshflow.cli.dashboard import TerminalDashboard
+
+    dash = TerminalDashboard(ledger_db=args.db, limit=args.limit)
+    if args.refresh > 0:
+        print(f"  [dashboard] Live mode — refreshing every {args.refresh}s. Press Ctrl-C to stop.")
+        await dash.watch(interval=args.refresh)
+    else:
+        await dash.render()
+
+
+# ── sweep ─────────────────────────────────────────────────────────────────────
+
+
+def _cmd_sweep(args: argparse.Namespace) -> None:
+    asyncio.run(_async_sweep(args))
+
+
+async def _async_sweep(args: argparse.Namespace) -> None:
+    from meshflow.eval.sweep import SweepGrid, WorkflowSweep
+
+    params: dict[str, list] = {}
+    if args.task:
+        params["task"] = [args.task]
+    if args.models:
+        params["model"] = list(args.models)
+
+    if not params:
+        print("  [sweep] Provide at least --task or --models to define a grid.")
+        sys.exit(1)
+
+    grid = SweepGrid(**params)
+    print(f"  [sweep] Grid: {len(grid)} variant(s) — yaml={args.yaml!r}")
+
+    sweep = WorkflowSweep(
+        workflow_yaml=args.yaml,
+        grid=grid,
+        task=args.task or "Execute workflow",
+        concurrency=args.concurrency,
+        ledger_db=args.db,
+    )
+
+    def _progress(done: int, total: int) -> None:
+        print(f"  [sweep] {done}/{total} variants complete", end="\r", flush=True)
+
+    results = await sweep.run(progress_callback=_progress)
+    print()
+    print(results.comparison_table())
+    print(f"\n  [sweep] Total wall time: {results.total_duration_s:.1f}s")
+
+
+# ── lint ──────────────────────────────────────────────────────────────────────
+
+
+def _cmd_lint(args: argparse.Namespace) -> None:
+    from meshflow.core.lint import lint_workflow_yaml
+
+    issues = lint_workflow_yaml(args.yaml)
+
+    if args.as_json:
+        print(json.dumps([
+            {"severity": i.severity, "path": i.path, "message": i.message,
+             "suggestion": i.suggestion}
+            for i in issues
+        ], indent=2))
+    else:
+        errors   = [i for i in issues if i.severity == "error"]
+        warnings = [i for i in issues if i.severity == "warning"]
+        infos    = [i for i in issues if i.severity == "info"]
+        status = "PASS" if not errors else "FAIL"
+        print(f"\n  [{status}] {args.yaml}")
+        for issue in issues:
+            print(str(issue))
+        print(f"\n  {len(errors)} error(s), {len(warnings)} warning(s), {len(infos)} info(s)")
+
+    errors = [i for i in issues if i.severity == "error"]
+    warnings = [i for i in issues if i.severity == "warning"]
+    if errors or (args.strict and warnings):
+        sys.exit(1)
+
+
+# ── diff ──────────────────────────────────────────────────────────────────────
+
+
+def _cmd_diff(args: argparse.Namespace) -> None:
+    from meshflow.core.diff import workflow_diff
+
+    result = workflow_diff(args.yaml_a, args.yaml_b)
+
+    if args.as_json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(result.summary())

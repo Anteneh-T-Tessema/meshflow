@@ -86,13 +86,14 @@ import asyncio
 import datetime
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from meshflow.core.events import EventKind, WorkflowEvent, WorkflowEventBus, global_event_bus
 from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
+from meshflow.core.policy import BudgetExceededError
 from meshflow.core.runtime import RuntimeOutcome, StepRecord, StepRuntime
 from meshflow.core.schemas import HumanInLoopConfig, Policy, RiskTier, policy_for_mode
 
@@ -110,11 +111,18 @@ class HumanDecision:
     ``approved=True`` routes the workflow forward; ``approved=False`` sets
     ``confidence=0.0`` in context so conditional edges can route to a
     rejection branch.
+
+    The optional ``rating``, ``feedback``, and ``corrections`` fields carry
+    qualitative signal that :class:`~meshflow.eval.feedback.FeedbackCollector`
+    can aggregate for fine-tuning preparation.
     """
 
     approved: bool
     comment: str = ""
     decided_by: str = "human"
+    rating: int = 0                          # 1–5 quality score; 0 = not rated
+    feedback: str = ""                       # free-text notes on output quality
+    corrections: dict[str, str] = field(default_factory=dict)  # field-level corrections
 
 
 class MaxIterationsError(Exception):
@@ -181,6 +189,8 @@ class WorkflowDefinition:
         self._terminal: list[str] = []
         self.compliance_guard: Any = None  # set by from_yaml when compliance: section present
         self.metadata: dict[str, Any] = {}  # free-form workflow metadata from YAML
+        self.yaml_sha256: str = ""          # SHA-256 of source YAML (set by from_yaml)
+        self.yaml_path: str = ""            # filesystem path to source YAML (set by from_yaml)
 
     # ── Builder API ───────────────────────────────────────────────────────────
 
@@ -383,12 +393,48 @@ class WorkflowDefinition:
         start = time.monotonic()
         ctx = dict(context or {})
         ctx["task"] = task
+        # Propagate workflow version pin so it lands in ledger step records
+        if self.yaml_sha256:
+            ctx["_workflow_sha256"] = self.yaml_sha256
+            ctx["_workflow_version"] = self.version
 
         await bus.emit(WorkflowEvent(
             kind=EventKind.WORKFLOW_START,
             run_id=run_id,
             data={"workflow": self.name, "task": task[:200]},
         ))
+
+        # ── Pre-run cost forecast gate ─────────────────────────────────────────
+        max_forecast = getattr(self.policy, "max_forecast_usd", 0.0)
+        if max_forecast > 0:
+            try:
+                from meshflow.optimization.planner import CostForecaster
+                fc = CostForecaster()
+                all_models: list[str] = []
+                for nd in self._nodes.values():
+                    if nd.kind.value == "native" and nd._runner is not None:
+                        from meshflow.core.workflow import _extract_agent_from_closure
+                        ag = _extract_agent_from_closure(nd._runner)
+                        if ag is not None:
+                            m = getattr(getattr(ag, "config", None), "model", "")
+                            if m:
+                                all_models.append(m)
+                if all_models:
+                    representative_model = all_models[0]
+                    forecast = fc.forecast(
+                        model=representative_model,
+                        messages=[{"role": "user", "content": task}],
+                        max_budget_usd=max_forecast,
+                    )
+                    if not forecast["within_budget"]:
+                        raise BudgetExceededError(
+                            f"Pre-run cost forecast ${forecast['total_usd_est']:.5f} "
+                            f"exceeds max_forecast_usd=${max_forecast:.5f} — run aborted."
+                        )
+            except BudgetExceededError:
+                raise
+            except Exception:
+                pass  # forecast errors are non-fatal; proceed with execution
 
         steps: list[RuntimeOutcome] = []
         blocked_nodes: list[str] = []
@@ -419,12 +465,80 @@ class WorkflowDefinition:
             # (_upstream_confidence etc.) without cross-node interference.
             ctx_snapshot = ctx.copy()
 
+            # When 2+ nodes run in parallel, deduplicate large repeated context
+            # values to avoid paying for the same tokens N times.
+            _dedup = None
+            if len(level_nodes) > 1:
+                from meshflow.agents.context_dedup import ContextDeduplicator
+                _dedup = ContextDeduplicator()
+
             async def _run_node(nd: MeshNode) -> RuntimeOutcome:
-                return await runtime.run(
-                    nd,
-                    NodeInput(task=task, context=ctx_snapshot.copy()),
-                    ctx_snapshot.copy(),
+                node_ctx = ctx_snapshot.copy()
+                if _dedup is not None:
+                    node_ctx = _dedup.deduplicate(node_ctx, agent_name=nd.id)
+
+                # Build output validator from node metadata
+                from meshflow.core.output_validation import OutputValidator, validator_from_yaml
+                schema_cfg = nd.metadata.get("output_schema")
+                validator = (
+                    OutputValidator(schema=schema_cfg) if schema_cfg else None
                 )
+                retry_on_fail  = nd.metadata.get("retry_on_fail", False)
+                max_retries    = int(nd.metadata.get("max_retries", 1))
+
+                current_task = task
+                for attempt in range(max(1, max_retries + 1 if retry_on_fail else 1)):
+                    outcome = await runtime.run(
+                        nd,
+                        NodeInput(
+                            task=current_task,
+                            context=node_ctx,
+                            attachments=nd.metadata.get("attachments", []),
+                        ),
+                        node_ctx,
+                    )
+                    if not outcome.ok:
+                        break  # governance block — no retry
+                    if validator is None:
+                        break  # no schema — accept as-is
+                    vresult = validator.validate(outcome.output.content)
+                    if vresult.valid:
+                        break  # valid output
+                    if attempt < max_retries:
+                        # Build retry prompt and re-run
+                        current_task = validator.retry_prompt(outcome.output.content, vresult.error)
+                    else:
+                        # Max retries reached — mark as blocked
+                        from meshflow.core.runtime import RuntimeOutcome as RO, StepRecord
+                        import datetime, uuid as _uuid
+                        blk_rec = StepRecord(
+                            run_id=outcome.record.run_id,
+                            step_id=_uuid.uuid4().hex[:8],
+                            node_id=nd.id,
+                            node_kind=outcome.record.node_kind,
+                            input_task=task,
+                            output_content=outcome.output.content,
+                            verdict="block",
+                            blocked=True,
+                            block_reason=f"output_schema validation failed: {vresult.error}",
+                            uncertainty=outcome.record.uncertainty,
+                            cost_usd=outcome.record.cost_usd,
+                            tokens_used=outcome.record.tokens_used,
+                            carbon_gco2=outcome.record.carbon_gco2,
+                            duration_ms=outcome.record.duration_ms,
+                            timestamp=datetime.datetime.now().isoformat(),
+                        )
+                        outcome = RO(
+                            ok=False,
+                            node_id=nd.id,
+                            node_kind=outcome.record.node_kind,
+                            output=outcome.output,
+                            record=blk_rec,
+                            blocked_by=f"output_schema:{vresult.error[:80]}",
+                            paused_for_human=False,
+                            human_context={},
+                        )
+                return outcome
 
             level_outcomes: list[RuntimeOutcome] = list(
                 await asyncio.gather(*[_run_node(nd) for nd in level_nodes])
@@ -591,6 +705,125 @@ class WorkflowDefinition:
             ledger_db=ledger_db,
         )
 
+    # ── Token-level streaming ─────────────────────────────────────────────────
+
+    async def stream(
+        self,
+        task: str,
+        runtime: StepRuntime,
+        *,
+        context: dict[str, Any] | None = None,
+    ):
+        """Async generator that yields :class:`~meshflow.core.streaming.StreamChunk` objects.
+
+        Combines step-lifecycle events (``node_start`` / ``node_end``) with
+        token-level streaming from native agent nodes.  Non-native nodes emit
+        lifecycle chunks only (no per-token granularity).
+
+        Usage::
+
+            async for chunk in wf.stream(task="Analyse Q3", runtime=runtime):
+                if chunk.kind == "token":
+                    print(chunk.content, end="", flush=True)
+                elif chunk.kind == "node_end":
+                    print(f"\\n[{chunk.node_name}] cost=${chunk.metadata.get('cost_usd',0):.5f}")
+        """
+        from meshflow.core.streaming import StreamChunk
+
+        ctx = dict(context or {})
+        ctx["task"] = task
+        if self.yaml_sha256:
+            ctx["_workflow_sha256"] = self.yaml_sha256
+            ctx["_workflow_version"] = self.version
+
+        run_id = runtime._run_id
+        completed: set[str] = set()
+        skipped: set[str] = set()
+        step_outcomes: dict[str, Any] = {}
+
+        yield StreamChunk(
+            kind="task_start",
+            node_name=self.name,
+            metadata={"run_id": run_id, "task": task[:120]},
+        )
+
+        ready, _ = self._compute_ready(completed, skipped, ctx, step_outcomes)
+
+        while ready:
+            level_nodes = [self._nodes[nid] for nid in ready if nid in self._nodes]
+            if not level_nodes:
+                break
+            ctx_snapshot = ctx.copy()
+
+            for nd in level_nodes:
+                yield StreamChunk(kind="node_start", node_name=nd.id,
+                                  metadata={"kind": nd.kind.value, "run_id": run_id})
+                try:
+                    tokens_streamed = False
+
+                    # Attempt token-level streaming for native nodes
+                    if nd.kind.value == "native" and nd._runner is not None:
+                        agent_obj = _extract_agent_from_closure(nd._runner)
+                        if agent_obj is not None and hasattr(agent_obj, "_provider"):
+                            try:
+                                async for tok in _stream_agent_tokens(
+                                    agent_obj, task, ctx_snapshot
+                                ):
+                                    yield StreamChunk(kind="token", content=tok, node_name=nd.id)
+                                    tokens_streamed = True
+                            except Exception:
+                                pass  # governance run below will still execute
+
+                    # Governance kernel run (audit/ledger/HITL — always executed)
+                    from meshflow.core.node import NodeInput
+                    outcome = await runtime.run(
+                        nd,
+                        NodeInput(
+                            task=task,
+                            context=ctx_snapshot.copy(),
+                            attachments=nd.metadata.get("attachments", []),
+                        ),
+                        ctx_snapshot.copy(),
+                    )
+                    step_outcomes[nd.id] = outcome
+
+                    if outcome.ok:
+                        completed.add(nd.id)
+                        if outcome.output.content:
+                            ctx[f"{nd.id}_output"] = outcome.output.content
+                        if outcome.output.structured:
+                            ctx.update({
+                                k: v for k, v in outcome.output.structured.items()
+                                if not k.startswith("_")
+                            })
+                        # Emit final output as token if nothing was streamed live
+                        if not tokens_streamed and outcome.output.content:
+                            yield StreamChunk(
+                                kind="token",
+                                content=outcome.output.content,
+                                node_name=nd.id,
+                            )
+
+                    yield StreamChunk(
+                        kind="node_end",
+                        node_name=nd.id,
+                        metadata={
+                            "ok": outcome.ok,
+                            "cost_usd": outcome.record.cost_usd,
+                            "tokens": outcome.record.tokens_used,
+                            "blocked": outcome.blocked_by or "",
+                            "run_id": run_id,
+                        },
+                    )
+                except Exception as exc:
+                    yield StreamChunk(kind="error", content=str(exc), node_name=nd.id)
+                    break
+
+            ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+            skipped.update(newly_skipped)
+
+        yield StreamChunk(kind="done", node_name=self.name, metadata={"run_id": run_id})
+
     # ── Durable HITL resume ───────────────────────────────────────────────────
 
     async def resume(
@@ -715,7 +948,11 @@ class WorkflowDefinition:
             async def _run_node(nd: MeshNode) -> RuntimeOutcome:
                 return await runtime.run(
                     nd,
-                    NodeInput(task=task, context=ctx_snapshot.copy()),
+                    NodeInput(
+                        task=task,
+                        context=ctx_snapshot.copy(),
+                        attachments=nd.metadata.get("attachments", []),
+                    ),
                     ctx_snapshot.copy(),
                 )
 
@@ -811,6 +1048,10 @@ class WorkflowDefinition:
             }
             wf = WorkflowDefinition.from_yaml("mesh.yaml", registry)
         """
+        import hashlib as _hashlib
+        with open(path, "rb") as _fh:
+            _raw_bytes = _fh.read()
+        _yaml_sha256 = _hashlib.sha256(_raw_bytes).hexdigest()
         with open(path) as fh:
             data = yaml.safe_load(fh)
 
@@ -841,6 +1082,8 @@ class WorkflowDefinition:
                 tier_threshold=hitl_tier,
             ),
         )
+        if pol_cfg.get("max_forecast_usd", 0.0):
+            pol.max_forecast_usd = float(pol_cfg["max_forecast_usd"])
 
         wf = cls(
             name=data.get("name", "unnamed"),
@@ -887,11 +1130,34 @@ class WorkflowDefinition:
                     if agent
                     else MeshNode(id=node_id, kind=kind, risk_profile=risk)
                 )
+            elif kind == NodeKind.SUBGRAPH:
+                if ref:
+                    from meshflow.core.subgraph import subgraph_from_yaml
+                    node = subgraph_from_yaml(node_id, ref, node_registry)
+                else:
+                    inner_wf = (node_registry or {}).get(node_cfg.get("workflow", node_id))
+                    if inner_wf is not None:
+                        from meshflow.core.subgraph import SubgraphNode
+                        node = SubgraphNode.create(node_id, inner_wf)
+                    else:
+                        node = MeshNode(id=node_id, kind=kind, risk_profile=risk)
             elif kind == NodeKind.HTTP:
                 url = node_cfg.get("url", "")
                 node = MeshNode.from_http(node_id, url, risk=risk)
             else:
                 node = MeshNode(id=node_id, kind=kind, risk_profile=risk)
+
+            # Store per-node static attachments (multi-modal YAML spec)
+            attachments = node_cfg.get("attachments", [])
+            if attachments:
+                node.metadata["attachments"] = list(attachments)
+
+            # Store structured output schema + retry config
+            output_schema = node_cfg.get("output_schema")
+            if output_schema:
+                node.metadata["output_schema"] = output_schema
+            node.metadata["retry_on_fail"] = bool(node_cfg.get("retry_on_fail", False))
+            node.metadata["max_retries"] = int(node_cfg.get("max_retries", 1))
 
             wf.add_node(node)
 
@@ -930,8 +1196,10 @@ class WorkflowDefinition:
         if terminal:
             wf.set_terminal(*terminal)
 
-        # Metadata
+        # Metadata — user-defined only; fingerprint lives on separate attributes
         wf.metadata = dict(data.get("metadata", {}))
+        wf.yaml_sha256 = _yaml_sha256    # SHA-256 of the YAML for exact-replay version pinning
+        wf.yaml_path = path
 
         # Compliance guard — optional section activates real-time rule enforcement
         compliance_cfg = data.get("compliance", {})
@@ -1100,3 +1368,79 @@ def _build_native_node(node_id: str, node_cfg: dict[str, Any], pol: Policy) -> M
     agent = AgentCls(cfg, pol)
 
     return MeshNode.from_native(node_id, agent)
+
+
+# ── Streaming helpers (used by WorkflowDefinition.stream()) ──────────────────
+
+def _extract_agent_from_closure(runner: Any) -> Any:
+    """Try to pull the underlying agent object out of a closure created by
+    ``MeshNode.from_native``.  Returns ``None`` if the closure doesn't hold
+    an agent-like object.
+    """
+    closure = getattr(runner, "__closure__", None)
+    if closure is None:
+        return None
+    for cell in closure:
+        try:
+            val = cell.cell_contents
+            # A _BuiltAgent / BaseAgent carries both .config and .step()
+            if hasattr(val, "config") and hasattr(val, "step") and hasattr(val, "_provider"):
+                return val
+        except ValueError:
+            pass
+    return None
+
+
+async def _stream_agent_tokens(agent: Any, task: str, context: dict[str, Any]):
+    """Async generator: yield token strings from *agent*'s LLM provider.
+
+    Uses the provider's ``stream_complete()`` if available, otherwise falls
+    back to a single ``complete()`` call and yields the full text as one chunk.
+    """
+    import uuid as _uuid
+
+    model  = getattr(agent.config, "model", "")
+    system = getattr(agent.config, "system_prompt", "")
+    max_tok = getattr(agent.config, "max_tokens", 4096)
+    provider = getattr(agent, "_provider", None)
+
+    if provider is None:
+        return
+
+    messages = [{"role": "user", "content": f"Task: {task}\nContext: {context}"}]
+    run_id  = str(_uuid.uuid4())[:8]
+    step_id = str(_uuid.uuid4())[:8]
+
+    if hasattr(provider, "stream_complete"):
+        try:
+            async for chunk in provider.stream_complete(
+                model=model,
+                messages=messages,
+                system=system,
+                max_tokens=max_tok,
+                agent_id=getattr(agent.config, "agent_id", "agent"),
+                step_id=step_id,
+                run_id=run_id,
+            ):
+                text = getattr(chunk, "text", str(chunk))
+                if text:
+                    yield text
+            return
+        except Exception:
+            pass
+
+    # Fallback: full completion in one chunk
+    try:
+        text, _, _ = await provider.complete(
+            model=model,
+            messages=messages,
+            system=system,
+            max_tokens=max_tok,
+            agent_id=getattr(agent.config, "agent_id", "agent"),
+            step_id=step_id,
+            run_id=run_id,
+        )
+        if text:
+            yield text
+    except Exception:
+        pass

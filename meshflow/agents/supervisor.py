@@ -69,6 +69,13 @@ class Supervisor:
         Worker agents.  The orchestrator addresses them by name.
     max_rounds:
         Maximum plan → execute → review cycles (default 3).
+    skill_registry:
+        Optional :class:`~meshflow.agents.skill_registry.AgentSkillRegistry`.
+        When provided, the supervisor uses BM25 or LLM-driven selection to
+        pick the best worker for each subtask instead of hard-coding names.
+    use_llm_delegation:
+        When True (and *skill_registry* is set), uses the orchestrator LLM to
+        make the final worker selection.  Default False (BM25 only).
     """
 
     def __init__(
@@ -76,10 +83,14 @@ class Supervisor:
         orchestrator: Agent,
         workers: list[Agent],
         max_rounds: int = 3,
+        skill_registry: Any = None,
+        use_llm_delegation: bool = False,
     ) -> None:
         self._orchestrator = orchestrator
         self._workers: dict[str, Agent] = {w.name: w for w in workers}
         self._max_rounds = max_rounds
+        self._skill_registry = skill_registry
+        self._use_llm_delegation = use_llm_delegation
 
     async def run(self, task: str, context: dict[str, Any] | None = None) -> SupervisorResult:
         ctx = context or {}
@@ -118,6 +129,17 @@ class Supervisor:
 
             # ── Execute ───────────────────────────────────────────────────────
             for worker_name, subtask in steps_to_run:
+                # Skill-registry delegation: override the worker_name if registry available
+                if self._skill_registry is not None:
+                    if self._use_llm_delegation:
+                        profile = await self._skill_registry.select_llm(
+                            subtask, self._orchestrator
+                        )
+                    else:
+                        profile = self._skill_registry.select_best(subtask)
+                    if profile and profile.agent_name in self._workers:
+                        worker_name = profile.agent_name
+
                 worker = self._workers.get(worker_name)
                 if worker is None:
                     worker_outputs[worker_name] = f"[worker '{worker_name}' not found]"

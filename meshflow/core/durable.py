@@ -296,6 +296,14 @@ class DurableWorkflowExecutor:
             forked._store = self._store  # Share in-memory dict reference
         else:
             forked = DurableWorkflowExecutor(run_id=new_id, backend="sqlite", db_path=self._store._path)
+            if self._store._path == ":memory:":
+                # Close the new connection to avoid leaks
+                if hasattr(forked._store, "_conn_obj"):
+                    try:
+                        forked._store._conn_obj.close()
+                    except Exception:
+                        pass
+                forked._store = self._store
         return forked
 
 

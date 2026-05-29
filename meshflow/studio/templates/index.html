@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MeshFlow Studio — Visual Agent Orchestration</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #0a0b10;
+      --bg-surface: rgba(20, 22, 35, 0.65);
+      --bg-surface-solid: #141623;
+      --accent: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.3);
+      --accent-green: #10b981;
+      --accent-pink: #ec4899;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-focus: rgba(99, 102, 241, 0.5);
+      --shadow-glow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.1) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(236, 72, 153, 0.08) 0px, transparent 50%);
+      color: var(--text-main);
+      font-family: 'Outfit', sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: rgba(10, 11, 16, 0.8);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 1.25rem 2.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .logo-badge {
+      background: linear-gradient(135deg, var(--accent), var(--accent-pink));
+      color: white;
+      padding: 0.35rem 0.75rem;
+      border-radius: 8px;
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      box-shadow: 0 0 15px var(--accent-glow);
+    }
+
+    .logo-text {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 600;
+      background: linear-gradient(to right, #ffffff, #9ca3af);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 1rem;
+    }
+
+    .btn {
+      background: var(--bg-surface-solid);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.9rem;
+      transition: all 0.25s ease;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .btn:hover {
+      border-color: var(--accent);
+      box-shadow: 0 0 12px var(--accent-glow);
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #4f46e5);
+      border: none;
+      box-shadow: 0 4px 14px var(--accent-glow);
+    }
+
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #7c3aed, var(--accent));
+      box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5);
+    }
+
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 280px 1fr 340px;
+      height: calc(100vh - 75px);
+    }
+
+    /* Left Sidebar: Toolbox */
+    .sidebar-left {
+      background: rgba(10, 11, 16, 0.5);
+      border-right: 1px solid var(--border);
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .section-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+    }
+
+    .node-templates {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .node-template-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      cursor: grab;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .node-template-card::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      width: 4px;
+      background: var(--accent);
+    }
+
+    .node-template-card.kind-http::before {
+      background: var(--accent-pink);
+    }
+
+    .node-template-card.kind-subgraph::before {
+      background: var(--accent-green);
+    }
+
+    .node-template-card:hover {
+      border-color: rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.05);
+      transform: translateX(4px);
+    }
+
+    .node-template-title {
+      font-weight: 600;
+      font-size: 0.95rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .node-template-desc {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      line-height: 1.3;
+    }
+
+    /* Center: Designer Canvas */
+    .canvas-container {
+      background-image: 
+        radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+      background-size: 24px 24px;
+      position: relative;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .canvas-header {
+      padding: 1rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(10, 11, 16, 0.3);
+      backdrop-filter: blur(4px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .canvas-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+
+    .canvas-actions {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .canvas-body {
+      flex: 1;
+      position: relative;
+      min-height: 600px;
+      padding: 2rem;
+    }
+
+    /* Node on Canvas */
+    .canvas-node {
+      background: var(--bg-surface-solid);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      width: 240px;
+      padding: 1.25rem;
+      position: absolute;
+      box-shadow: var(--shadow-glow);
+      cursor: move;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .canvas-node:hover, .canvas-node.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 16px var(--accent-glow);
+    }
+
+    .canvas-node.selected {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    .node-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.5rem;
+    }
+
+    .node-badge-type {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-weight: 600;
+      background: rgba(99, 102, 241, 0.15);
+      color: #818cf8;
+    }
+
+    .node-badge-type.http {
+      background: rgba(236, 72, 153, 0.15);
+      color: #f472b6;
+    }
+
+    .node-badge-type.subgraph {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+    }
+
+    .node-id-label {
+      font-weight: 600;
+      font-size: 0.95rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .node-meta-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 0.35rem;
+    }
+
+    /* Edge connectors (inputs/outputs) */
+    .connector-point {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--bg-base);
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    .connector-input {
+      top: -6px;
+    }
+
+    .connector-output {
+      bottom: -6px;
+    }
+
+    /* Right Sidebar: Editor / Config Panel */
+    .sidebar-right {
+      background: rgba(10, 11, 16, 0.5);
+      border-left: 1px solid var(--border);
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      overflow-y: auto;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .form-label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .form-control {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 0.8rem;
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 0.9rem;
+      transition: all 0.2s ease;
+      width: 100%;
+    }
+
+    .form-control:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 8px var(--accent-glow);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .edge-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .edge-card {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+    }
+
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.75rem;
+    }
+
+    .btn-danger:hover {
+      background: #ef4444;
+      color: white;
+    }
+
+    /* Modal / Popup for YAML Export */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.85);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(8px);
+    }
+
+    .modal-card {
+      background: var(--bg-surface-solid);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      width: 650px;
+      max-width: 90%;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: var(--shadow-glow);
+    }
+
+    .modal-header {
+      padding: 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .modal-body {
+      padding: 1.5rem;
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .yaml-preview {
+      background: #06070a;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      color: #34d399;
+      font-family: 'Space Grotesk', monospace;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-x: auto;
+    }
+
+    .modal-footer {
+      padding: 1.25rem 1.5rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo-container">
+      <div class="logo-badge">STUDIO</div>
+      <div class="logo-text">MeshFlow Designer</div>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-primary" onclick="exportYAML()">Export YAML</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Left Sidebar: toolbox -->
+    <div class="sidebar-left">
+      <div>
+        <h3 class="section-title">Add Node</h3>
+        <div class="node-templates">
+          <div class="node-template-card kind-native" onclick="addNode('native')">
+            <div class="node-template-title">Native Agent Node</div>
+            <div class="node-template-desc">Standard LLM agent containing prompt, config, and tools.</div>
+          </div>
+          <div class="node-template-card kind-http" onclick="addNode('http')">
+            <div class="node-template-title">HTTP Endpoint Node</div>
+            <div class="node-template-desc">Delegates tasks to external webhooks or API services.</div>
+          </div>
+          <div class="node-template-card kind-subgraph" onclick="addNode('subgraph')">
+            <div class="node-template-title">Subgraph Node</div>
+            <div class="node-template-desc">Wraps an entire child workflow as a single node.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center: Designer Workspace -->
+    <div class="canvas-container">
+      <div class="canvas-header">
+        <div class="canvas-title">Workflow Editor Canvas</div>
+        <div class="canvas-actions">
+          <button class="btn" style="padding: 0.4rem 0.8rem;" onclick="clearCanvas()">Clear All</button>
+        </div>
+      </div>
+      <div class="canvas-body" id="canvas">
+        <!-- Nodes are spawned here programmatically -->
+      </div>
+    </div>
+
+    <!-- Right Sidebar: Configuration panel -->
+    <div class="sidebar-right">
+      <!-- Workflow details -->
+      <div>
+        <h3 class="section-title">Workflow Config</h3>
+        <div class="form-group">
+          <label class="form-label">Workflow Name</label>
+          <input type="text" class="form-control" id="wf-name" value="my-orchestration-flow">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Max Cost (USD)</label>
+          <input type="number" step="0.01" class="form-control" id="wf-max-cost" value="1.50">
+        </div>
+      </div>
+
+      <!-- Node configuration -->
+      <div id="node-config-section" style="display: none;">
+        <h3 class="section-title">Node Configuration</h3>
+        <div class="form-group">
+          <label class="form-label">Node ID</label>
+          <input type="text" class="form-control" id="node-id" oninput="updateActiveNode()">
+        </div>
+        <div class="form-group" id="group-role">
+          <label class="form-label">Agent Role</label>
+          <select class="form-control" id="node-role" onchange="updateActiveNode()">
+            <option value="executor">Executor</option>
+            <option value="researcher">Researcher</option>
+            <option value="critic">Critic</option>
+            <option value="checker">Checker</option>
+          </select>
+        </div>
+        <div class="form-group" id="group-model">
+          <label class="form-label">LLM Model</label>
+          <input type="text" class="form-control" id="node-model" value="claude-sonnet-4-6" oninput="updateActiveNode()">
+        </div>
+        <div class="form-group" id="group-url" style="display: none;">
+          <label class="form-label">HTTP URL</label>
+          <input type="text" class="form-control" id="node-url" value="https://api.example.com/agent" oninput="updateActiveNode()">
+        </div>
+        <div class="form-group" id="group-workflow" style="display: none;">
+          <label class="form-label">Workflow Ref</label>
+          <input type="text" class="form-control" id="node-workflow" value="child_workflow" oninput="updateActiveNode()">
+        </div>
+      </div>
+
+      <!-- Edges / Transitions -->
+      <div>
+        <h3 class="section-title">Transitions (Edges)</h3>
+        <div class="form-group">
+          <label class="form-label">Source Node</label>
+          <select class="form-control" id="edge-source"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Target Node</label>
+          <select class="form-control" id="edge-target"></select>
+        </div>
+        <button class="btn btn-primary" style="width: 100%;" onclick="addEdge()">Add Link</button>
+        <div class="edge-list" id="edge-list-container" style="margin-top: 1rem;"></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Modal for YAML Preview -->
+  <div class="modal-overlay" id="modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 style="font-family: 'Space Grotesk', sans-serif;">Generated meshflow.yaml</h2>
+        <button onclick="closeModal()" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.5rem;">&times;</button>
+      </div>
+      <div class="modal-body">
+        <pre class="yaml-preview" id="yaml-preview-code"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="closeModal()">Close</button>
+        <button class="btn btn-primary" onclick="downloadYAML()">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let nodes = [
+      { id: 'researcher', kind: 'native', role: 'researcher', model: 'claude-sonnet-4-6', x: 50, y: 150 },
+      { id: 'verifier', kind: 'native', role: 'checker', model: 'claude-haiku-3-5', x: 350, y: 150 }
+    ];
+    let edges = [
+      { from: 'researcher', to: 'verifier' }
+    ];
+    let selectedNodeId = null;
+
+    function render() {
+      const canvas = document.getElementById('canvas');
+      canvas.innerHTML = '';
+      
+      nodes.forEach(node => {
+        const div = document.createElement('div');
+        div.className = `canvas-node ${selectedNodeId === node.id ? 'selected' : ''}`;
+        div.style.left = node.x + 'px';
+        div.style.top = node.y + 'px';
+        
+        let metaHtml = '';
+        if (node.kind === 'native') {
+          metaHtml = `
+            <div class="node-meta-row"><span>Role:</span><span>${node.role}</span></div>
+            <div class="node-meta-row"><span>Model:</span><span>${node.model}</span></div>
+          `;
+        } else if (node.kind === 'http') {
+          metaHtml = `<div class="node-meta-row" style="word-break: break-all;"><span>URL:</span><span>${node.url || ''}</span></div>`;
+        } else if (node.kind === 'subgraph') {
+          metaHtml = `<div class="node-meta-row"><span>Workflow:</span><span>${node.workflow || ''}</span></div>`;
+        }
+
+        div.innerHTML = `
+          <div class="connector-point connector-input"></div>
+          <div class="node-header">
+            <span class="node-id-label">${node.id}</span>
+            <span class="node-badge-type ${node.kind}">${node.kind}</span>
+          </div>
+          ${metaHtml}
+          <div class="connector-point connector-output"></div>
+        `;
+
+        // Click to select
+        div.onclick = (e) => {
+          e.stopPropagation();
+          selectNode(node.id);
+        };
+
+        // Simple dragging implementation
+        let startX, startY;
+        div.onmousedown = (e) => {
+          if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+          startX = e.clientX - node.x;
+          startY = e.clientY - node.y;
+          
+          document.onmousemove = (moveEvent) => {
+            node.x = moveEvent.clientX - startX;
+            node.y = moveEvent.clientY - startY;
+            div.style.left = node.x + 'px';
+            div.style.top = node.y + 'px';
+          };
+          
+          document.onmouseup = () => {
+            document.onmousemove = null;
+            document.onmouseup = null;
+          };
+        };
+
+        canvas.appendChild(div);
+      });
+
+      // Update edge lists and selects
+      updateEdgeDropdowns();
+      renderEdgeList();
+    }
+
+    function addNode(kind) {
+      const id = kind + '_' + Math.random().toString(36).substr(2, 5);
+      const node = {
+        id: id,
+        kind: kind,
+        x: 100 + Math.random() * 100,
+        y: 100 + Math.random() * 150
+      };
+      if (kind === 'native') {
+        node.role = 'executor';
+        node.model = 'claude-sonnet-4-6';
+      } else if (kind === 'http') {
+        node.url = 'https://api.example.com/agent';
+      } else if (kind === 'subgraph') {
+        node.workflow = 'child_workflow';
+      }
+      nodes.push(node);
+      render();
+      selectNode(id);
+    }
+
+    function selectNode(id) {
+      selectedNodeId = id;
+      render();
+      
+      const node = nodes.find(n => n.id === id);
+      if (!node) return;
+
+      document.getElementById('node-config-section').style.display = 'block';
+      document.getElementById('node-id').value = node.id;
+      
+      // Toggle inputs based on node kind
+      if (node.kind === 'native') {
+        document.getElementById('group-role').style.display = 'flex';
+        document.getElementById('group-model').style.display = 'flex';
+        document.getElementById('group-url').style.display = 'none';
+        document.getElementById('group-workflow').style.display = 'none';
+        document.getElementById('node-role').value = node.role;
+        document.getElementById('node-model').value = node.model;
+      } else if (node.kind === 'http') {
+        document.getElementById('group-role').style.display = 'none';
+        document.getElementById('group-model').style.display = 'none';
+        document.getElementById('group-url').style.display = 'flex';
+        document.getElementById('group-workflow').style.display = 'none';
+        document.getElementById('node-url').value = node.url || '';
+      } else if (node.kind === 'subgraph') {
+        document.getElementById('group-role').style.display = 'none';
+        document.getElementById('group-model').style.display = 'none';
+        document.getElementById('group-url').style.display = 'none';
+        document.getElementById('group-workflow').style.display = 'flex';
+        document.getElementById('node-workflow').value = node.workflow || '';
+      }
+    }
+
+    function updateActiveNode() {
+      if (!selectedNodeId) return;
+      const node = nodes.find(n => n.id === selectedNodeId);
+      if (!node) return;
+
+      const newId = document.getElementById('node-id').value.trim();
+      if (newId && newId !== node.id) {
+        // Update all associated edges
+        edges.forEach(e => {
+          if (e.from === node.id) e.from = newId;
+          if (e.to === node.id) e.to = newId;
+        });
+        node.id = newId;
+        selectedNodeId = newId;
+      }
+
+      if (node.kind === 'native') {
+        node.role = document.getElementById('node-role').value;
+        node.model = document.getElementById('node-model').value;
+      } else if (node.kind === 'http') {
+        node.url = document.getElementById('node-url').value;
+      } else if (node.kind === 'subgraph') {
+        node.workflow = document.getElementById('node-workflow').value;
+      }
+
+      render();
+    }
+
+    function clearCanvas() {
+      nodes = [];
+      edges = [];
+      selectedNodeId = null;
+      document.getElementById('node-config-section').style.display = 'none';
+      render();
+    }
+
+    function updateEdgeDropdowns() {
+      const srcSelect = document.getElementById('edge-source');
+      const tgtSelect = document.getElementById('edge-target');
+      srcSelect.innerHTML = '';
+      tgtSelect.innerHTML = '';
+
+      nodes.forEach(n => {
+        srcSelect.add(new Option(n.id, n.id));
+        tgtSelect.add(new Option(n.id, n.id));
+      });
+    }
+
+    function addEdge() {
+      const from = document.getElementById('edge-source').value;
+      const to = document.getElementById('edge-target').value;
+      if (from === to) return;
+      
+      // Avoid duplicates
+      if (edges.some(e => e.from === from && e.to === to)) return;
+      
+      edges.push({ from, to });
+      render();
+    }
+
+    function removeEdge(idx) {
+      edges.splice(idx, 1);
+      render();
+    }
+
+    function renderEdgeList() {
+      const container = document.getElementById('edge-list-container');
+      container.innerHTML = '';
+      edges.forEach((edge, idx) => {
+        const div = document.createElement('div');
+        div.className = 'edge-card';
+        div.innerHTML = `
+          <span>${edge.from} &rarr; ${edge.to}</span>
+          <button class="btn-danger" onclick="removeEdge(${idx})">Delete</button>
+        `;
+        container.appendChild(div);
+      });
+    }
+
+    function buildYAML() {
+      const wfName = document.getElementById('wf-name').value;
+      const maxCost = document.getElementById('wf-max-cost').value;
+      
+      let yaml = `name: ${wfName}\n\n`;
+      yaml += `policy:\n  max_cost_usd: ${maxCost}\n\n`;
+      
+      yaml += `nodes:\n`;
+      nodes.forEach(n => {
+        yaml += `  - id: ${n.id}\n`;
+        yaml += `    kind: ${n.kind}\n`;
+        if (n.kind === 'native') {
+          yaml += `    agent:\n`;
+          yaml += `      role: ${n.role}\n`;
+          yaml += `      model: ${n.model}\n`;
+        } else if (n.kind === 'http') {
+          yaml += `    url: ${n.url || ''}\n`;
+        } else if (n.kind === 'subgraph') {
+          yaml += `    workflow: ${n.workflow || ''}\n`;
+        }
+      });
+      
+      yaml += `\nedges:\n`;
+      edges.forEach(e => {
+        yaml += `  - from: ${e.from}\n`;
+        yaml += `    to: ${e.to}\n`;
+      });
+
+      return yaml;
+    }
+
+    function exportYAML() {
+      const yaml = buildYAML();
+      document.getElementById('yaml-preview-code').textContent = yaml;
+      document.getElementById('modal').style.display = 'flex';
+    }
+
+    function closeModal() {
+      document.getElementById('modal').style.display = 'none';
+    }
+
+    function downloadYAML() {
+      const yaml = buildYAML();
+      const blob = new Blob([yaml], { type: 'text/yaml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'meshflow.yaml';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // Initial render
+    render();
+  </script>
+</body>
+</html>

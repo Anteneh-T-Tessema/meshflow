@@ -36,6 +36,7 @@ class NodeKind(str, Enum):
     HUMAN = "human"
     HTTP = "http"
     PYTHON = "python"
+    SUBGRAPH = "subgraph"
 
 
 @dataclass
@@ -43,6 +44,14 @@ class NodeInput:
     task: str
     context: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    attachments: list[dict[str, Any]] = field(default_factory=list)
+    """Pre-serialised multi-modal content blocks (Anthropic API format).
+
+    When non-empty the runner constructs a multi-part message with these
+    blocks prepended to the text prompt.  Populate from
+    ``MultiModalInput.to_message_block()`` or the workflow YAML
+    ``attachments:`` field.
+    """
 
 
 @dataclass
@@ -84,7 +93,10 @@ class MeshNode:
         """Wrap a MeshFlow BaseAgent as a MeshNode."""
 
         async def runner(inp: NodeInput) -> NodeOutput:
-            result = await agent_instance.step(inp.task, inp.context)
+            ctx = inp.context
+            if inp.attachments:
+                ctx = {**inp.context, "__attachments__": inp.attachments}
+            result = await agent_instance.step(inp.task, ctx)
             content = str(
                 result.get("execution_result")
                 or result.get("research")

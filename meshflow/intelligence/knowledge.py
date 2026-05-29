@@ -353,6 +353,48 @@ class AgentKnowledge:
             combined = combined[:max_chars] + "…"
         return combined
 
+    def context_blocks_cached(
+        self,
+        query: str,
+        max_chars: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Return knowledge context as Anthropic cache_control message blocks.
+
+        Each retrieved chunk becomes a ``{"type": "text", "text": "...",
+        "cache_control": {"type": "ephemeral"}}`` block.  When passed as the
+        ``content`` of a user message the Anthropic API will cache these blocks
+        across calls, saving tokens on frequently-used knowledge sources.
+
+        Usage::
+
+            blocks = knowledge.context_blocks_cached("HIPAA PHI handling")
+            messages = [
+                {"role": "user", "content": [
+                    *blocks,
+                    {"type": "text", "text": f"Task: {task}"},
+                ]}
+            ]
+        """
+        chunks = self.retrieve(query)
+        if not chunks:
+            return []
+        blocks: list[dict[str, Any]] = []
+        total = 0
+        for chunk in chunks:
+            if total + len(chunk) > max_chars:
+                remaining = max_chars - total
+                if remaining > 80:
+                    chunk = chunk[:remaining] + "…"
+                else:
+                    break
+            blocks.append({
+                "type": "text",
+                "text": chunk,
+                "cache_control": {"type": "ephemeral"},
+            })
+            total += len(chunk)
+        return blocks
+
     def __len__(self) -> int:
         return len(self._sources)
 

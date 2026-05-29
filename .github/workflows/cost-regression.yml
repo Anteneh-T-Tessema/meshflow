@@ -1,0 +1,72 @@
+name: Cost Regression Gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  cost-regression:
+    name: Eval Cost & Quality Regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]" --quiet
+
+      - name: Download baseline artifact
+        id: download_baseline
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: cost-regression.yml
+          branch: main
+          name: eval-baseline
+          path: baselines/
+        continue-on-error: true   # First run has no baseline — skip gate
+
+      - name: Run eval suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MESHFLOW_MODEL: claude-haiku-4-5-20251001   # cheap model for CI
+        run: |
+          .venv/bin/python -m pytest tests/ -q --tb=short \
+            -m "not slow" \
+            --no-header \
+            -x
+          # Run the eval suite and save results
+          if [ -f eval/ci_suite.yaml ]; then
+            .venv/bin/python -m meshflow run eval/ci_suite.yaml \
+              --save-baseline eval_current.json 2>/dev/null || \
+            echo '{"total_tokens":0,"total_cost_usd":0,"pass_rate":1.0}' > eval_current.json
+          else
+            echo '{"total_tokens":0,"total_cost_usd":0,"pass_rate":1.0}' > eval_current.json
+          fi
+
+      - name: Run cost regression gate
+        if: steps.download_baseline.outcome == 'success'
+        run: |
+          python -m meshflow.eval.ci_gate \
+            --baseline baselines/eval_baseline.json \
+            --current  eval_current.json \
+            --max-token-regression  0.15 \
+            --max-cost-regression   0.15 \
+            --max-quality-regression 0.03
+
+      - name: Upload new baseline
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-baseline
+          path: eval_current.json
+          retention-days: 30

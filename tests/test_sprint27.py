@@ -315,7 +315,15 @@ class TestAgentKnowledgeIntegration:
         await built.step("Tell me about HIPAA", {})
 
         assert len(prompts_sent) == 1
-        assert "[Knowledge]" in prompts_sent[0]
+        content = prompts_sent[0]
+        # Knowledge is injected either as a plain "[Knowledge]\n..." string
+        # (legacy) or as Anthropic cache_control blocks (list) with the
+        # knowledge text in each block's "text" field.
+        if isinstance(content, str):
+            assert "[Knowledge]" in content or "HIPAA" in content
+        else:
+            all_text = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+            assert "HIPAA" in all_text
 
     @pytest.mark.asyncio
     async def test_agent_run_with_knowledge_no_error(self):

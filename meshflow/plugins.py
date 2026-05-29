@@ -210,3 +210,214 @@ def list_plugins_table() -> list[dict[str, Any]]:
     """Return all plugins as a list of dicts, suitable for tabular display."""
     plugins = discover_plugins()
     return [p.to_dict() for p in plugins]
+
+
+# ── Vulnerability scanning ────────────────────────────────────────────────────
+
+import hashlib
+import json
+import sqlite3
+import time
+
+
+@dataclass
+class PluginScanResult:
+    """Result of scanning one plugin distribution for known vulnerabilities."""
+
+    dist_name: str
+    version: str
+    safe: bool
+    vulnerabilities: list[dict[str, Any]] = field(default_factory=list)
+    hash_ok: bool = True
+    hash_algorithm: str = ""
+    hash_value: str = ""
+    scan_source: str = ""  # "pypi-advisory-db" | "local-allowlist" | "no-data"
+    scanned_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "dist_name": self.dist_name,
+            "version": self.version,
+            "safe": self.safe,
+            "vulnerabilities": self.vulnerabilities,
+            "hash_ok": self.hash_ok,
+            "hash_algorithm": self.hash_algorithm,
+            "hash_value": self.hash_value,
+            "scan_source": self.scan_source,
+            "scanned_at": self.scanned_at,
+        }
+
+
+def scan_plugin(info: PluginInfo) -> PluginScanResult:
+    """Scan a plugin distribution for known vulnerabilities.
+
+    Uses two sources (in order):
+    1. PyPI advisory database via ``pip audit --json`` (if pip-audit is installed).
+    2. Local hash allowlist in ``~/.meshflow/plugin_allowlist.json``.
+
+    If neither is available the scan is marked ``scan_source="no-data"`` but
+    flagged as ``safe=True`` (unknown ≠ unsafe — be conservative by default).
+
+    Hash verification checks the installed wheel SHA-256 recorded by pip against
+    the one in the local allowlist (if present).
+    """
+    result = PluginScanResult(
+        dist_name=info.dist_name,
+        version=info.version,
+        safe=True,
+        scan_source="no-data",
+    )
+
+    # ── 1. pip-audit scan (subprocess, graceful fallback) ─────────────────────
+    try:
+        import subprocess
+        import sys
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip_audit", "--json", "-r", "/dev/stdin"],
+            input=f"{info.dist_name}=={info.version}\n",
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if proc.returncode == 0 or proc.stdout.strip().startswith("["):
+            audit_results = json.loads(proc.stdout or "[]")
+            for entry in audit_results:
+                pkg = entry.get("name", "").lower()
+                if pkg == info.dist_name.lower():
+                    vulns = entry.get("vulns", [])
+                    if vulns:
+                        result.vulnerabilities = vulns
+                        result.safe = False
+                    result.scan_source = "pip-audit"
+                    break
+            if result.scan_source != "pip-audit":
+                result.scan_source = "pip-audit"  # no findings = safe
+    except Exception:
+        pass  # pip-audit not installed or not available
+
+    # ── 2. Local allowlist check ──────────────────────────────────────────────
+    import os
+    allowlist_path = os.path.expanduser("~/.meshflow/plugin_allowlist.json")
+    if os.path.exists(allowlist_path):
+        try:
+            with open(allowlist_path) as fh:
+                allowlist: dict[str, Any] = json.load(fh)
+            key = f"{info.dist_name}=={info.version}"
+            if key in allowlist:
+                entry = allowlist[key]
+                result.hash_algorithm = entry.get("hash_algorithm", "sha256")
+                result.hash_value = entry.get("hash_value", "")
+                # Verify installed distribution hash
+                actual_hash = _hash_distribution(info.dist_name)
+                if actual_hash and result.hash_value:
+                    result.hash_ok = actual_hash == result.hash_value
+                    if not result.hash_ok:
+                        result.safe = False
+            if result.scan_source == "no-data":
+                result.scan_source = "local-allowlist"
+        except Exception:
+            pass
+
+    return result
+
+
+def scan_all_plugins() -> list[PluginScanResult]:
+    """Scan all installed MeshFlow plugins."""
+    return [scan_plugin(p) for p in discover_plugins() if p.dist_name]
+
+
+def _hash_distribution(dist_name: str) -> str:
+    """Compute SHA-256 of the installed distribution's RECORD or wheel metadata."""
+    try:
+        from importlib.metadata import files as dist_files
+        records = dist_files(dist_name) or []
+        h = hashlib.sha256()
+        for f in sorted(str(r) for r in records):
+            h.update(f.encode())
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+# ── Plugin audit log (SQLite) ─────────────────────────────────────────────────
+
+class PluginAuditLog:
+    """Append-only audit log for plugin load events.
+
+    Records which plugins were loaded, when, by which process, and
+    whether the security scan passed.
+
+    Usage::
+
+        log = PluginAuditLog()
+        log.record_load(info, scan_result)
+        entries = log.list_recent(50)
+    """
+
+    def __init__(self, path: str = "meshflow_plugin_audit.db") -> None:
+        self._path = path
+        self._conn: sqlite3.Connection | None = None
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        if self._path == ":memory:":
+            if self._conn is None:
+                self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+                self._conn.row_factory = sqlite3.Row
+            return self._conn
+        conn = sqlite3.connect(self._path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        conn = self._connect()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plugin_audit (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                dist_name  TEXT NOT NULL,
+                version    TEXT NOT NULL,
+                name       TEXT NOT NULL,
+                ep_group   TEXT NOT NULL,
+                safe       INTEGER NOT NULL,
+                vuln_count INTEGER NOT NULL,
+                hash_ok    INTEGER NOT NULL,
+                loaded_at  REAL NOT NULL,
+                pid        INTEGER NOT NULL
+            )
+        """)
+        conn.commit()
+
+    def record_load(self, info: PluginInfo, scan: PluginScanResult | None = None) -> None:
+        import os
+        conn = self._connect()
+        conn.execute(
+            """INSERT INTO plugin_audit
+               (dist_name, version, name, ep_group, safe, vuln_count, hash_ok, loaded_at, pid)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                info.dist_name,
+                info.version,
+                info.name,
+                info.ep_group,
+                int(scan.safe) if scan else 1,
+                len(scan.vulnerabilities) if scan else 0,
+                int(scan.hash_ok) if scan else 1,
+                time.time(),
+                os.getpid(),
+            ),
+        )
+        conn.commit()
+
+    def list_recent(self, limit: int = 50) -> list[dict[str, Any]]:
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT * FROM plugin_audit ORDER BY loaded_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def unsafe_loads(self) -> list[dict[str, Any]]:
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT * FROM plugin_audit WHERE safe=0 ORDER BY loaded_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]

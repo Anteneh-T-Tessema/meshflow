@@ -71,6 +71,25 @@ class Task:
     tools: list[Any] = field(default_factory=list)
     knowledge: list[Any] = field(default_factory=list)   # str | VectorStore | KnowledgeSource
     output: TaskOutput | None = field(default=None, init=False, repr=False)
+    max_context_chars: int = 8000  # max chars of injected prior-task context; 0 = unlimited
+    context_filter: Any = None
+    """Optional callable ``(task: Task, output: TaskOutput) -> bool``.
+
+    When set, only tasks whose output passes the filter are injected as context.
+    Built-in factories: ``confidence_filter(min_conf)``, ``tag_filter(tags)``.
+
+    Example::
+
+        from meshflow.agents.task import Task, confidence_filter
+
+        review = Task(
+            description="Review the research",
+            expected_output="Feedback",
+            agent=critic,
+            context=[research_task, data_task],
+            context_filter=confidence_filter(0.80),  # only inject if confidence >= 0.80
+        )
+    """
 
     def _build_prompt(self, inputs: dict[str, Any] | None) -> str:
         desc = self.description
@@ -85,13 +104,38 @@ class Task:
 
         if self.context:
             ctx_sections = []
+            seen_hashes: set[str] = set()
             for t in self.context:
-                if t.output is not None:
+                if t.output is not None and (
+                    self.context_filter is None
+                    or self.context_filter(t, t.output)
+                ):
+                    raw = t.output.raw
+                    # Deduplicate: skip if identical output was already injected
+                    import hashlib
+                    h = hashlib.md5(raw.encode()).hexdigest()
+                    if h in seen_hashes:
+                        continue
+                    seen_hashes.add(h)
                     ctx_sections.append(
-                        f"--- Output from '{t.description[:60]}' ---\n{t.output.raw}"
+                        f"--- Output from '{t.description[:60]}' ---\n{raw}"
                     )
             if ctx_sections:
-                parts.append("Context from prior tasks:\n" + "\n\n".join(ctx_sections))
+                combined = "\n\n".join(ctx_sections)
+                # Enforce max_context_chars cap — truncate oldest sections first
+                if self.max_context_chars > 0 and len(combined) > self.max_context_chars:
+                    # Rebuild from newest sections first until budget is exhausted
+                    budget = self.max_context_chars
+                    kept: list[str] = []
+                    for sec in reversed(ctx_sections):
+                        if len(sec) <= budget:
+                            kept.append(sec)
+                            budget -= len(sec)
+                        else:
+                            kept.append(sec[:budget] + "\n[...truncated]")
+                            break
+                    combined = "\n\n".join(reversed(kept))
+                parts.append("Context from prior tasks:\n" + combined)
 
         return "\n\n".join(parts)
 
@@ -132,3 +176,72 @@ class Task:
             cost_usd=result.get("cost_usd", 0.0),
         )
         return self.output
+
+
+# ── Built-in context filter factories ────────────────────────────────────────
+
+def confidence_filter(min_confidence: float = 0.80) -> Any:
+    """Return a context filter that only injects tasks with stated confidence >= *min_confidence*.
+
+    The confidence is extracted from the raw output text (``CONFIDENCE:0.XX``
+    marker).  Tasks without a confidence marker are included by default.
+
+    Usage::
+
+        review = Task(
+            description="Review findings",
+            expected_output="Issues list",
+            agent=critic,
+            context=[research, data],
+            context_filter=confidence_filter(0.80),
+        )
+    """
+    import re as _re
+    _CONF_RE = _re.compile(r"CONFIDENCE:\s*(0?\.\d+|1\.0)", _re.IGNORECASE)
+
+    def _filter(task: "Task", output: TaskOutput) -> bool:
+        m = _CONF_RE.search(output.raw)
+        if not m:
+            return True  # no marker → include
+        try:
+            return float(m.group(1)) >= min_confidence
+        except ValueError:
+            return True
+
+    return _filter
+
+
+def tag_filter(*required_tags: str) -> Any:
+    """Return a context filter that only injects tasks whose description contains ALL *required_tags*.
+
+    Tags are matched case-insensitively against the task description.
+
+    Usage::
+
+        synthesis = Task(
+            description="Synthesise results",
+            expected_output="Summary",
+            agent=writer,
+            context=[task_a, task_b, task_c],
+            context_filter=tag_filter("verified", "high-quality"),
+        )
+    """
+    def _filter(task: "Task", output: TaskOutput) -> bool:
+        desc_lower = task.description.lower()
+        return all(tag.lower() in desc_lower for tag in required_tags)
+
+    return _filter
+
+
+def min_length_filter(min_chars: int = 50) -> Any:
+    """Only inject context whose output is at least *min_chars* characters."""
+    def _filter(task: "Task", output: TaskOutput) -> bool:
+        return len(output.raw.strip()) >= min_chars
+
+    return _filter
+
+
+__all__ = [
+    "Task", "TaskOutput",
+    "confidence_filter", "tag_filter", "min_length_filter",
+]
