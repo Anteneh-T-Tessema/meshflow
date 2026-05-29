@@ -172,6 +172,8 @@ def get_embedder(dim: int = 768) -> Any:
         import sentence_transformers  # noqa: F401
         emb = SentenceTransformerEmbedder(dim=dim)
         emb._load()  # verify it actually loads
+        # Verify that numpy conversion works inside torch/sentence-transformers
+        _ = emb.embed("test")
         return emb
     except Exception:
         pass

@@ -113,7 +113,7 @@ class TestBenchCLI:
         # Verify 'bench' appears in the help text
         import subprocess
         result = subprocess.run(
-            ["python", "-m", "meshflow.cli.main", "--help"],
+            [sys.executable, "-m", "meshflow.cli.main", "--help"],
             capture_output=True, text=True,
             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         )

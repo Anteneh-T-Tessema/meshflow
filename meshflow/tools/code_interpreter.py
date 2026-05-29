@@ -55,10 +55,14 @@ class CodeInterpreter:
         timeout_s: float = 10.0,
         allowed_modules: list[str] | None = None,
         env_vars: dict[str, str] | None = None,
+        docker: bool = False,
+        docker_image: str = "python:3.11-slim",
     ) -> None:
         self.timeout_s = timeout_s
         self.allowed_modules = allowed_modules
         self._base_env: dict[str, str] = env_vars or {}
+        self.docker = docker
+        self.docker_image = docker_image
 
     def run(
         self,
@@ -73,6 +77,9 @@ class CodeInterpreter:
 
         preamble = self._build_preamble()
         full_code = preamble + "\n" + code
+
+        if self.docker:
+            return self._run_docker(full_code, t, env)
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False, encoding="utf-8"
@@ -106,6 +113,69 @@ class CodeInterpreter:
         finally:
             try:
                 os.unlink(path)
+            except OSError:
+                pass
+
+    def _run_docker(
+        self,
+        code: str,
+        timeout_s: float,
+        env: dict[str, str] | None = None,
+    ) -> CodeResult:
+        import uuid
+        container_name = f"meshflow-exec-{uuid.uuid4().hex[:8]}"
+
+        # Create temp file inside current working directory for Docker mounting
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, dir=os.getcwd(), encoding="utf-8"
+        ) as f:
+            f.write(code)
+            local_path = f.name
+
+        start = time.monotonic()
+        cmd = [
+            "docker", "run",
+            "--name", container_name,
+            "--rm",
+            "-m", "256m",
+            "--cpus", "1.0",
+            "-v", f"{os.path.abspath(local_path)}:/app/run.py",
+            "-w", "/app",
+        ]
+
+        # Inject environment variables
+        merged_env = {**self._base_env, **(env or {})}
+        for k, v in merged_env.items():
+            cmd.extend(["-e", f"{k}={v}"])
+
+        cmd.extend([self.docker_image, "python", "run.py"])
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+            elapsed = (time.monotonic() - start) * 1000.0
+            err = proc.stderr.strip() if proc.returncode != 0 else ""
+            return CodeResult(
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+                error=err,
+                execution_time_ms=elapsed,
+            )
+        except subprocess.TimeoutExpired:
+            # Kill the container on timeout
+            subprocess.run(["docker", "kill", container_name], capture_output=True)
+            return CodeResult(
+                error=f"Execution timed out after {timeout_s}s",
+                timed_out=True,
+                execution_time_ms=timeout_s * 1000.0,
+            )
+        finally:
+            try:
+                os.unlink(local_path)
             except OSError:
                 pass
 

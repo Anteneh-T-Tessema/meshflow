@@ -243,9 +243,9 @@ def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str
                     end = idx + len(sep)
                     break
         chunks.append(text[start:end].strip())
-        start = end - overlap
-        if start >= len(text):
+        if end >= len(text):
             break
+        start = end - overlap
     return [c for c in chunks if c]
 
 

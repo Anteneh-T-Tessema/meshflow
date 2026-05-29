@@ -278,7 +278,7 @@ class TestCLIExportTraces:
     def test_subcommand_registered(self):
         import subprocess
         result = subprocess.run(
-            ["python", "-m", "meshflow.cli.main", "--help"],
+            [sys.executable, "-m", "meshflow.cli.main", "--help"],
             capture_output=True, text=True,
             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         )
@@ -291,7 +291,7 @@ class TestCLIExportTraces:
             out_path = f.name
         try:
             result = subprocess.run(
-                ["python", "-m", "meshflow.cli.main", "export-traces",
+                [sys.executable, "-m", "meshflow.cli.main", "export-traces",
                  "--db", ":nonexistent:", "--output", out_path, "--format", "openai"],
                 capture_output=True, text=True,
                 cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

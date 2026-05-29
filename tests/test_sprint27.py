@@ -21,6 +21,7 @@ from meshflow.intelligence.knowledge import (
     _chunk_text,
     _load_and_chunk,
 )
+from meshflow import Task
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

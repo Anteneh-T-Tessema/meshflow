@@ -69,6 +69,7 @@ class GroupChat:
     speaker_selection: SpeakerStrategy = "round_robin"
     termination: str | Callable[[list[ChatMessage]], bool] = "TERMINATE"
     speaker_fn: Callable | None = None
+    allowed_transitions: dict[str, list[str]] | None = None
 
     def __post_init__(self) -> None:
         if not self.agents:
@@ -100,16 +101,29 @@ class GroupChat:
         return keyword in last
 
     def _pick_next(self, last_speaker: Any | None = None) -> Any:
+        pool = self.agents
+        if self.allowed_transitions:
+            last_name = None
+            if last_speaker is not None:
+                last_name = getattr(last_speaker, "name", None)
+            elif self._history:
+                last_name = self._history[-1].sender
+            
+            allowed_names = self.allowed_transitions.get(last_name or "") or []
+            candidates = [a for a in self.agents if a.name in allowed_names]
+            if candidates:
+                pool = candidates
+
         if self.speaker_selection == "round_robin":
-            agent = self.agents[self._rr_index % len(self.agents)]
+            agent = pool[self._rr_index % len(pool)]
             self._rr_index += 1
             return agent
         if self.speaker_selection == "random":
-            return random.choice(self.agents)
+            return random.choice(pool)
         if self.speaker_selection == "custom" and self.speaker_fn:
-            return self.speaker_fn(self._history, self.agents)
+            return self.speaker_fn(self._history, pool)
         # "auto" — fall back to round_robin at runtime; GroupChatManager overrides this
-        agent = self.agents[self._rr_index % len(self.agents)]
+        agent = pool[self._rr_index % len(pool)]
         self._rr_index += 1
         return agent
 
@@ -216,6 +230,18 @@ class GroupChatManager:
             return chat.agents[0]
 
         agent_names = [a.name for a in chat.agents]
+        if chat.allowed_transitions:
+            last_name = getattr(last_speaker, "name", None) if last_speaker else (chat._history[-1].sender if chat._history else None)
+            allowed_names = chat.allowed_transitions.get(last_name or "") or []
+            candidates = [name for name in agent_names if name in allowed_names]
+            if candidates:
+                agent_names = candidates
+
+        if len(agent_names) == 1:
+            for agent in chat.agents:
+                if agent.name == agent_names[0]:
+                    return agent
+
         history_str = chat._format_history(last_n=10)
 
         selector_prompt = (

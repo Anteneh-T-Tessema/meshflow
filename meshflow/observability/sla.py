@@ -136,7 +136,7 @@ class RateLimiter:
     def __init__(self, rate: float = 60.0, capacity: float = 60.0) -> None:
         self._default_rate = rate
         self._default_capacity = capacity
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._buckets: dict[str, _Bucket] = {}
 
     def _tenant_limits(self, tenant_id: str) -> tuple[float, float]:
@@ -182,6 +182,7 @@ class RateLimiter:
             self._refill(bucket)
             return {
                 "tenant_id": tenant_id,
+                "key": tenant_id,
                 "tokens_remaining": round(bucket.tokens, 2),
                 "capacity": bucket.capacity,
                 "rate_per_s": bucket.rate,

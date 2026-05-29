@@ -342,6 +342,7 @@ class Agent:
     cache: Any = None              # LLMCache instance, True (→ InMemoryCache), or False
     healing: Any = None            # HealingPolicy instance or None (disabled)
     handoffs: list[Any] = field(default_factory=list)  # peer agents this agent can transfer to
+    delegates: list[Agent] = field(default_factory=list)  # peer agents this agent can delegate subtasks to
     system_prompt: str = ""
     risk: RiskTier = RiskTier.READ_ONLY
     policy: Policy | str | None = None
@@ -410,6 +411,34 @@ class Agent:
         if self.mcps:
             mcp_tools = self._resolve_mcp_tools()
             all_tools = all_tools + mcp_tools
+
+        # Resolve delegation tools
+        if self.delegates:
+            from meshflow.tools.registry import Tool
+            for d in self.delegates:
+                d_name = d.name
+                d_role = d.role.value if hasattr(d.role, "value") else str(d.role)
+
+                async def _delegate_call(task: str, _target=d) -> str:
+                    res = await _target.run(task)
+                    return res.get("result", "")
+
+                async def _ask_call(question: str, _target=d) -> str:
+                    res = await _target.run(question)
+                    return res.get("result", "")
+
+                all_tools.append(Tool(
+                    name=f"delegate_to_{d_name}",
+                    description=f"Delegate a subtask to the {d_name} agent ({d_role}). Input should be the subtask description.",
+                    fn=_delegate_call,
+                    risk=RiskTier.READ_ONLY,
+                ))
+                all_tools.append(Tool(
+                    name=f"ask_question_to_{d_name}",
+                    description=f"Ask a specific question to the {d_name} agent ({d_role}). Input should be the question.",
+                    fn=_ask_call,
+                    risk=RiskTier.READ_ONLY,
+                ))
 
         config = AgentConfig(
             agent_id=self.name,

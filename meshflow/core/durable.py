@@ -270,5 +270,33 @@ class DurableWorkflowExecutor:
             for node_id, node in original_nodes.items():
                 workflow._nodes[node_id] = node
 
+    def fork(
+        self,
+        parent_run_id: str,
+        before_node_id: str,
+        new_run_id: str | None = None,
+    ) -> DurableWorkflowExecutor:
+        """Create a new DurableWorkflowExecutor by copying checkpoints from parent_run_id.
+
+        Only checkpoints completed strictly before before_node_id's completion time are copied.
+        """
+        new_id = new_run_id or str(uuid.uuid4())
+        completed = self._store.all_completed(parent_run_id)
+        if before_node_id not in completed:
+            raise ValueError(f"Node '{before_node_id}' not found in checkpoints of run '{parent_run_id}'")
+        t_fork = completed[before_node_id]
+        for nid, t_comp in completed.items():
+            if t_comp < t_fork:
+                out = self._store.load(parent_run_id, nid)
+                if out is not None:
+                    self._store.save(new_id, nid, out)
+
+        if isinstance(self._store, _MemoryStore):
+            forked = DurableWorkflowExecutor(run_id=new_id, backend="memory")
+            forked._store = self._store  # Share in-memory dict reference
+        else:
+            forked = DurableWorkflowExecutor(run_id=new_id, backend="sqlite", db_path=self._store._path)
+        return forked
+
 
 __all__ = ["DurableWorkflowExecutor"]
