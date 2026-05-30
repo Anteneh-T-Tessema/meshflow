@@ -26,7 +26,7 @@ import os
 import threading
 import time
 import webbrowser
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse, parse_qs
 
 
@@ -85,13 +85,13 @@ class _TraceHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == "/api/runs":
-            data = asyncio.run(self.server_instance.get_runs())
+            data = asyncio.run(self.server_instance.get_runs())  # type: ignore[arg-type]
             self._json(data)
             return
 
         if path.startswith("/api/trace/"):
             run_id = path[len("/api/trace/"):]
-            data = asyncio.run(self.server_instance.get_trace(run_id))
+            data = asyncio.run(self.server_instance.get_trace(run_id))  # type: ignore[arg-type]
             if data is None:
                 self._json({"error": f"run_id '{run_id}' not found"}, 404)
             else:
@@ -182,7 +182,7 @@ class TraceServer:
         """Start the server in a background daemon thread."""
 
         class BoundHandler(_TraceHandler):
-            server_instance = self  # type: ignore[assignment]
+            server_instance = self
 
         self._server = http.server.HTTPServer(("127.0.0.1", self._port), BoundHandler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=daemon)
@@ -277,7 +277,8 @@ class TraceServer:
         trace = await self.get_trace(run_id)
         if not trace or "steps" not in trace:
             return []
-        return trace["steps"][since_idx:]
+        steps = trace["steps"][since_idx:]
+        return cast(list[dict[str, Any]], steps)
 
     async def get_mermaid(self, run_id: str) -> dict[str, Any]:
         """Return a Mermaid graph definition for a run's execution topology."""
