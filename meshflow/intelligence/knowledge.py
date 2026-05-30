@@ -310,10 +310,12 @@ class AgentKnowledge:
 
     def __init__(
         self,
-        sources: list[Any],           # str | VectorStore | KnowledgeSource
+        sources: list[Any],           # str | VectorStore | KnowledgeSource | HybridRetriever | SelfCorrectingRAG
         top_k: int = 5,
     ) -> None:
         self._sources: list[KnowledgeSource] = []
+        self._hybrid_retrievers: list[Any] = []
+        self._rag_pipelines: list[Any] = []
         for s in sources:
             if isinstance(s, KnowledgeSource):
                 self._sources.append(s)
@@ -321,18 +323,50 @@ class AgentKnowledge:
                 self._sources.append(KnowledgeSource(source=s, top_k=top_k))
             elif isinstance(s, str):
                 self._sources.append(KnowledgeSource(source=s, top_k=top_k))
+            elif hasattr(s, "_bm25_index") and hasattr(s, "_dense_w"):
+                # HybridRetriever — duck-typed check
+                self._hybrid_retrievers.append(s)
+            elif hasattr(s, "_retriever") and hasattr(s, "_threshold"):
+                # SelfCorrectingRAG — duck-typed check
+                self._rag_pipelines.append(s)
+            elif hasattr(s, "query") and callable(s.query):
+                # Any object with a query(text, top_k) method (future-proofing)
+                self._sources.append(KnowledgeSource(source=s, top_k=top_k))
         self._top_k = top_k
 
     def retrieve(self, query: str) -> list[str]:
-        """Retrieve and deduplicate the most relevant chunks across all sources."""
+        """Retrieve and deduplicate chunks across VectorStore, HybridRetriever, and SelfCorrectingRAG sources."""
         seen: set[str] = set()
         results: list[str] = []
-        per_source_k = max(1, self._top_k // max(len(self._sources), 1))
+
+        # Standard KnowledgeSources (VectorStore, file, text)
         for src in self._sources:
             for chunk in src.retrieve(query):
                 if chunk not in seen:
                     seen.add(chunk)
                     results.append(chunk)
+
+        # HybridRetriever sources (BM25 + dense RRF)
+        for hybrid in self._hybrid_retrievers:
+            try:
+                for chunk in hybrid.query(query, top_k=self._top_k):
+                    if chunk not in seen:
+                        seen.add(chunk)
+                        results.append(chunk)
+            except Exception:
+                pass
+
+        # SelfCorrectingRAG — run synchronously using stored retriever only
+        for rag in self._rag_pipelines:
+            try:
+                retriever = getattr(rag, "_retriever", None)
+                if retriever is not None:
+                    for chunk in retriever.query(query, top_k=self._top_k):
+                        if chunk not in seen:
+                            seen.add(chunk)
+                            results.append(chunk)
+            except Exception:
+                pass
 
         # Dynamic context trimming based on active_tracker limits
         from meshflow.optimization.tracker import active_tracker

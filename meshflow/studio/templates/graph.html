@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MeshFlow — Interactive Graph View</title>
+  <style>
+    :root {
+      --bg: #0a0b10; --surface: #141623; --accent: #6366f1;
+      --green: #10b981; --orange: #f97316; --red: #ef4444;
+      --text: #f3f4f6; --muted: #9ca3af; --border: rgba(255,255,255,0.08);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg);
+           color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+    header { padding: 12px 20px; background: var(--surface);
+             border-bottom: 1px solid var(--border);
+             display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 1rem; font-weight: 600; color: var(--accent); }
+    select { background: var(--bg); color: var(--text); border: 1px solid var(--border);
+             padding: 6px 10px; border-radius: 6px; font-size: 0.85rem; cursor: pointer; }
+    #load-btn { background: var(--accent); color: #fff; border: none;
+                padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    #load-btn:hover { opacity: 0.85; }
+    .main { display: flex; flex: 1; overflow: hidden; }
+    #graph-panel { flex: 1; overflow: auto; padding: 20px; }
+    #sidebar { width: 300px; background: var(--surface); border-left: 1px solid var(--border);
+               padding: 16px; overflow-y: auto; font-size: 0.82rem; }
+    #sidebar h2 { font-size: 0.85rem; color: var(--muted); margin-bottom: 12px;
+                  text-transform: uppercase; letter-spacing: 0.05em; }
+    .node-card { background: var(--bg); border: 1px solid var(--border);
+                 border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+                 cursor: pointer; transition: border-color 0.15s; }
+    .node-card:hover, .node-card.selected { border-color: var(--accent); }
+    .node-card .node-id { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+    .node-card .node-meta { color: var(--muted); font-size: 0.78rem; line-height: 1.6; }
+    .badge { display: inline-block; padding: 1px 6px; border-radius: 10px;
+             font-size: 0.7rem; font-weight: 600; margin-right: 4px; }
+    .badge-blocked { background: var(--orange); color: #fff; }
+    .badge-ok      { background: var(--green);  color: #fff; }
+    .badge-kind    { background: rgba(99,102,241,0.2); color: var(--accent); }
+    #mermaid-container { background: var(--surface); border-radius: 10px;
+                         padding: 20px; min-height: 200px; }
+    #mermaid-container svg { max-width: 100%; }
+    .empty { color: var(--muted); text-align: center; padding: 60px 20px;
+             font-size: 0.9rem; }
+    #detail-panel { margin-top: 16px; padding-top: 16px;
+                    border-top: 1px solid var(--border); }
+    #detail-panel h3 { font-size: 0.8rem; color: var(--muted);
+                       text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+    #detail-content { color: var(--text); font-size: 0.82rem; line-height: 1.6; }
+    .stat-row { display: flex; justify-content: space-between;
+                padding: 3px 0; border-bottom: 1px solid var(--border); }
+    .stat-label { color: var(--muted); }
+    .stat-value { color: var(--text); font-weight: 500; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+<body>
+<nav style="background:#141623;border-bottom:1px solid rgba(255,255,255,0.08);padding:8px 20px;display:flex;align-items:center;gap:16px;font-size:0.82rem;">
+  <span style="font-weight:700;color:#6366f1;margin-right:8px;">MeshFlow Studio</span>
+  <a href="/trace" style="color:#9ca3af;text-decoration:none;padding:4px 10px;border-radius:5px;">🔍 Trace</a>
+  <a href="/graph" style="color:#f3f4f6;text-decoration:none;padding:4px 10px;border-radius:5px;background:rgba(99,102,241,0.15);">🗺 Graph</a>
+  <a href="/rag"   style="color:#9ca3af;text-decoration:none;padding:4px 10px;border-radius:5px;">📚 RAG Builder</a>
+  <a href="/"      style="color:#9ca3af;text-decoration:none;padding:4px 10px;border-radius:5px;">⚡ Workflow</a>
+</nav>
+<header>
+  <h1>MeshFlow — Interactive Graph</h1>
+  <select id="run-select"><option value="">Select run…</option></select>
+  <button id="load-btn">Load</button>
+</header>
+<div class="main">
+  <div id="graph-panel">
+    <div id="mermaid-container">
+      <div class="empty">Select a run and click Load to render the execution graph.</div>
+    </div>
+  </div>
+  <div id="sidebar">
+    <h2>Nodes</h2>
+    <div id="node-list"><div class="empty" style="padding:20px 0">No nodes loaded</div></div>
+    <div id="detail-panel" style="display:none">
+      <h3>Node detail</h3>
+      <div id="detail-content"></div>
+    </div>
+  </div>
+</div>
+<script>
+  mermaid.initialize({ startOnLoad: false, theme: 'dark',
+    themeVariables: { primaryColor: '#6366f1', edgeLabelBackground: '#141623' }});
+
+  let allNodes = [];
+
+  async function loadRuns() {
+    const resp = await fetch('/api/runs');
+    const runs = await resp.json();
+    const sel = document.getElementById('run-select');
+    runs.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.run_id; opt.textContent = r.run_id.slice(0, 24);
+      sel.appendChild(opt);
+    });
+  }
+
+  document.getElementById('load-btn').addEventListener('click', async () => {
+    const runId = document.getElementById('run-select').value;
+    if (!runId) return;
+    const resp = await fetch('/api/graph/' + encodeURIComponent(runId));
+    const data = await resp.json();
+    if (data.error) { alert('Error: ' + data.error); return; }
+
+    // Render Mermaid
+    const container = document.getElementById('mermaid-container');
+    container.innerHTML = '';
+    const div = document.createElement('div');
+    div.className = 'mermaid';
+    div.textContent = data.mermaid;
+    container.appendChild(div);
+    await mermaid.run({ nodes: [div] });
+
+    // Make SVG nodes clickable
+    allNodes = data.nodes || [];
+    renderNodeList(allNodes);
+    makeSvgInteractive(allNodes);
+  });
+
+  function renderNodeList(nodes) {
+    const list = document.getElementById('node-list');
+    list.innerHTML = '';
+    if (!nodes.length) { list.innerHTML = '<div class="empty">No nodes</div>'; return; }
+    nodes.forEach(n => {
+      const card = document.createElement('div');
+      card.className = 'node-card';
+      card.dataset.nodeId = n.id;
+      card.innerHTML =
+        `<div class="node-id">${n.id}</div>` +
+        `<div class="node-meta">` +
+        `<span class="badge badge-kind">${n.kind}</span>` +
+        `<span class="badge ${n.blocked ? 'badge-blocked' : 'badge-ok'}">${n.blocked ? 'BLOCKED' : 'OK'}</span>` +
+        `<br>$${(n.cost_usd||0).toFixed(5)} · ${n.tokens||0} tok · ${Math.round(n.latency_ms||0)}ms` +
+        `</div>`;
+      card.addEventListener('click', () => showDetail(n));
+      list.appendChild(card);
+    });
+  }
+
+  function showDetail(node) {
+    document.querySelectorAll('.node-card').forEach(c => c.classList.remove('selected'));
+    const card = document.querySelector(`[data-node-id="${node.id}"]`);
+    if (card) card.classList.add('selected');
+
+    const panel = document.getElementById('detail-panel');
+    const content = document.getElementById('detail-content');
+    panel.style.display = 'block';
+    content.innerHTML =
+      `<div class="stat-row"><span class="stat-label">Node ID</span><span class="stat-value">${node.id}</span></div>` +
+      `<div class="stat-row"><span class="stat-label">Kind</span><span class="stat-value">${node.kind}</span></div>` +
+      `<div class="stat-row"><span class="stat-label">Status</span><span class="stat-value">${node.blocked ? '⛔ Blocked' : '✅ OK'}</span></div>` +
+      `<div class="stat-row"><span class="stat-label">Cost</span><span class="stat-value">$${(node.cost_usd||0).toFixed(6)}</span></div>` +
+      `<div class="stat-row"><span class="stat-label">Tokens</span><span class="stat-value">${node.tokens||0}</span></div>` +
+      `<div class="stat-row"><span class="stat-label">Latency</span><span class="stat-value">${Math.round(node.latency_ms||0)} ms</span></div>`;
+  }
+
+  function makeSvgInteractive(nodes) {
+    setTimeout(() => {
+      const svg = document.querySelector('#mermaid-container svg');
+      if (!svg) return;
+      svg.querySelectorAll('.node').forEach(el => {
+        const labelEl = el.querySelector('.label');
+        if (!labelEl) return;
+        const label = labelEl.textContent.trim().split('\n')[0];
+        const node = nodes.find(n =>
+          n.id.replace(/-/g,'_').replace(/\./g,'_') === label.replace(/-/g,'_').replace(/\./g,'_')
+          || n.id === label
+        );
+        if (node) {
+          el.style.cursor = 'pointer';
+          el.addEventListener('click', () => showDetail(node));
+          el.addEventListener('mouseenter', () => el.style.opacity = '0.8');
+          el.addEventListener('mouseleave', () => el.style.opacity = '1');
+        }
+      });
+    }, 300);
+  }
+
+  loadRuns();
+</script>
+</body>
+</html>

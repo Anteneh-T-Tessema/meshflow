@@ -43,9 +43,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import operator
+import json
+import sqlite3
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, TypeVar, get_args, get_origin, get_type_hints
+from typing import Any, Callable, TypeVar, get_args, get_origin, get_type_hints
 
 END = "__end__"
 START = "__start__"
@@ -121,6 +124,28 @@ class Command:
     resume: Any = None
     goto:   str | None = None
     update: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Send:
+    """Dynamically dispatch to a node with a state override (map-reduce fan-out).
+
+    Return a ``Send`` or ``list[Send]`` from a conditional edge function to
+    spawn parallel branches, each with their own state slice merged into the
+    shared graph state.
+
+    Example — fan-out over a list of items::
+
+        async def fan_out(state: dict) -> list[Send]:
+            return [Send("process_item", {"item": x}) for x in state["items"]]
+
+        graph.add_conditional_edges("split", fan_out)   # no mapping needed
+        graph.add_node("process_item", process_fn)
+        graph.add_edge("process_item", "aggregate")
+    """
+
+    node: str
+    state: dict[str, Any] = field(default_factory=dict)
 
 
 # ── Built-in reducers ─────────────────────────────────────────────────────────
@@ -232,6 +257,128 @@ class GraphState:
         return self._data.get(key, default)
 
 
+# ── Checkpointers ─────────────────────────────────────────────────────────────
+
+class MemorySaver:
+    """In-memory checkpoint store for StateGraph.
+
+    Saves and restores the complete state snapshot keyed by ``thread_id``.
+    Useful for short-lived sessions, testing, or single-process deployments.
+
+    Usage::
+
+        saver = MemorySaver()
+        graph = my_graph.compile(checkpointer=saver)
+        result = await graph.run(initial, config={"thread_id": "session-1"})
+        # Later:
+        state = graph.get_state({"thread_id": "session-1"})
+    """
+
+    def __init__(self) -> None:
+        self._store: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    def put(self, thread_id: str, state: dict[str, Any]) -> None:
+        with self._lock:
+            self._store[thread_id] = dict(state)
+
+    def get(self, thread_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            s = self._store.get(thread_id)
+            return dict(s) if s is not None else None
+
+    def delete(self, thread_id: str) -> bool:
+        with self._lock:
+            return self._store.pop(thread_id, None) is not None
+
+    def list_threads(self) -> list[str]:
+        with self._lock:
+            return list(self._store.keys())
+
+
+_SAVER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS graph_checkpoints (
+    thread_id TEXT PRIMARY KEY,
+    state     TEXT NOT NULL,
+    updated   REAL NOT NULL
+);
+"""
+
+
+class SqliteSaver:
+    """SQLite-backed checkpoint store for StateGraph.
+
+    Persists state across process restarts. State values must be
+    JSON-serialisable (strings, numbers, lists, dicts).
+
+    Usage::
+
+        saver = SqliteSaver("checkpoints.db")
+        graph = my_graph.compile(checkpointer=saver)
+        result = await graph.run(initial, config={"thread_id": "run-42"})
+    """
+
+    def __init__(self, db_path: str = "meshflow_checkpoints.db") -> None:
+        self._db_path = db_path
+        self._lock = threading.Lock()
+        self._shared: sqlite3.Connection | None = None
+        if db_path == ":memory:":
+            self._shared = sqlite3.connect(":memory:", check_same_thread=False)
+        self._init()
+
+    @contextmanager
+    def _conn(self):
+        if self._shared is not None:
+            yield self._shared
+            self._shared.commit()
+        else:
+            conn = sqlite3.connect(self._db_path)
+            try:
+                yield conn
+                conn.commit()
+            finally:
+                conn.close()
+
+    def _init(self) -> None:
+        with self._conn() as c:
+            c.executescript(_SAVER_SCHEMA)
+
+    def put(self, thread_id: str, state: dict[str, Any]) -> None:
+        import time
+        with self._lock:
+            with self._conn() as c:
+                c.execute(
+                    "INSERT OR REPLACE INTO graph_checkpoints (thread_id, state, updated) VALUES (?, ?, ?)",
+                    (thread_id, json.dumps(state, default=str), time.time()),
+                )
+
+    def get(self, thread_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            with self._conn() as c:
+                row = c.execute(
+                    "SELECT state FROM graph_checkpoints WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                return json.loads(row[0])
+
+    def delete(self, thread_id: str) -> bool:
+        with self._lock:
+            with self._conn() as c:
+                cur = c.execute(
+                    "DELETE FROM graph_checkpoints WHERE thread_id = ?",
+                    (thread_id,),
+                )
+                return cur.rowcount > 0
+
+    def list_threads(self) -> list[str]:
+        with self._lock:
+            with self._conn() as c:
+                rows = c.execute("SELECT thread_id FROM graph_checkpoints ORDER BY updated DESC").fetchall()
+                return [r[0] for r in rows]
+
+
 # ── Node wrapper ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -261,18 +408,35 @@ class StateGraph:
         )
         self._nodes: dict[str, _NodeEntry] = {}
         self._edges: dict[str, list[str]] = {}
-        self._conditional: dict[str, tuple[Callable, dict[str, str]]] = {}
+        self._conditional: dict[str, tuple[Callable, dict[str, str] | None]] = {}
         self._entry: str | None = None
         self._terminals: set[str] = set()
 
     # ── Graph construction ────────────────────────────────────────────────────
 
-    def add_node(self, name: str, fn: Callable) -> "StateGraph":
-        """Register a node.  fn receives the current state dict and returns an update dict."""
+    def add_node(self, name: str, fn: "Callable | CompiledGraph") -> "StateGraph":
+        """Register a node.
+
+        ``fn`` may be a regular async/sync callable, a ``ToolNode``, or a
+        ``CompiledGraph`` (subgraph).  Subgraphs receive the current state and
+        return their final state dict, which is merged via channel reducers.
+        """
+        # Subgraph nesting: wrap CompiledGraph as an async node function
+        if isinstance(fn, CompiledGraph):
+            subgraph = fn
+
+            async def _subgraph_node(state: dict[str, Any]) -> dict[str, Any]:
+                return await subgraph.run(state)
+
+            actual_fn: Callable = _subgraph_node
+        else:
+            actual_fn = fn
+
         self._nodes[name] = _NodeEntry(
             name=name,
-            fn=fn,
-            is_async=inspect.iscoroutinefunction(fn),
+            fn=actual_fn,
+            is_async=inspect.iscoroutinefunction(actual_fn)
+                     or inspect.iscoroutinefunction(getattr(actual_fn, "__call__", None)),
         )
         if name not in self._edges:
             self._edges[name] = []
@@ -286,11 +450,31 @@ class StateGraph:
             self._edges.setdefault(src, []).append(dst)
         return self
 
+    def add_sequence(self, nodes: list[tuple[str, Callable]]) -> "StateGraph":
+        """Register a chain of nodes connected by unconditional edges.
+
+        Convenience wrapper — equivalent to calling ``add_node`` + ``add_edge``
+        for each consecutive pair.
+
+        Example::
+
+            graph.add_sequence([
+                ("fetch",    fetch_fn),
+                ("parse",    parse_fn),
+                ("summarize", summarize_fn),
+            ])
+        """
+        for i, (name, fn) in enumerate(nodes):
+            self.add_node(name, fn)
+            if i > 0:
+                self.add_edge(nodes[i - 1][0], name)
+        return self
+
     def add_conditional_edges(
         self,
         src: str,
-        condition: Callable[[dict[str, Any]], str],
-        mapping: dict[str, str],
+        condition: Callable[[dict[str, Any]], Any],
+        mapping: dict[str, str] | None = None,
     ) -> "StateGraph":
         """Route to different nodes based on the return value of ``condition``.
 
@@ -310,10 +494,14 @@ class StateGraph:
 
     # ── Compilation ───────────────────────────────────────────────────────────
 
-    def compile(self, policy: Any = None) -> "CompiledGraph":
+    def compile(
+        self,
+        policy: Any = None,
+        checkpointer: "MemorySaver | SqliteSaver | None" = None,
+    ) -> "CompiledGraph":
         if self._entry is None:
             raise ValueError("Call set_entry_point() before compile().")
-        return CompiledGraph(self, policy)
+        return CompiledGraph(self, policy, checkpointer=checkpointer)
 
     # ── Direct execution (without explicit compile) ───────────────────────────
 
@@ -338,15 +526,59 @@ class CompiledGraph:
     - The graph halts when all active paths reach END or a terminal node.
     """
 
-    def __init__(self, graph: StateGraph, policy: Any = None) -> None:
+    def __init__(
+        self,
+        graph: StateGraph,
+        policy: Any = None,
+        checkpointer: "MemorySaver | SqliteSaver | None" = None,
+    ) -> None:
         self._g = graph
         self._policy = policy
+        self._checkpointer = checkpointer
+
+    # ── State inspection / mutation ───────────────────────────────────────────
+
+    def get_state(self, config: dict[str, Any]) -> dict[str, Any] | None:
+        """Return the last saved state for the given ``thread_id``.
+
+        Requires a checkpointer to be set at compile time.
+
+        Parameters
+        ----------
+        config:
+            Dict with at least ``{"thread_id": "..."}}``.
+        """
+        if self._checkpointer is None:
+            raise RuntimeError("get_state requires a checkpointer — pass checkpointer= to compile()")
+        thread_id = config["thread_id"]
+        return self._checkpointer.get(thread_id)
+
+    def update_state(self, config: dict[str, Any], values: dict[str, Any]) -> None:
+        """Merge ``values`` into the saved state for ``thread_id``.
+
+        Useful for injecting human feedback or correcting state mid-run.
+
+        Parameters
+        ----------
+        config:
+            Dict with at least ``{"thread_id": "..."}``.
+        values:
+            Partial state dict to merge (channel reducers are applied).
+        """
+        if self._checkpointer is None:
+            raise RuntimeError("update_state requires a checkpointer — pass checkpointer= to compile()")
+        thread_id = config["thread_id"]
+        current = self._checkpointer.get(thread_id) or {}
+        gs = GraphState(self._g._channels, current)
+        gs = gs.update(values)
+        self._checkpointer.put(thread_id, gs.snapshot())
 
     async def run(
         self,
         initial: dict[str, Any],
         max_steps: int = 200,
         resume: "Command | None" = None,
+        config: "dict[str, Any] | None" = None,
     ) -> dict[str, Any]:
         """Execute the graph.
 
@@ -356,7 +588,18 @@ class CompiledGraph:
         max_steps: Hard limit on execution steps.
         resume:    If provided, apply ``resume.update`` to initial state and
                    restart from the interrupted node (or ``resume.goto``).
+        config:    Optional run config.  Pass ``{"thread_id": "..."}`` when a
+                   checkpointer is attached to persist state across calls.
         """
+        thread_id: str | None = (config or {}).get("thread_id")
+
+        # Load persisted state if a checkpointer + thread_id are present.
+        # Saved state wins: caller-supplied initial only fills missing keys.
+        if self._checkpointer is not None and thread_id:
+            saved = self._checkpointer.get(thread_id)
+            if saved:
+                initial = {**initial, **saved}
+
         # Apply resume updates on top of initial state
         if resume is not None and resume.update:
             initial = {**initial, **resume.update}
@@ -365,7 +608,7 @@ class CompiledGraph:
 
         # Determine starting queue
         if resume is not None and (resume.goto or getattr(self, "_interrupted_node", None)):
-            start_node = resume.goto or self._interrupted_node  # type: ignore[attr-defined]
+            start_node: str = resume.goto or self._interrupted_node  # type: ignore[attr-defined]
             queue: list[str] = [start_node]
             self._interrupted_node = None
         else:
@@ -410,16 +653,24 @@ class CompiledGraph:
                 # Route from this node
                 if name in self._g._conditional:
                     condition_fn, mapping = self._g._conditional[name]
-                    key = (
+                    route = (
                         await condition_fn(state.snapshot())
                         if inspect.iscoroutinefunction(condition_fn)
                         else condition_fn(state.snapshot())
                     )
-                    dst = mapping.get(key, END)
-                    if dst != END:
-                        queue.append(dst)
+                    # Send / list[Send] fan-out
+                    sends = route if isinstance(route, list) else ([route] if isinstance(route, Send) else None)
+                    if sends is not None and all(isinstance(s, Send) for s in sends):
+                        for s in sends:
+                            if s.state:
+                                state = state.update(s.state)
+                            queue.append(s.node)
                     else:
-                        self._g._terminals.add(name)
+                        dst = (mapping.get(route, END) if mapping else route) or END
+                        if dst != END:
+                            queue.append(dst)
+                        else:
+                            self._g._terminals.add(name)
 
                 elif name in self._g._terminals:
                     pass  # terminal — stop this path
@@ -429,7 +680,10 @@ class CompiledGraph:
                         if dst != END:
                             queue.append(dst)
 
-        return state.snapshot()
+        final = state.snapshot()
+        if self._checkpointer is not None and thread_id:
+            self._checkpointer.put(thread_id, final)
+        return final
 
     async def _run_node(self, name: str, state: dict[str, Any]) -> dict[str, Any] | Interrupt:
         entry = self._g._nodes[name]
@@ -489,14 +743,21 @@ class CompiledGraph:
 
                 if name in self._g._conditional:
                     condition_fn, mapping = self._g._conditional[name]
-                    key = (
+                    route = (
                         await condition_fn(state.snapshot())
                         if inspect.iscoroutinefunction(condition_fn)
                         else condition_fn(state.snapshot())
                     )
-                    dst = mapping.get(key, END)
-                    if dst != END:
-                        queue.append(dst)
+                    sends = route if isinstance(route, list) else ([route] if isinstance(route, Send) else None)
+                    if sends is not None and all(isinstance(s, Send) for s in sends):
+                        for s in sends:
+                            if s.state:
+                                state = state.update(s.state)
+                            queue.append(s.node)
+                    else:
+                        dst = (mapping.get(route, END) if mapping else route) or END
+                        if dst != END:
+                            queue.append(dst)
                 elif name not in self._g._terminals:
                     for dst in self._g._edges.get(name, []):
                         if dst != END:

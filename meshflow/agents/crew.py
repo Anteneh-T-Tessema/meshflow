@@ -84,12 +84,13 @@ class Crew:
     manager_llm: Any = None
     verbose: bool = False
     policy: Any = None               # meshflow.core.schemas.Policy
+    role_router: Any = None          # optional RoleRouter for dynamic agent creation
 
     def __post_init__(self) -> None:
         if not self.tasks:
             raise ValueError("Crew must have at least one task.")
-        if not self.agents:
-            raise ValueError("Crew must have at least one agent.")
+        if self.role_router is None and not self.agents:
+            raise ValueError("Crew must have at least one agent (or a role_router).")
         if isinstance(self.process, str):
             self.process = Process(self.process)
 
@@ -222,10 +223,29 @@ class Crew:
 
     # ── Execution modes ───────────────────────────────────────────────────────
 
+    async def _resolve_agent_for_task(self, task: Task) -> None:
+        """If a RoleRouter is configured, assign a dynamically created agent to
+        any task that has no agent assigned yet."""
+        if task.agent is not None or self.role_router is None:
+            return
+        try:
+            spec = await self.role_router.route(task.description)
+            task.agent = spec.to_agent(name=f"dynamic-{spec.role}")
+            if self.verbose:
+                print(f"[Crew] RoleRouter → {spec.role} ({spec.model_tier}) "
+                      f"for task: {task.description[:50]}")
+        except Exception as exc:
+            # Fallback to first available agent
+            if self.agents:
+                task.agent = self.agents[0]
+            if self.verbose:
+                print(f"[Crew] RoleRouter failed ({exc}), using fallback agent")
+
     async def _run_sequential(self, inputs: dict[str, Any] | None) -> CrewOutput:
         """Tasks execute in order; each receives all prior task outputs as context."""
         outputs: list[TaskOutput] = []
         for i, task in enumerate(self.tasks):
+            await self._resolve_agent_for_task(task)
             if self.verbose:
                 agent_name = getattr(task.agent, "name", "?") if task.agent else "?"
                 print(f"[Crew] Task {i+1}/{len(self.tasks)}: {task.description[:60]}  → {agent_name}")

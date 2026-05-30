@@ -70,8 +70,17 @@ class LLMProvider(Protocol):
         messages: list[dict[str, Any]],
         system: str,
         max_tokens: int,
+        response_format: str | None = None,
     ) -> tuple[str, int, float]:
-        """Return (content, total_tokens, cost_usd)."""
+        """Return (content, total_tokens, cost_usd).
+
+        Parameters
+        ----------
+        response_format:
+            Optional output format hint.  Pass ``"json"`` to request a
+            JSON-only response.  Providers that support native JSON mode
+            (e.g. OpenAI) enable it; others prepend a system-prompt directive.
+        """
         ...
 
     async def complete_with_tools(
@@ -125,7 +134,11 @@ class AnthropicProvider(LLMProvider):
         messages: list[dict[str, Any]],
         system: str,
         max_tokens: int,
+        response_format: str | None = None,
     ) -> tuple[str, int, float]:
+        if response_format == "json":
+            system = (system + "\n\nRespond with valid JSON only. No prose before or after the JSON.").strip()
+
         system_param: Any = system
         extra_headers = None
 
@@ -303,13 +316,18 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: list[dict[str, Any]],
         system: str,
         max_tokens: int,
+        response_format: str | None = None,
     ) -> tuple[str, int, float]:
         client = self._client()
         oai_messages = [{"role": "system", "content": system}, *messages]
+        extra: dict[str, Any] = {}
+        if response_format == "json":
+            extra["response_format"] = {"type": "json_object"}
         response = await client.chat.completions.create(
             model=model or self._model,
             messages=cast(Any, oai_messages),
             max_tokens=max_tokens,
+            **extra,
         )
         content = response.choices[0].message.content or ""
         in_tok = response.usage.prompt_tokens if response.usage else 0
@@ -432,6 +450,7 @@ class EchoProvider(LLMProvider):
         messages: list[dict[str, Any]],
         system: str,
         max_tokens: int,
+        response_format: str | None = None,
     ) -> tuple[str, int, float]:
         if self._fixed:
             return self._fixed, len(self._fixed.split()), 0.0
@@ -440,7 +459,11 @@ class EchoProvider(LLMProvider):
             last = " ".join(
                 p.get("text", "") for p in last if isinstance(p, dict)
             )
-        reply = f"[echo] {last}"
+        if response_format == "json":
+            import json as _json
+            reply = _json.dumps({"echo": last})
+        else:
+            reply = f"[echo] {last}"
         return reply, len(reply.split()), 0.0
 
     async def complete_with_tools(

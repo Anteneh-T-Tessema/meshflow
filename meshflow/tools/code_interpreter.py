@@ -57,12 +57,16 @@ class CodeInterpreter:
         env_vars: dict[str, str] | None = None,
         docker: bool = False,
         docker_image: str = "python:3.11-slim",
+        max_memory_mb: int = 0,
+        block_network: bool = False,
     ) -> None:
         self.timeout_s = timeout_s
         self.allowed_modules = allowed_modules
         self._base_env: dict[str, str] = env_vars or {}
         self.docker = docker
         self.docker_image = docker_image
+        self.max_memory_mb = max_memory_mb  # 0 = no limit
+        self.block_network = block_network
 
     def run(
         self,
@@ -89,12 +93,22 @@ class CodeInterpreter:
 
         try:
             merged_env = {**os.environ, **self._base_env, **(env or {})}
+            # Apply network block by stripping DNS / proxy vars from env
+            if self.block_network:
+                for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                            "ftp_proxy", "ALL_PROXY", "no_proxy"):
+                    merged_env.pop(key, None)
+
+            # Build preexec_fn with resource limits on Unix systems
+            preexec = self._make_preexec()
+
             proc = subprocess.run(
                 [sys.executable, path],
                 capture_output=True,
                 text=True,
                 timeout=t,
                 env=merged_env,
+                preexec_fn=preexec,
             )
             elapsed = (time.monotonic() - start) * 1000.0
             err = proc.stderr.strip() if proc.returncode != 0 else ""
@@ -115,6 +129,25 @@ class CodeInterpreter:
                 os.unlink(path)
             except OSError:
                 pass
+
+    def _make_preexec(self):  # type: ignore[return]
+        """Return a preexec_fn that sets resource limits on Unix."""
+        mem_mb = self.max_memory_mb
+        if mem_mb <= 0:
+            return None
+        try:
+            import resource as _resource
+
+            def _limit() -> None:
+                mem_bytes = mem_mb * 1024 * 1024
+                try:
+                    _resource.setrlimit(_resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+                except (ValueError, OSError):
+                    pass  # setrlimit may fail in containers — non-fatal
+
+            return _limit
+        except ImportError:
+            return None  # Windows — skip silently
 
     def _run_docker(
         self,

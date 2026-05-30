@@ -1,0 +1,15 @@
+apiVersion: v2
+name: meshflow
+description: MeshFlow — governed multi-agent orchestration framework
+type: application
+version: 0.1.0
+appVersion: "0.74.0"
+keywords:
+  - ai
+  - agents
+  - orchestration
+  - governance
+  - llm
+home: https://github.com/meshflow-ai/meshflow
+maintainers:
+  - name: MeshFlow Team

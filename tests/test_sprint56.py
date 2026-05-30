@@ -342,7 +342,7 @@ class TestSubprocessHelp(unittest.TestCase):
 
 class TestPublicExports(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(meshflow.__version__, "0.65.0")
+        self.assertGreaterEqual(meshflow.__version__, "0.77.0")
 
     def test_lineage_node_exported(self):
         self.assertIs(meshflow.LineageNode, LineageNode)

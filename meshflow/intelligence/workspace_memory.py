@@ -133,11 +133,35 @@ class WorkspaceMemoryStore:
                 content      TEXT NOT NULL,
                 importance   REAL NOT NULL DEFAULT 0.5,
                 tags         TEXT NOT NULL DEFAULT '',
-                created_at   REAL NOT NULL
+                created_at   REAL NOT NULL,
+                expires_at   REAL NOT NULL DEFAULT 0
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ws_agent ON workspace_memories (workspace_id, agent_name)")
+        # Non-destructive migration
+        try:
+            conn.execute("ALTER TABLE workspace_memories ADD COLUMN expires_at REAL NOT NULL DEFAULT 0")
+        except Exception:
+            pass
         conn.commit()
+
+    def purge_expired(self, workspace_id: str | None = None) -> int:
+        """Delete expired workspace entries. Returns count removed."""
+        import time as _time
+        now = _time.time()
+        with self._lock:
+            conn = self._connect()
+            if workspace_id:
+                cur = conn.execute(
+                    "DELETE FROM workspace_memories WHERE workspace_id=? AND expires_at>0 AND expires_at<?",
+                    (workspace_id, now),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM workspace_memories WHERE expires_at>0 AND expires_at<?", (now,)
+                )
+            conn.commit()
+        return cur.rowcount
 
     # ── Write ──────────────────────────────────────────────────────────────────
 
@@ -148,8 +172,17 @@ class WorkspaceMemoryStore:
         content: str,
         importance: float = 0.5,
         tags: list[str] | None = None,
+        *,
+        ttl_seconds: float = 0,
     ) -> WorkspaceMemoryEntry:
-        """Store a memory entry in the given workspace namespace."""
+        """Store a memory entry in the given workspace namespace.
+
+        Parameters
+        ----------
+        ttl_seconds:
+            Seconds until this entry expires (0 = never).
+        """
+        import time as _time
         entry = WorkspaceMemoryEntry(
             workspace_id=workspace_id,
             agent_name=agent_name,
@@ -157,12 +190,13 @@ class WorkspaceMemoryStore:
             importance=importance,
             tags=tags or [],
         )
+        expires_at = (entry.created_at + ttl_seconds) if ttl_seconds > 0 else 0.0
         with self._lock:
             conn = self._connect()
             conn.execute(
                 """INSERT OR REPLACE INTO workspace_memories
-                   (entry_id, workspace_id, agent_name, content, importance, tags, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (entry_id, workspace_id, agent_name, content, importance, tags, created_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     entry.entry_id,
                     workspace_id,
@@ -171,6 +205,7 @@ class WorkspaceMemoryStore:
                     importance,
                     ",".join(tags or []),
                     entry.created_at,
+                    expires_at,
                 ),
             )
             conn.commit()
@@ -212,6 +247,8 @@ class WorkspaceMemoryStore:
         allowed_workspaces: Additional workspace IDs to include in the search
                             (cross-workspace federation).
         """
+        import time as _time
+        now = _time.time()
         workspaces = [workspace_id] + (allowed_workspaces or [])
         placeholders = ",".join("?" * len(workspaces))
 
@@ -220,8 +257,9 @@ class WorkspaceMemoryStore:
             rows = conn.execute(
                 f"""SELECT * FROM workspace_memories
                     WHERE workspace_id IN ({placeholders}) AND agent_name=?
+                      AND (expires_at = 0 OR expires_at > ?)
                     ORDER BY created_at DESC LIMIT ?""",
-                (*workspaces, agent_name, 500),
+                (*workspaces, agent_name, now, 500),
             ).fetchall()
 
         if not rows:

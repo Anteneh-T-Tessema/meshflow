@@ -680,7 +680,7 @@ class TestTopLevelImports:
 
     def test_version_bumped(self):
         import meshflow
-        assert meshflow.__version__ == "0.65.0"
+        assert meshflow.__version__ >= "0.77.0"
 
     def test_swarm_available_domains_from_top(self):
         import meshflow

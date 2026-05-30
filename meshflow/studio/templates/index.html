@@ -548,8 +548,18 @@
     </div>
     <div class="header-actions">
       <button class="btn btn-primary" onclick="exportYAML()">Export YAML</button>
+      <button class="btn btn-success" onclick="runWorkflow()" style="background:#10b981;color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:0.85rem;cursor:pointer;margin-left:8px;">▶ Run</button>
     </div>
   </header>
+
+  <!-- Run output panel (hidden until a run is triggered) -->
+  <div id="run-output-panel" style="display:none;position:fixed;bottom:0;left:0;right:0;background:#141623;border-top:1px solid rgba(255,255,255,0.1);padding:12px 20px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:0.8rem;color:#f3f4f6;z-index:1000;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <span style="font-weight:600;color:#6366f1;">▶ Run Output</span>
+      <button onclick="document.getElementById('run-output-panel').style.display='none'" style="background:none;border:none;color:#9ca3af;cursor:pointer;font-size:1rem;">✕</button>
+    </div>
+    <pre id="run-output-text" style="margin:0;white-space:pre-wrap;"></pre>
+  </div>
 
   <main style="display: flex; flex-direction: column; flex: 1; min-height: 0; height: calc(100vh - 75px);">
     <!-- Canvas Designer Panel -->
@@ -1021,6 +1031,45 @@
       a.download = 'meshflow.yaml';
       a.click();
       URL.revokeObjectURL(url);
+    }
+
+    // ── Run Workflow (one-click deploy) ──────────────────────────────────────
+    async function runWorkflow() {
+      const yaml = buildYAML();
+      if (!yaml || yaml.includes('No nodes')) {
+        alert('Add at least one node before running.');
+        return;
+      }
+
+      const panel = document.getElementById('run-output-panel');
+      const output = document.getElementById('run-output-text');
+      panel.style.display = 'block';
+      output.textContent = '⏳ Submitting workflow to MeshFlow runtime…\n';
+
+      const task = prompt('Enter a task description to run this workflow with:', 'Analyse and report');
+      if (!task) { panel.style.display = 'none'; return; }
+
+      try {
+        const resp = await fetch('/api/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ yaml, task }),
+        });
+        const data = await resp.json();
+        if (data.error) {
+          output.textContent = '❌ Error: ' + data.error;
+        } else {
+          output.textContent =
+            '✅ Run completed\n' +
+            '   Run ID  : ' + (data.run_id || '—') + '\n' +
+            '   Cost    : $' + (data.cost_usd || 0).toFixed(5) + '\n' +
+            '   Tokens  : ' + (data.tokens || 0) + '\n\n' +
+            'Output:\n' + (data.output || '(empty)');
+        }
+      } catch (e) {
+        output.textContent = '❌ Could not reach MeshFlow runtime: ' + e.message +
+          '\n\nTip: start the server with  meshflow serve  then reopen Studio.';
+      }
     }
 
     // ── Template Registry & Marketplace Functions ──

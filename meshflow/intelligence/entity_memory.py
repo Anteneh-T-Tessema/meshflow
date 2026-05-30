@@ -71,29 +71,65 @@ class EntityMemory:
                 fact_key   TEXT NOT NULL,
                 fact_value TEXT NOT NULL,
                 updated_at REAL NOT NULL,
+                ttl_s      REAL NOT NULL DEFAULT 0,
+                expires_at REAL NOT NULL DEFAULT 0,
                 PRIMARY KEY (entity, fact_key)
             )
             """
         )
+        # Non-destructive migration for existing databases
+        for col, dflt in (("ttl_s", "0"), ("expires_at", "0")):
+            try:
+                conn.execute(f"ALTER TABLE entity_facts ADD COLUMN {col} REAL NOT NULL DEFAULT {dflt}")
+            except Exception:
+                pass
         conn.commit()
 
     # ── Write ──────────────────────────────────────────────────────────────────
 
-    def remember(self, entity: str, fact_key: str, fact_value: str) -> None:
-        """Store (or update) a typed fact about *entity*."""
+    def remember(
+        self,
+        entity: str,
+        fact_key: str,
+        fact_value: str,
+        *,
+        ttl_seconds: float = 0,
+    ) -> None:
+        """Store (or update) a typed fact about *entity*.
+
+        Parameters
+        ----------
+        ttl_seconds:
+            Seconds until this fact expires (0 = never).
+        """
+        now = time.time()
+        expires_at = (now + ttl_seconds) if ttl_seconds > 0 else 0.0
         with self._lock:
             conn = self._connect()
             conn.execute(
                 """
-                INSERT INTO entity_facts (entity, fact_key, fact_value, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO entity_facts (entity, fact_key, fact_value, updated_at, ttl_s, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(entity, fact_key) DO UPDATE
                     SET fact_value = excluded.fact_value,
-                        updated_at = excluded.updated_at
+                        updated_at = excluded.updated_at,
+                        ttl_s      = excluded.ttl_s,
+                        expires_at = excluded.expires_at
                 """,
-                (entity, fact_key, str(fact_value), time.time()),
+                (entity, fact_key, str(fact_value), now, ttl_seconds, expires_at),
             )
             conn.commit()
+
+    def purge_expired(self) -> int:
+        """Delete all expired facts. Returns the count removed."""
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM entity_facts WHERE expires_at > 0 AND expires_at < ?", (now,)
+            )
+            conn.commit()
+        return cur.rowcount
 
     def forget(self, entity: str) -> None:
         """Remove all facts for *entity*."""
@@ -115,12 +151,16 @@ class EntityMemory:
     # ── Read ───────────────────────────────────────────────────────────────────
 
     def recall_entity(self, entity: str) -> dict[str, str]:
-        """Return all known facts for *entity* as {fact_key: fact_value}."""
+        """Return all non-expired facts for *entity* as {fact_key: fact_value}."""
+        now = time.time()
         with self._lock:
             conn = self._connect()
             rows = conn.execute(
-                "SELECT fact_key, fact_value FROM entity_facts WHERE entity = ? ORDER BY updated_at DESC",
-                (entity,),
+                """SELECT fact_key, fact_value FROM entity_facts
+                   WHERE entity = ?
+                     AND (expires_at = 0 OR expires_at > ?)
+                   ORDER BY updated_at DESC""",
+                (entity, now),
             ).fetchall()
         return {r["fact_key"]: r["fact_value"] for r in rows}
 

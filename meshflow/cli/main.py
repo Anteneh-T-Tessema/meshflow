@@ -89,6 +89,16 @@ def main() -> None:
                           help="Prepend text to every agent system prompt in the rewound run")
     p_replay.add_argument("--yaml", default="", dest="rewind_yaml",
                           help="Workflow YAML to use for the rewound run")
+    p_replay.add_argument("--inject", nargs="*", metavar="KEY=VALUE", default=[],
+                          help="State injection: --inject user_tier=enterprise region=eu-west-1")
+    # Branch & Compare mode
+    p_replay.add_argument("--branch-compare", action="store_true",
+                          help="Run Branch & Compare: fork run with multiple configs and diff outputs")
+    p_replay.add_argument("--forks", nargs="*", metavar="LABEL:model=M[,prompt=P]", default=[],
+                          help="Fork configs for --branch-compare, e.g. "
+                               "baseline:model=sonnet haiku:model=haiku,prompt=be-concise")
+    p_replay.add_argument("--compare-step", type=int, default=1,
+                          help="Step index to fork from in --branch-compare mode (default: 1)")
 
     # conformance
     p_conf = sub.add_parser(
@@ -143,7 +153,7 @@ def main() -> None:
     p_codegen.add_argument("yaml", help="Path to workflow YAML file")
 
     # trace
-    p_trace = sub.add_parser("trace", help="View a run trace in the terminal")
+    p_trace = sub.add_parser("trace", help="View a run trace in the terminal or browser")
     p_trace.add_argument("run_id", help="Run ID to inspect")
     p_trace.add_argument("--db", default="meshflow_runs.db")
     p_trace.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
@@ -152,6 +162,44 @@ def main() -> None:
                          choices=["terminal", "langsmith", "json"],
                          dest="trace_format",
                          help="Output format: terminal (default), langsmith (LangSmith JSON), json (raw dict)")
+    p_trace.add_argument("--browser", action="store_true",
+                         help="Open trace in the visual browser UI instead of terminal")
+    p_trace.add_argument("--port", type=int, default=7788,
+                         help="Port for the trace server when using --browser (default 7788)")
+
+    # trace-server
+    p_trace_srv = sub.add_parser("trace-server", help="Start the visual trace server UI")
+    p_trace_srv.add_argument("--db", default="meshflow_runs.db")
+    p_trace_srv.add_argument("--port", type=int, default=7788)
+    p_trace_srv.add_argument("--no-browser", dest="no_browser", action="store_true",
+                             help="Don't auto-open browser")
+
+    # doctor
+    p_doctor = sub.add_parser("doctor", help="Run production readiness checks")
+    p_doctor.add_argument("--db", default="meshflow_runs.db", help="Ledger path to validate")
+    p_doctor.add_argument("--port", type=int, default=8000)
+    p_doctor.add_argument("--json", dest="as_json", action="store_true")
+
+    # env
+    p_env = sub.add_parser("env", help="Generate .env file for production deployment")
+    p_env.add_argument("--output", "-o", default="", metavar="FILE",
+                       help="Write to FILE instead of stdout")
+    p_env.add_argument("--overwrite", action="store_true")
+    p_env.add_argument("--validate", metavar="FILE",
+                       help="Validate an existing .env file")
+
+    # deploy
+    p_deploy = sub.add_parser("deploy", help="Build and run MeshFlow via Docker")
+    p_deploy.add_argument("--tag", default="meshflow:latest", help="Docker image tag")
+    p_deploy.add_argument("--port", type=int, default=8000, help="Host port")
+    p_deploy.add_argument("--build-only", action="store_true", help="Build image but don't run")
+    p_deploy.add_argument("--no-cache", action="store_true", help="Docker --no-cache")
+    p_deploy.add_argument("--compose", action="store_true", help="Use docker compose instead")
+    p_deploy.add_argument("--profile", default="", help="Docker Compose profile (e.g. postgres)")
+    p_deploy.add_argument("--env-file", default=".env", help="Path to .env file")
+    p_deploy.add_argument("--down", action="store_true", help="Stop and remove containers")
+    p_deploy.add_argument("--status", action="store_true", help="Show container status")
+    p_deploy.add_argument("--logs", action="store_true", help="Show container logs")
 
     # runs
     p_runs = sub.add_parser("runs", help="List recent runs (alias for logs)")
@@ -1118,8 +1166,37 @@ def main() -> None:
     p_tmpl_delete = p_tmpl_sub.add_parser("delete", help="Remove a template from the local registry")
     p_tmpl_delete.add_argument("name", help="Template name to remove")
 
-    p_tmpl_share = p_tmpl_sub.add_parser("share", help="Share a template from the local registry to the community marketplace")
+    p_tmpl_share = p_tmpl_sub.add_parser("share", help="Share a template to a remote HTTP marketplace registry")
     p_tmpl_share.add_argument("name", help="Template name to share")
+    p_tmpl_share.add_argument(
+        "--url",
+        default="",
+        help="Remote marketplace base URL (e.g. http://marketplace.meshflow.io). "
+             "Omit to share locally only.",
+    )
+
+    p_tmpl_curated = p_tmpl_sub.add_parser("load-curated",
+                                           help="Load all 20 curated specialist templates into local registry")
+    p_tmpl_curated.add_argument("--dir", default="",
+                                help="Registry directory (default: ~/.meshflow/templates/)")
+
+    # ── marketplace ───────────────────────────────────────────────────────────
+    p_mkt = sub.add_parser("marketplace", help="Manage the MeshFlow template marketplace")
+    p_mkt_sub = p_mkt.add_subparsers(dest="marketplace_cmd", required=True)
+
+    p_mkt_serve = p_mkt_sub.add_parser("serve", help="Start a local HTTP marketplace server")
+    p_mkt_serve.add_argument("--port", type=int, default=9900, help="Port to listen on (default: 9900)")
+    p_mkt_serve.add_argument("--host", default="127.0.0.1", help="Bind host")
+    p_mkt_serve.add_argument("--dir", default="",
+                             help="Registry directory for the marketplace (default: ~/.meshflow/marketplace/)")
+
+    p_mkt_push = p_mkt_sub.add_parser("push", help="Push a local template to a remote marketplace")
+    p_mkt_push.add_argument("name", help="Template name")
+    p_mkt_push.add_argument("--url", required=True, help="Remote marketplace base URL")
+
+    p_mkt_pull = p_mkt_sub.add_parser("pull", help="Pull a template from a remote marketplace")
+    p_mkt_pull.add_argument("name", help="Template name")
+    p_mkt_pull.add_argument("--url", required=True, help="Remote marketplace base URL")
 
     # ── lint ──────────────────────────────────────────────────────────────────
     p_lint = sub.add_parser("lint", help="Static validate a workflow YAML before running")
@@ -1147,6 +1224,10 @@ def main() -> None:
         "stream": _cmd_stream,
         "replay": _cmd_replay,
         "trace": _cmd_trace,
+        "trace-server": _cmd_trace_server,
+        "doctor": _cmd_doctor,
+        "env": _cmd_env,
+        "deploy": _cmd_deploy,
         "conformance": _cmd_conformance,
         "schema": _cmd_schema,
         "serve": _cmd_serve,
@@ -1198,6 +1279,7 @@ def main() -> None:
         "eval-feedback": _cmd_eval_feedback,
         "worker":        _cmd_worker,
         "templates":     _cmd_templates,
+        "marketplace":   _cmd_marketplace,
     }
     dispatch[args.cmd](args)
 
@@ -1777,6 +1859,64 @@ async def _async_replay(args: argparse.Namespace) -> None:
         print(f"     Run: meshflow approve {args.run_id} {paused_node}")
         print()
 
+    # ── State injection: parse --inject KEY=VALUE pairs ──────────────────────
+    context_patch: dict[str, str] = {}
+    for pair in getattr(args, "inject", []):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            context_patch[k.strip()] = v.strip()
+    if context_patch:
+        print(f"\n  [state-inject] Injecting context: {context_patch}")
+
+    # ── Branch & Compare mode ─────────────────────────────────────────────────
+    if getattr(args, "branch_compare", False):
+        from meshflow.core.branch_compare import BranchCompare, ForkConfig
+
+        raw_forks = getattr(args, "forks", []) or []
+        fork_cfgs: list[ForkConfig] = []
+        for raw in raw_forks:
+            label, _, opts_str = raw.partition(":")
+            opts: dict[str, str] = {}
+            for opt in opts_str.split(","):
+                if "=" in opt:
+                    ok, ov = opt.split("=", 1)
+                    opts[ok.strip()] = ov.strip()
+            fork_cfgs.append(ForkConfig(
+                label=label or f"fork-{len(fork_cfgs)+1}",
+                model_override=opts.get("model", ""),
+                prompt_override=opts.get("prompt", "").replace("-", " "),
+                context_patch=dict(context_patch),
+                workflow_yaml=getattr(args, "rewind_yaml", ""),
+            ))
+
+        if not fork_cfgs:
+            # Default: one fork with each model tier
+            from meshflow.agents.model_router import _DEFAULT_TIERS
+            for label, model in _DEFAULT_TIERS.items():
+                fork_cfgs.append(ForkConfig(label=label, model_override=model))
+
+        step = getattr(args, "compare_step", 1)
+        print(f"\n  [branch-compare] Forking run at step {step} with {len(fork_cfgs)} variants...")
+
+        bc = BranchCompare(ledger_db=args.db)
+        try:
+            result = await bc.compare(args.run_id, step, forks=fork_cfgs)
+            print(f"\n  ┌{'─' * 70}┐")
+            print(f"  │  Branch & Compare — {args.run_id[:48]:<48}  │")
+            print(f"  │  Winner: {result.winner:<60}  │")
+            print(f"  │  Fork point: step {result.fork_point:<51}  │")
+            print(f"  ├{'─' * 70}┤")
+            for fork in result.forks:
+                status = "✓" if fork.completed else "✗"
+                print(f"  │  {status} {fork.label:<20} conf={fork.confidence:.2f}  "
+                      f"cost=${fork.total_cost_usd:.5f}  {fork.model_used:<25}  │")
+            print(f"  └{'─' * 70}┘")
+            if result.diff_summary and result.diff_summary != "(outputs identical)":
+                print(f"\n  Diff (top-2 forks):\n{result.diff_summary[:600]}")
+        except Exception as exc:
+            print(f"  [branch-compare] ERROR: {exc}")
+        return
+
     # ── Time-travel rewind ────────────────────────────────────────────────────
     if getattr(args, "rewind", 0):
         from meshflow.core.time_travel import RewindEngine
@@ -1787,6 +1927,8 @@ async def _async_replay(args: argparse.Namespace) -> None:
             print(f"           model    → {args.rewind_model}")
         if args.rewind_prompt:
             print(f"           prompt   → {args.rewind_prompt[:60]}")
+        if context_patch:
+            print(f"           inject  → {context_patch}")
         print()
         if not args.rewind_yaml:
             print("  [rewind] ERROR: --yaml <path> is required for rewind.")
@@ -1799,6 +1941,7 @@ async def _async_replay(args: argparse.Namespace) -> None:
                 workflow_yaml=args.rewind_yaml,
                 model_override=args.rewind_model,
                 prompt_override=args.rewind_prompt,
+                context_patch=context_patch or None,
             )
             status = "COMPLETED" if result.completed else "PARTIAL"
             print(f"  [rewind] {status}  run_id={result.rewind_run_id}")
@@ -2100,7 +2243,161 @@ def _print_conformance_report(kind: str, results: list[dict[str, Any]]) -> None:
 
 
 def _cmd_trace(args: argparse.Namespace) -> None:
+    if getattr(args, "browser", False):
+        _cmd_trace_browser(args)
+        return
     asyncio.run(_async_trace(args))
+
+
+def _cmd_trace_browser(args: argparse.Namespace) -> None:
+    """Open the run trace in the visual browser UI."""
+    from meshflow.studio.trace_server import TraceServer
+    import time
+
+    port = getattr(args, "port", 7788)
+    server = TraceServer(db=args.db, port=port)
+    server.start(daemon=True)
+    print(f"  Trace server started → {server.url}?run_id={args.run_id}")
+    server.open_browser(args.run_id)
+    print("  Press Ctrl+C to stop.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        server.stop()
+        print("\n  Stopped.")
+
+
+def _cmd_trace_server(args: argparse.Namespace) -> None:
+    """Start the visual trace server UI."""
+    from meshflow.studio.trace_server import TraceServer
+    import time
+
+    port = getattr(args, "port", 7788)
+    server = TraceServer(db=args.db, port=port)
+    server.start(daemon=True)
+    print(f"  MeshFlow Trace Server → {server.url}")
+    if not getattr(args, "no_browser", False):
+        server.open_browser()
+    print("  Press Ctrl+C to stop.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        server.stop()
+        print("\n  Stopped.")
+
+
+# ── doctor ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_doctor(args: argparse.Namespace) -> None:
+    from meshflow.deploy.doctor import Doctor
+    doc = Doctor(
+        port=getattr(args, "port", 8000),
+        db_path=getattr(args, "db", "meshflow_runs.db"),
+    )
+    report = doc.run()
+    if getattr(args, "as_json", False):
+        import json
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(report.summary())
+    sys.exit(0 if report.ok else 1)
+
+
+# ── env ───────────────────────────────────────────────────────────────────────
+
+
+def _cmd_env(args: argparse.Namespace) -> None:
+    from meshflow.deploy.env_generator import EnvGenerator
+
+    validate_path = getattr(args, "validate", "")
+    if validate_path:
+        gen = EnvGenerator()
+        issues = gen.validate(validate_path)
+        if not issues:
+            print(f"  ✓ {validate_path} is valid.")
+        else:
+            for issue in issues:
+                print(f"  {issue}")
+        sys.exit(0 if not any(i.severity == "error" for i in issues) else 1)
+
+    gen = EnvGenerator()
+    output = getattr(args, "output", "")
+    if output:
+        try:
+            gen.write(output, overwrite=getattr(args, "overwrite", False))
+            print(f"  Written → {output}")
+        except FileExistsError as e:
+            print(f"  Error: {e}")
+            sys.exit(1)
+    else:
+        print(gen.render())
+
+
+# ── deploy ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_deploy(args: argparse.Namespace) -> None:
+    import json as _json
+    from meshflow.deploy.deployer import DockerDeployer
+
+    tag = getattr(args, "tag", "meshflow:latest")
+    dep = DockerDeployer(tag=tag)
+
+    if getattr(args, "status", False):
+        name = "meshflow"
+        st = dep.status(name)
+        print(_json.dumps(st, indent=2))
+        return
+
+    if getattr(args, "logs", False):
+        print(dep.logs())
+        return
+
+    if getattr(args, "down", False):
+        if getattr(args, "compose", False):
+            result = dep.compose_down()
+        else:
+            result = dep.stop()
+        print(f"  {'ok' if result.ok else 'FAILED'}: {result.command}")
+        if result.error:
+            print(f"  {result.error}")
+        sys.exit(0 if result.ok else 1)
+
+    if getattr(args, "compose", False):
+        profiles = [args.profile] if getattr(args, "profile", "") else None
+        result = dep.compose_up(profiles=profiles, build=True)
+        print(f"  {'ok' if result.ok else 'FAILED'}: docker compose up")
+        if result.stdout:
+            print(result.stdout[-500:])
+        if result.error:
+            print(result.error[-500:])
+        sys.exit(0 if result.ok else 1)
+
+    # Standard: build [+ run]
+    print(f"  Building {tag}…")
+    build_result = dep.build(no_cache=getattr(args, "no_cache", False))
+    if not build_result.ok:
+        print(f"  Build FAILED:\n{build_result.stderr[-800:]}")
+        sys.exit(1)
+    print(f"  Built in {build_result.duration_ms:.0f}ms")
+
+    if getattr(args, "build_only", False):
+        print(f"  Image ready: {tag}")
+        return
+
+    port = getattr(args, "port", 8000)
+    env_file = getattr(args, "env_file", ".env")
+    print(f"  Starting container on port {port}…")
+    run_result = dep.run(port=port, env_file=env_file)
+    if run_result.ok:
+        print(f"  Container started: {run_result.container_id}")
+        print(f"  Server → http://localhost:{port}/health/live")
+    else:
+        print(f"  Run FAILED:\n{run_result.stderr}")
+        sys.exit(1)
 
 
 async def _async_trace(args: argparse.Namespace) -> None:
@@ -4846,13 +5143,80 @@ def _cmd_templates(args: argparse.Namespace) -> None:
     elif args.templates_cmd == "share":
         try:
             tmpl = reg.pull(args.name)
-            shared_dir = os.path.expanduser("~/.meshflow/shared_templates")
-            shared_reg = TemplateRegistry(registry_dir=shared_dir)
-            shared_path = shared_reg.publish(tmpl)
-            print(f"  Shared template {tmpl.name!r} with the community marketplace → {shared_path}")
+            remote_url = getattr(args, "url", "")
+            if remote_url:
+                from meshflow.registry.templates import MarketplaceClient
+                client = MarketplaceClient(remote_url)
+                published_url = client.push(tmpl)
+                print(f"  Published {tmpl.name!r} → {published_url}")
+            else:
+                shared_dir = os.path.expanduser("~/.meshflow/shared_templates")
+                shared_reg = TemplateRegistry(registry_dir=shared_dir)
+                shared_path = shared_reg.publish(tmpl)
+                print(f"  Shared {tmpl.name!r} locally → {shared_path}")
+                print(f"  Tip: use --url http://<host>:<port> to push to a remote marketplace.")
         except KeyError as exc:
             print(f"  ERROR: {exc}")
             sys.exit(1)
+
+    elif args.templates_cmd == "load-curated":
+        from meshflow.registry.curated_templates import load_curated_library, CURATED_TEMPLATES
+        registry_dir = getattr(args, "dir", "") or None
+        load_curated_library(registry_dir=registry_dir)
+        print(f"\n  Loaded {len(CURATED_TEMPLATES)} curated templates into registry.")
+        for t in CURATED_TEMPLATES:
+            print(f"  • {t.name:<45} ({t.role})")
+
+
+# ── marketplace ────────────────────────────────────────────────────────────────
+
+
+def _cmd_marketplace(args: argparse.Namespace) -> None:
+    """Handle `meshflow marketplace` subcommands."""
+    import os as _os
+    from meshflow.registry.templates import TemplateRegistry, MarketplaceClient
+    from meshflow.registry.templates import MarketplaceServer
+
+    if args.marketplace_cmd == "serve":
+        registry_dir = getattr(args, "dir", "") or _os.path.expanduser("~/.meshflow/marketplace")
+        server = MarketplaceServer(
+            registry_dir=registry_dir,
+            port=args.port,
+            host=args.host,
+        )
+        server.start(daemon=False)  # blocking — serve until Ctrl-C
+        print(f"\n  MeshFlow Marketplace running at http://{args.host}:{args.port}")
+        print(f"  Registry: {registry_dir}")
+        print(f"  Press Ctrl-C to stop.\n")
+        try:
+            import time as _time
+            while True:
+                _time.sleep(1)
+        except KeyboardInterrupt:
+            server.stop()
+            print("\n  Marketplace stopped.")
+
+    elif args.marketplace_cmd == "push":
+        reg = TemplateRegistry()
+        try:
+            tmpl = reg.pull(args.name)
+        except KeyError as exc:
+            print(f"  ERROR: template {args.name!r} not found in local registry: {exc}")
+            sys.exit(1)
+        client = MarketplaceClient(args.url)
+        url = client.push(tmpl)
+        print(f"  Pushed {tmpl.name!r} → {url}")
+
+    elif args.marketplace_cmd == "pull":
+        client = MarketplaceClient(args.url)
+        try:
+            tmpl = client.pull(args.name)
+        except RuntimeError as exc:
+            print(f"  ERROR: {exc}")
+            sys.exit(1)
+        reg = TemplateRegistry()
+        reg.publish(tmpl)
+        print(f"  Pulled {tmpl.name!r} from {args.url} → local registry")
 
 
 # ── dashboard ─────────────────────────────────────────────────────────────────

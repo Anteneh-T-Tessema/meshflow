@@ -283,4 +283,206 @@ class TemplateRegistry:
         }
 
 
-__all__ = ["AgentTemplate", "TemplateRegistry"]
+# ── MarketplaceClient ─────────────────────────────────────────────────────────
+
+
+class MarketplaceClient:
+    """HTTP client for a remote MeshFlow template marketplace.
+
+    Talks to a ``MarketplaceServer`` (or any compatible HTTP registry) to
+    push, pull, list, and search agent templates without a local registry.
+
+    Usage::
+
+        client = MarketplaceClient("http://marketplace.meshflow.io")
+
+        # Publish a local template to the remote registry
+        client.push(tmpl)
+
+        # Pull a template by name
+        tmpl = client.pull("market-researcher")
+
+        # Search
+        results = client.search("compliance HIPAA")
+    """
+
+    def __init__(self, base_url: str, timeout: int = 10) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    def _request(self, method: str, path: str, data: bytes | None = None) -> Any:
+        import urllib.request
+        import urllib.error
+
+        url = f"{self.base_url}{path}"
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return yaml.safe_load(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode()
+            raise RuntimeError(f"Marketplace {method} {path} → HTTP {exc.code}: {body}") from exc
+
+    def push(self, template: "AgentTemplate") -> str:
+        """Upload a template to the remote registry. Returns the registry URL."""
+        import json
+        payload = json.dumps(template.to_dict()).encode()
+        result = self._request("POST", "/templates", data=payload)
+        return result.get("url", f"{self.base_url}/templates/{template.name}")
+
+    def pull(self, name: str) -> "AgentTemplate":
+        """Download a template by name from the remote registry."""
+        data = self._request("GET", f"/templates/{name}")
+        return AgentTemplate(**{k: v for k, v in data.items() if k in AgentTemplate.__dataclass_fields__})
+
+    def list_all(self) -> list[dict[str, str]]:
+        """List all templates in the remote registry (name + description)."""
+        result = self._request("GET", "/templates")
+        return result if isinstance(result, list) else []
+
+    def search(self, query: str, top_k: int = 5) -> list["AgentTemplate"]:
+        """BM25 search over the remote registry."""
+        import urllib.parse
+        q = urllib.parse.quote_plus(query)
+        results = self._request("GET", f"/templates/search?q={q}&top={top_k}")
+        out = []
+        for item in (results if isinstance(results, list) else []):
+            try:
+                out.append(AgentTemplate(**{k: v for k, v in item.items()
+                                            if k in AgentTemplate.__dataclass_fields__}))
+            except Exception:
+                pass
+        return out
+
+
+# ── MarketplaceServer ─────────────────────────────────────────────────────────
+
+
+class MarketplaceServer:
+    """Self-hostable HTTP marketplace server for MeshFlow templates.
+
+    Wraps a ``TemplateRegistry`` and exposes it over HTTP so teams can share
+    templates internally or publish them publicly.
+
+    Endpoints::
+
+        GET  /templates              — list all (name + description JSON array)
+        GET  /templates/<name>       — fetch one template as JSON
+        POST /templates              — publish a template (JSON body)
+        GET  /templates/search?q=.. — BM25 search
+
+    Usage::
+
+        server = MarketplaceServer(registry_dir="~/.meshflow/marketplace", port=9900)
+        server.start()               # background thread
+        print(server.url())
+        server.stop()
+
+    CLI::
+
+        meshflow marketplace serve --port 9900
+        meshflow templates share my-agent --url http://localhost:9900
+    """
+
+    def __init__(
+        self,
+        registry_dir: str = "",
+        port: int = 9900,
+        host: str = "127.0.0.1",
+    ) -> None:
+        self._reg = TemplateRegistry(
+            registry_dir=registry_dir or os.path.expanduser("~/.meshflow/marketplace")
+        )
+        self._port = port
+        self._host = host
+        self._server: Any = None
+        self._thread: Any = None
+
+    def url(self) -> str:
+        return f"http://{self._host}:{self._port}"
+
+    def start(self, daemon: bool = True) -> None:
+        import http.server
+        import json as _json
+        import threading
+        import urllib.parse
+
+        reg = self._reg
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, fmt: str, *args: Any) -> None:  # type: ignore[override]
+                pass
+
+            def _send(self, code: int, data: Any) -> None:
+                body = _json.dumps(data, default=str).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self) -> None:
+                parsed = urllib.parse.urlparse(self.path)
+                parts = [p for p in parsed.path.split("/") if p]
+                qs = urllib.parse.parse_qs(parsed.query)
+
+                if parts == ["templates"]:
+                    items = [{"name": t.name, "description": t.description, "tags": t.tags}
+                             for t in reg.list()]
+                    self._send(200, items)
+                elif len(parts) == 2 and parts[0] == "templates" and parts[1] != "search":
+                    try:
+                        t = reg.pull(parts[1])
+                        self._send(200, t.to_dict())
+                    except KeyError:
+                        self._send(404, {"error": f"template {parts[1]!r} not found"})
+                elif len(parts) == 2 and parts[0] == "templates" and parts[1] == "search":
+                    q = qs.get("q", [""])[0]
+                    top = int(qs.get("top", ["5"])[0])
+                    results = reg.search(q, top_k=top)
+                    self._send(200, [t.to_dict() for t in results])
+                else:
+                    self._send(404, {"error": "not found"})
+
+            def do_POST(self) -> None:
+                import json as _json2
+                parts = [p for p in self.path.split("/") if p]
+                if parts == ["templates"]:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = self.rfile.read(length)
+                    try:
+                        data = _json2.loads(body)
+                        fields = {k: v for k, v in data.items()
+                                  if k in AgentTemplate.__dataclass_fields__}
+                        tmpl = AgentTemplate(**fields)
+                        path = reg.publish(tmpl)
+                        self._send(200, {"status": "ok", "url": f"/templates/{tmpl.name}",
+                                         "path": str(path)})
+                    except Exception as exc:
+                        self._send(400, {"error": str(exc)})
+                else:
+                    self._send(404, {"error": "not found"})
+
+            def do_OPTIONS(self) -> None:
+                self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.end_headers()
+
+        self._server = http.server.HTTPServer((self._host, self._port), _Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=daemon)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._server:
+            self._server.shutdown()
+
+
+__all__ = ["AgentTemplate", "TemplateRegistry", "MarketplaceClient", "MarketplaceServer"]

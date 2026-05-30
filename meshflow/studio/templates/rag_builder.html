@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MeshFlow — RAG Pipeline Builder</title>
+  <style>
+    :root {
+      --bg: #0a0b10; --surface: #141623; --surface2: #1e2035;
+      --accent: #6366f1; --green: #10b981; --orange: #f97316;
+      --text: #f3f4f6; --muted: #9ca3af; --border: rgba(255,255,255,0.08);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg);
+           color: var(--text); min-height: 100vh; }
+    header { padding: 14px 24px; background: var(--surface);
+             border-bottom: 1px solid var(--border);
+             display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 1rem; font-weight: 700; color: var(--accent); }
+    header span { color: var(--muted); font-size: 0.85rem; }
+    .layout { display: grid; grid-template-columns: 280px 1fr 300px; gap: 0;
+              height: calc(100vh - 49px); }
+    .panel { padding: 20px; overflow-y: auto; }
+    .panel-left  { background: var(--surface); border-right: 1px solid var(--border); }
+    .panel-mid   { background: var(--bg); }
+    .panel-right { background: var(--surface); border-left: 1px solid var(--border); }
+    h2 { font-size: 0.78rem; color: var(--muted); text-transform: uppercase;
+         letter-spacing: 0.06em; margin-bottom: 14px; }
+    .stage-card { background: var(--surface2); border: 1px solid var(--border);
+                  border-radius: 10px; padding: 14px; margin-bottom: 10px;
+                  cursor: pointer; transition: border-color 0.15s; }
+    .stage-card:hover { border-color: var(--accent); }
+    .stage-card.active { border-color: var(--accent);
+                         box-shadow: 0 0 0 2px rgba(99,102,241,0.2); }
+    .stage-title { font-weight: 600; font-size: 0.88rem; margin-bottom: 4px; }
+    .stage-sub   { color: var(--muted); font-size: 0.77rem; line-height: 1.5; }
+    .pipeline { display: flex; flex-direction: column; align-items: center;
+                padding: 30px 40px; gap: 0; }
+    .pipe-step { background: var(--surface); border: 1.5px solid var(--border);
+                 border-radius: 10px; width: 100%; max-width: 500px;
+                 padding: 14px 18px; position: relative; }
+    .pipe-step.configured { border-color: var(--green); }
+    .pipe-step-title { font-weight: 600; font-size: 0.88rem; color: var(--text); }
+    .pipe-step-value { font-size: 0.78rem; color: var(--muted); margin-top: 3px; }
+    .pipe-arrow { text-align: center; font-size: 1.2rem; color: var(--muted);
+                  padding: 4px 0; line-height: 1; }
+    .config-tag { display: inline-block; background: rgba(99,102,241,0.15);
+                  color: var(--accent); border-radius: 4px; padding: 2px 7px;
+                  font-size: 0.72rem; margin: 3px 2px 0; }
+    label { font-size: 0.82rem; color: var(--muted); display: block;
+            margin-bottom: 5px; margin-top: 12px; }
+    label:first-child { margin-top: 0; }
+    input, select, textarea {
+      width: 100%; background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); padding: 7px 10px;
+      border-radius: 6px; font-size: 0.82rem;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none; border-color: var(--accent);
+    }
+    textarea { resize: vertical; min-height: 60px; }
+    .btn { display: inline-block; padding: 8px 16px; border-radius: 7px;
+           font-size: 0.84rem; cursor: pointer; border: none; transition: opacity 0.15s; }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary   { background: var(--accent); color: #fff; }
+    .btn-secondary { background: var(--surface2); color: var(--text);
+                     border: 1px solid var(--border); }
+    .btn-green     { background: var(--green); color: #fff; }
+    .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+    #yaml-output { background: var(--bg); color: #a5f3fc;
+                   border: 1px solid var(--border); border-radius: 8px;
+                   padding: 14px; font-family: monospace; font-size: 0.78rem;
+                   white-space: pre-wrap; min-height: 120px; margin-top: 12px;
+                   display: none; }
+    .step-edit-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .step-edit-row input { flex: 1; }
+    .step-icon { width: 28px; height: 28px; border-radius: 6px; display: flex;
+                 align-items: center; justify-content: center; font-size: 0.9rem;
+                 position: absolute; right: 12px; top: 50%; transform: translateY(-50%); }
+    .ok-icon   { background: rgba(16,185,129,0.15); color: var(--green); }
+    .warn-icon { background: rgba(249,115,22,0.15); color: var(--orange); }
+    .tip { background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2);
+           border-radius: 8px; padding: 10px 12px; font-size: 0.78rem;
+           color: var(--muted); margin-top: 14px; line-height: 1.6; }
+    .tip strong { color: var(--accent); }
+  </style>
+</head>
+<body>
+<nav style="background:#141623;border-bottom:1px solid rgba(255,255,255,0.08);padding:8px 20px;display:flex;align-items:center;gap:16px;font-size:0.82rem;">
+  <span style="font-weight:700;color:#6366f1;margin-right:8px;">MeshFlow Studio</span>
+  <a href="/trace" style="color:#9ca3af;text-decoration:none;padding:4px 10px;border-radius:5px;">🔍 Trace</a>
+  <a href="/graph" style="color:#9ca3af;text-decoration:none;padding:4px 10px;border-radius:5px;">🗺 Graph</a>
+  <a href="/rag"   style="color:#f3f4f6;text-decoration:none;padding:4px 10px;border-radius:5px;background:rgba(99,102,241,0.15);">📚 RAG Builder</a>
+  <a href="/"      style="color:#9ca3af;text-decoration:none;padding:4px 10px;border-radius:5px;">⚡ Workflow</a>
+</nav>
+<header>
+  <h1>RAG Pipeline Builder</h1>
+  <span>Configure, preview, and export no-code RAG pipelines — Dify-style but code-first</span>
+</header>
+<div class="layout">
+
+  <!-- Left: stage selector -->
+  <div class="panel panel-left">
+    <h2>Pipeline Stages</h2>
+
+    <div class="stage-card active" onclick="selectStage('data')">
+      <div class="stage-title">📄 Data Source</div>
+      <div class="stage-sub">Files, URLs, or inline text to index</div>
+    </div>
+
+    <div class="stage-card" onclick="selectStage('chunk')">
+      <div class="stage-title">✂️ Chunking</div>
+      <div class="stage-sub">Split documents into retrievable chunks</div>
+    </div>
+
+    <div class="stage-card" onclick="selectStage('embed')">
+      <div class="stage-title">🔢 Embedding</div>
+      <div class="stage-sub">Convert chunks to vectors</div>
+    </div>
+
+    <div class="stage-card" onclick="selectStage('retrieve')">
+      <div class="stage-title">🔍 Retrieval</div>
+      <div class="stage-sub">Dense, sparse, or hybrid search</div>
+    </div>
+
+    <div class="stage-card" onclick="selectStage('rank')">
+      <div class="stage-title">🏆 Ranking</div>
+      <div class="stage-sub">LLM or cross-encoder re-ranking</div>
+    </div>
+
+    <div class="stage-card" onclick="selectStage('generate')">
+      <div class="stage-title">✨ Generation</div>
+      <div class="stage-sub">Model, prompt, and self-correction config</div>
+    </div>
+
+    <div class="stage-card" onclick="selectStage('guard')">
+      <div class="stage-title">🛡️ Guardrails</div>
+      <div class="stage-sub">PII detection, cost cap, content filters</div>
+    </div>
+
+    <div class="tip">
+      <strong>MeshFlow RAG</strong> supports HybridRetriever (BM25 + dense),
+      LLMRanker, SelfCorrectingRAG with grade-threshold refinement, and
+      full cache_control prompt caching.
+    </div>
+  </div>
+
+  <!-- Centre: visual pipeline -->
+  <div class="panel panel-mid">
+    <h2 style="margin-left:40px">Pipeline Preview</h2>
+    <div class="pipeline" id="pipeline">
+
+      <div class="pipe-step configured" id="step-data">
+        <div class="pipe-step-title">📄 Data Source</div>
+        <div class="pipe-step-value" id="val-data">files: [], urls: [], inline: ""</div>
+        <div class="step-icon ok-icon">✓</div>
+      </div>
+      <div class="pipe-arrow">↓</div>
+
+      <div class="pipe-step configured" id="step-chunk">
+        <div class="pipe-step-title">✂️ Chunking</div>
+        <div class="pipe-step-value" id="val-chunk">chunk_size: 500 · overlap: 50</div>
+        <div class="step-icon ok-icon">✓</div>
+      </div>
+      <div class="pipe-arrow">↓</div>
+
+      <div class="pipe-step configured" id="step-embed">
+        <div class="pipe-step-title">🔢 Embedding</div>
+        <div class="pipe-step-value" id="val-embed">provider: built-in (char n-gram → numpy BoW → sentence-transformers)</div>
+        <div class="step-icon ok-icon">✓</div>
+      </div>
+      <div class="pipe-arrow">↓</div>
+
+      <div class="pipe-step" id="step-retrieve">
+        <div class="pipe-step-title">🔍 Retrieval</div>
+        <div class="pipe-step-value" id="val-retrieve">strategy: dense · top_k: 5</div>
+        <div class="step-icon warn-icon">!</div>
+      </div>
+      <div class="pipe-arrow">↓</div>
+
+      <div class="pipe-step" id="step-rank">
+        <div class="pipe-step-title">🏆 Ranking</div>
+        <div class="pipe-step-value" id="val-rank">ranker: none (skip)</div>
+        <div class="step-icon warn-icon">!</div>
+      </div>
+      <div class="pipe-arrow">↓</div>
+
+      <div class="pipe-step" id="step-generate">
+        <div class="pipe-step-title">✨ Generation</div>
+        <div class="pipe-step-value" id="val-generate">model: claude-sonnet-4-6 · self-correct: off</div>
+        <div class="step-icon warn-icon">!</div>
+      </div>
+      <div class="pipe-arrow">↓</div>
+
+      <div class="pipe-step" id="step-guard">
+        <div class="pipe-step-title">🛡️ Guardrails</div>
+        <div class="pipe-step-value" id="val-guard">pii_block: off · cost_cap: none</div>
+        <div class="step-icon warn-icon">!</div>
+      </div>
+
+    </div>
+
+    <div style="text-align:center; margin-top: 20px;" id="export-row">
+      <button class="btn btn-green" onclick="exportYAML()">Export Pipeline YAML</button>
+      <button class="btn btn-secondary" style="margin-left:8px" onclick="copyYAML()">Copy</button>
+    </div>
+    <pre id="yaml-output"></pre>
+  </div>
+
+  <!-- Right: config panel -->
+  <div class="panel panel-right" id="config-panel">
+    <h2>Configure: <span id="stage-label">Data Source</span></h2>
+    <div id="stage-form">
+
+      <!-- data source form (default) -->
+      <div id="form-data">
+        <label>File paths (comma-separated)</label>
+        <input type="text" id="data-files" placeholder="docs/policy.pdf, README.md">
+        <label>URLs (comma-separated)</label>
+        <input type="text" id="data-urls" placeholder="https://…">
+        <label>Inline text</label>
+        <textarea id="data-inline" placeholder="Paste text directly…"></textarea>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="applyStage('data')">Apply</button>
+        </div>
+      </div>
+
+      <!-- chunk form -->
+      <div id="form-chunk" style="display:none">
+        <label>Chunk size (characters)</label>
+        <input type="number" id="chunk-size" value="500" min="100" max="4000">
+        <label>Overlap (characters)</label>
+        <input type="number" id="chunk-overlap" value="50" min="0" max="500">
+        <label>Split strategy</label>
+        <select id="chunk-strategy">
+          <option value="character">Character</option>
+          <option value="sentence">Sentence</option>
+          <option value="token">Token (approximate)</option>
+        </select>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="applyStage('chunk')">Apply</button>
+        </div>
+      </div>
+
+      <!-- embed form -->
+      <div id="form-embed" style="display:none">
+        <label>Embedding provider</label>
+        <select id="embed-provider">
+          <option value="builtin">Built-in (char n-gram → sentence-transformers)</option>
+          <option value="openai">OpenAI text-embedding-3-small</option>
+          <option value="cohere">Cohere embed-v3</option>
+          <option value="custom">Custom function</option>
+        </select>
+        <label>Dimensions</label>
+        <input type="number" id="embed-dims" value="384" min="64" max="3072">
+        <div class="actions">
+          <button class="btn btn-primary" onclick="applyStage('embed')">Apply</button>
+        </div>
+      </div>
+
+      <!-- retrieve form -->
+      <div id="form-retrieve" style="display:none">
+        <label>Retrieval strategy</label>
+        <select id="retrieve-strategy">
+          <option value="dense">Dense (vector similarity)</option>
+          <option value="sparse">Sparse (BM25)</option>
+          <option value="hybrid">Hybrid (BM25 + dense via RRF)</option>
+        </select>
+        <label>Top-K results</label>
+        <input type="number" id="retrieve-k" value="5" min="1" max="50">
+        <label>Dense weight (hybrid only, 0–1)</label>
+        <input type="number" id="retrieve-dense-w" value="0.5" min="0" max="1" step="0.1">
+        <label>Max chars per chunk (RAG token budget)</label>
+        <input type="number" id="retrieve-max-chars" value="4000" min="500" max="32000">
+        <div class="actions">
+          <button class="btn btn-primary" onclick="applyStage('retrieve')">Apply</button>
+        </div>
+      </div>
+
+      <!-- rank form -->
+      <div id="form-rank" style="display:none">
+        <label>Ranker type</label>
+        <select id="rank-type">
+          <option value="none">None (skip ranking)</option>
+          <option value="llm">LLMRanker (MeshFlow built-in)</option>
+          <option value="heuristic">Heuristic (keyword overlap)</option>
+        </select>
+        <label>Score threshold (drop below this)</label>
+        <input type="number" id="rank-threshold" value="0.3" min="0" max="1" step="0.05">
+        <label>Ranking model (LLMRanker)</label>
+        <select id="rank-model">
+          <option value="claude-haiku-4-5-20251001">claude-haiku (fast, cheap)</option>
+          <option value="claude-sonnet-4-6">claude-sonnet (accurate)</option>
+        </select>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="applyStage('rank')">Apply</button>
+        </div>
+      </div>
+
+      <!-- generate form -->
+      <div id="form-generate" style="display:none">
+        <label>Generation model</label>
+        <select id="gen-model">
+          <option value="claude-sonnet-4-6">claude-sonnet-4-6 (recommended)</option>
+          <option value="claude-haiku-4-5-20251001">claude-haiku (fast)</option>
+          <option value="claude-opus-4-8">claude-opus (best quality)</option>
+        </select>
+        <label>Self-correction</label>
+        <select id="gen-self-correct">
+          <option value="off">Off</option>
+          <option value="on">On (grade + refine)</option>
+        </select>
+        <label>Grade threshold (self-correction trigger)</label>
+        <input type="number" id="gen-grade" value="0.7" min="0" max="1" step="0.05">
+        <label>Max correction rounds</label>
+        <input type="number" id="gen-rounds" value="2" min="1" max="5">
+        <label>Prompt caching</label>
+        <select id="gen-cache">
+          <option value="on">On (cache_control — 90% cost reduction)</option>
+          <option value="off">Off</option>
+        </select>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="applyStage('generate')">Apply</button>
+        </div>
+      </div>
+
+      <!-- guard form -->
+      <div id="form-guard" style="display:none">
+        <label>PII / PHI blocking</label>
+        <select id="guard-pii">
+          <option value="off">Off</option>
+          <option value="on">On (SensitiveDataDetector — 28 patterns)</option>
+        </select>
+        <label>Cost cap (USD, 0 = disabled)</label>
+        <input type="number" id="guard-cost" value="0" min="0" step="0.01">
+        <label>Output length guardrail (max tokens, 0 = disabled)</label>
+        <input type="number" id="guard-length" value="0" min="0" step="100">
+        <label>Compliance profile</label>
+        <select id="guard-compliance">
+          <option value="none">None</option>
+          <option value="hipaa">HIPAA</option>
+          <option value="soc2">SOC 2</option>
+          <option value="gdpr">GDPR</option>
+          <option value="pci">PCI DSS</option>
+        </select>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="applyStage('guard')">Apply</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const stages = ['data','chunk','embed','retrieve','rank','generate','guard'];
+  let config = {
+    data:     { files: [], urls: [], inline: '' },
+    chunk:    { chunk_size: 500, overlap: 50, strategy: 'character' },
+    embed:    { provider: 'builtin', dimensions: 384 },
+    retrieve: { strategy: 'dense', top_k: 5, dense_weight: 0.5, max_chars: 4000 },
+    rank:     { type: 'none', threshold: 0.3, model: 'claude-haiku-4-5-20251001' },
+    generate: { model: 'claude-sonnet-4-6', self_correct: 'off',
+                grade_threshold: 0.7, max_rounds: 2, prompt_cache: 'on' },
+    guard:    { pii_block: 'off', cost_cap: 0, max_tokens: 0, compliance: 'none' },
+  };
+
+  function selectStage(stage) {
+    stages.forEach(s => {
+      document.querySelector(`[onclick="selectStage('${s}')"]`).classList.toggle('active', s === stage);
+      document.getElementById(`form-${s}`).style.display = s === stage ? '' : 'none';
+    });
+    document.getElementById('stage-label').textContent = {
+      data: 'Data Source', chunk: 'Chunking', embed: 'Embedding',
+      retrieve: 'Retrieval', rank: 'Ranking', generate: 'Generation',
+      guard: 'Guardrails'
+    }[stage] || stage;
+  }
+
+  function applyStage(stage) {
+    if (stage === 'data') {
+      config.data.files = document.getElementById('data-files').value.split(',').map(s=>s.trim()).filter(Boolean);
+      config.data.urls  = document.getElementById('data-urls').value.split(',').map(s=>s.trim()).filter(Boolean);
+      config.data.inline = document.getElementById('data-inline').value;
+      const parts = [];
+      if (config.data.files.length) parts.push(`files: [${config.data.files.join(', ')}]`);
+      if (config.data.urls.length)  parts.push(`urls: ${config.data.urls.length}`);
+      if (config.data.inline)       parts.push('inline: set');
+      document.getElementById('val-data').textContent = parts.join(' · ') || 'not configured';
+    }
+    if (stage === 'chunk') {
+      config.chunk.chunk_size = +document.getElementById('chunk-size').value;
+      config.chunk.overlap    = +document.getElementById('chunk-overlap').value;
+      config.chunk.strategy   = document.getElementById('chunk-strategy').value;
+      document.getElementById('val-chunk').textContent =
+        `chunk_size: ${config.chunk.chunk_size} · overlap: ${config.chunk.overlap} · ${config.chunk.strategy}`;
+    }
+    if (stage === 'embed') {
+      config.embed.provider   = document.getElementById('embed-provider').value;
+      config.embed.dimensions = +document.getElementById('embed-dims').value;
+      document.getElementById('val-embed').textContent =
+        `provider: ${config.embed.provider} · dims: ${config.embed.dimensions}`;
+    }
+    if (stage === 'retrieve') {
+      config.retrieve.strategy    = document.getElementById('retrieve-strategy').value;
+      config.retrieve.top_k       = +document.getElementById('retrieve-k').value;
+      config.retrieve.dense_weight= +document.getElementById('retrieve-dense-w').value;
+      config.retrieve.max_chars   = +document.getElementById('retrieve-max-chars').value;
+      document.getElementById('val-retrieve').textContent =
+        `strategy: ${config.retrieve.strategy} · top_k: ${config.retrieve.top_k} · max_chars: ${config.retrieve.max_chars}`;
+    }
+    if (stage === 'rank') {
+      config.rank.type      = document.getElementById('rank-type').value;
+      config.rank.threshold = +document.getElementById('rank-threshold').value;
+      config.rank.model     = document.getElementById('rank-model').value;
+      document.getElementById('val-rank').textContent =
+        config.rank.type === 'none' ? 'ranker: none (skip)'
+          : `ranker: ${config.rank.type} · threshold: ${config.rank.threshold}`;
+    }
+    if (stage === 'generate') {
+      config.generate.model          = document.getElementById('gen-model').value;
+      config.generate.self_correct   = document.getElementById('gen-self-correct').value;
+      config.generate.grade_threshold= +document.getElementById('gen-grade').value;
+      config.generate.max_rounds     = +document.getElementById('gen-rounds').value;
+      config.generate.prompt_cache   = document.getElementById('gen-cache').value;
+      document.getElementById('val-generate').textContent =
+        `model: ${config.generate.model} · self-correct: ${config.generate.self_correct} · cache: ${config.generate.prompt_cache}`;
+    }
+    if (stage === 'guard') {
+      config.guard.pii_block  = document.getElementById('guard-pii').value;
+      config.guard.cost_cap   = +document.getElementById('guard-cost').value;
+      config.guard.max_tokens = +document.getElementById('guard-length').value;
+      config.guard.compliance = document.getElementById('guard-compliance').value;
+      const parts = [];
+      if (config.guard.pii_block !== 'off') parts.push('pii:on');
+      if (config.guard.cost_cap > 0)        parts.push(`cost_cap:$${config.guard.cost_cap}`);
+      if (config.guard.compliance !== 'none') parts.push(config.guard.compliance.toUpperCase());
+      document.getElementById('val-guard').textContent = parts.join(' · ') || 'none configured';
+    }
+
+    // Mark step as configured
+    const step = document.getElementById(`step-${stage}`);
+    if (step) {
+      step.classList.add('configured');
+      const icon = step.querySelector('.step-icon');
+      if (icon) { icon.className = 'step-icon ok-icon'; icon.textContent = '✓'; }
+    }
+  }
+
+  function buildYAML() {
+    const c = config;
+    const lines = [
+      'rag_pipeline:',
+      '  # Generated by MeshFlow RAG Pipeline Builder',
+      '',
+      '  data_source:',
+    ];
+    if (c.data.files.length)  lines.push(`    files: [${c.data.files.map(f=>`"${f}"`).join(', ')}]`);
+    if (c.data.urls.length)   lines.push(`    urls: [${c.data.urls.map(u=>`"${u}"`).join(', ')}]`);
+    if (c.data.inline)        lines.push(`    inline: "${c.data.inline.slice(0,80).replace(/"/g,"'")}"`);
+    lines.push('', '  chunking:');
+    lines.push(`    chunk_size: ${c.chunk.chunk_size}`);
+    lines.push(`    overlap: ${c.chunk.overlap}`);
+    lines.push(`    strategy: ${c.chunk.strategy}`);
+    lines.push('', '  embedding:');
+    lines.push(`    provider: ${c.embed.provider}`);
+    lines.push(`    dimensions: ${c.embed.dimensions}`);
+    lines.push('', '  retrieval:');
+    lines.push(`    strategy: ${c.retrieve.strategy}`);
+    lines.push(`    top_k: ${c.retrieve.top_k}`);
+    if (c.retrieve.strategy === 'hybrid') lines.push(`    dense_weight: ${c.retrieve.dense_weight}`);
+    lines.push(`    max_chars: ${c.retrieve.max_chars}`);
+    lines.push('', '  ranking:');
+    lines.push(`    type: ${c.rank.type}`);
+    if (c.rank.type !== 'none') {
+      lines.push(`    score_threshold: ${c.rank.threshold}`);
+      lines.push(`    model: ${c.rank.model}`);
+    }
+    lines.push('', '  generation:');
+    lines.push(`    model: ${c.generate.model}`);
+    lines.push(`    self_correct: ${c.generate.self_correct === 'on'}`);
+    if (c.generate.self_correct === 'on') {
+      lines.push(`    grade_threshold: ${c.generate.grade_threshold}`);
+      lines.push(`    max_correction_rounds: ${c.generate.max_rounds}`);
+    }
+    lines.push(`    prompt_caching: ${c.generate.prompt_cache === 'on'}`);
+    lines.push('', '  guardrails:');
+    lines.push(`    pii_block: ${c.guard.pii_block === 'on'}`);
+    if (c.guard.cost_cap > 0)   lines.push(`    cost_cap_usd: ${c.guard.cost_cap}`);
+    if (c.guard.max_tokens > 0) lines.push(`    max_output_tokens: ${c.guard.max_tokens}`);
+    if (c.guard.compliance !== 'none') lines.push(`    compliance: ${c.guard.compliance}`);
+    return lines.join('\n');
+  }
+
+  function exportYAML() {
+    const yaml = buildYAML();
+    const out = document.getElementById('yaml-output');
+    out.textContent = yaml;
+    out.style.display = 'block';
+  }
+
+  function copyYAML() {
+    const yaml = buildYAML();
+    navigator.clipboard.writeText(yaml).then(() => alert('YAML copied to clipboard!'));
+  }
+</script>
+</body>
+</html>

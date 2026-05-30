@@ -57,9 +57,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections import defaultdict
-from dataclasses import dataclass, field
-from functools import wraps
-from typing import Any, Callable, Generic, TypeVar, get_type_hints
+from dataclasses import dataclass
+from typing import Any, Callable, Generic, TypeVar
 
 
 # ── FlowState ─────────────────────────────────────────────────────────────────
@@ -265,11 +264,11 @@ class Flow(Generic[_S]):
                 router_method = getattr(self, self._routers[method_name])
                 route_name = await self._invoke_router(router_method, result)
 
-            # Enqueue listeners
+            # Enqueue listeners — key is trigger::route or just trigger
             exact_key = f"{method_name}::{route_name}" if route_name else method_name
             for listener_name in self._listeners.get(exact_key, []):
                 queue.append((listener_name, result))
-            # Always fire unrouted listeners (no route qualifier)
+            # Always fire unrouted listeners (no route qualifier) when routing happened
             if route_name:
                 for listener_name in self._listeners.get(method_name, []):
                     queue.append((listener_name, result))

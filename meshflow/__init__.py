@@ -22,7 +22,9 @@ from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
 from meshflow.core.contracts import core_contract_schemas
 from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult
 from meshflow.core.events import WorkflowEventBus
-from meshflow.core.state import StateGraph, END, START, add, last, first, Channel, node, interrupt, Command, Interrupt
+from meshflow.core.state import StateGraph, END, START, add, last, first, Channel, node, interrupt, Command, Interrupt, Send, MemorySaver, SqliteSaver
+from meshflow.core.flows import Flow, FlowState, FlowResult, start as flow_start, listen as flow_listen, router as flow_router
+from meshflow.core.prebuilt import MessagesState, ToolNode, create_react_agent, create_tool_calling_agent
 from meshflow.core.config import MeshFlowConfig, load, loads
 from meshflow.core.ledger import (
     LedgerArchiveResult,
@@ -68,10 +70,21 @@ from meshflow.agents.providers import (
     model_to_provider,
     LLM,
     PROVIDER_NAMES,
+    AzureIdentityProvider,
+    BedrockIAMProvider,
+    VertexAIProvider,
 )
 from meshflow.intelligence.memory import AgentMemory, MemoryItem
+from meshflow.intelligence.consolidator import MemoryConsolidator, ConsolidationReport
+from meshflow.intelligence.team_workspace import TeamWorkspace, WorkspaceSummary
 from meshflow.intelligence.knowledge import VectorStore, KnowledgeSource, AgentKnowledge
 from meshflow.core.streaming import StreamChunk
+from meshflow.streaming.backpressure import BackpressureQueue, BackpressureStrategy
+from meshflow.streaming.multiplexer import StreamMultiplexer, Subscription
+from meshflow.streaming.partial_output import (
+    PartialStructuredOutput, PartialOutputChunk, stream_structured,
+)
+from meshflow.streaming.run_hub import RunStreamHub, get_run_hub, reset_run_hub
 from meshflow.agents.supervisor import Supervisor, SupervisorResult
 from meshflow.agents.adversarial import AdversarialTeam, AdversarialResult
 from meshflow.agents.session import AgentSession, SessionResult, Turn
@@ -95,6 +108,16 @@ from meshflow.agents.tool_registry import (
 )
 from meshflow.tools.registry import Tool, ToolRegistry, tool, global_registry
 from meshflow.eval import EvalSuite, EvalScenario, EvalResult, ScenarioResult, run_eval, EvalBaseline, BaselineDiff
+from meshflow.eval.judge import LLMJudge, JudgeScore, JudgeSuiteResult
+from meshflow.eval.conversation_eval import (
+    ConversationEval,
+    ConversationCase,
+    Turn as EvalTurn,
+    ConversationResult as EvalConversationResult,
+    TurnResult,
+)
+from meshflow.eval.ab_test import ABTest, ABVariant, ABTestResult, ABTurnResult
+from meshflow.eval.quality_gate import QualityGate, QualityReport
 from meshflow.agents.pool import AgentPool, PoolStats, register_pool, deregister_pool
 from meshflow.plugins import PluginInfo, discover_plugins, load_plugin, verify_plugin
 from meshflow.agents import library as agents
@@ -148,6 +171,7 @@ from meshflow.agents.structured import (
     StructuredOutputError,
     StructuredOutputParser,
 )
+from meshflow.agents.builder import StructuredAgent
 from meshflow.intelligence.memory_backends import (
     MemoryBackend,
     InMemoryBackend,
@@ -179,6 +203,7 @@ from meshflow.observability.genai import (
     is_enabled as otel_is_enabled,
 )
 from meshflow.registry import AgentManifest, AgentRegistry, get_registry
+from meshflow.registry.templates import AgentTemplate, TemplateRegistry, MarketplaceClient, MarketplaceServer
 from meshflow.eval.feedback import FeedbackRecord, FeedbackStore
 from meshflow.eval.shadow import ShadowResult, shadow_run, RegressionAlert, RegressionDetector
 from meshflow.observability.metrics import MetricsCollector
@@ -317,8 +342,37 @@ from meshflow.security.dasc_gate import (
     AuditLedger,
     DascGate,
 )
+from meshflow.studio.trace_server import TraceServer
+from meshflow.deploy.doctor import Doctor, DoctorReport, CheckResult, CheckStatus
+from meshflow.deploy.env_generator import EnvGenerator, ValidationIssue
+from meshflow.deploy.deployer import DockerDeployer, DeployResult
+from meshflow.agents.rag_budget import RAGTokenBudget, KnowledgeBudgetResult
+from meshflow.core.context_pruner import SlidingWindowPruner, SummaryPruner, PruneResult
+from meshflow.intelligence.cross_session import CrossSessionMemoryStore, MemoryEntry as CrossSessionEntry
+from meshflow.agents.adaptive import AdaptiveAgent
+from meshflow.agents.debate import DebatePanel, DebateNode, DebateResult
+from meshflow.agents.early_exit import EarlyExitAgent
+from meshflow.agents.context_dedup import ContextDeduplicator
+from meshflow.optimization.planner import TokenBudgetPlanner, ModelSizingAdvisor
+from meshflow.core.time_travel import RewindEngine, RewindResult, StepSnapshot
+from meshflow.eval.pareto import ParetoAnalyzer, ModelBenchmark, BenchmarkRun
+from meshflow.agents.model_router import ModelRouter, RouterConfig, RoutingDecision
+from meshflow.agents.critic import CriticAgent, CriticResult, CriticTurn
+from meshflow.tools.tool_summarizer import ToolOutputSummarizer, CompressionRecord
+from meshflow.core.branch_compare import BranchCompare, ForkConfig, ForkResult, CompareResult
+from meshflow.agents.role_router import RoleRouter, AgentSpec
+from meshflow.intelligence.rag_pipeline import (
+    LLMRanker, HybridRetriever, SelfCorrectingRAG, RankedDoc, RAGAnswer,
+)
+from meshflow.registry.curated_templates import (
+    CURATED_TEMPLATES, load_curated_library, template_by_name, templates_by_tag,
+)
+from meshflow.core.workflow_decorator import workflow, WorkflowProxy
+from meshflow.batch.anthropic_batch import (
+    AnthropicBatchClient, BatchRequest, BatchResult, BatchJob, batch_agent_tasks,
+)
 
-__version__ = "0.65.0"
+__version__ = "0.77.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -353,6 +407,21 @@ __all__ = [
     "interrupt",
     "Command",
     "Interrupt",
+    "Send",
+    "MemorySaver",
+    "SqliteSaver",
+    # ── Flows — event-driven decorator API (CrewAI Flows parity) ─────────
+    "Flow",
+    "FlowState",
+    "FlowResult",
+    "flow_start",
+    "flow_listen",
+    "flow_router",
+    # ── Prebuilt agent graphs (LangGraph-style) ───────────────────────────
+    "MessagesState",
+    "ToolNode",
+    "create_react_agent",
+    "create_tool_calling_agent",
     # ── Declarative config ────────────────────────────────────────────────────
     "MeshFlowConfig",
     "load",
@@ -546,6 +615,7 @@ __all__ = [
     "StructuredOutputResult",
     "StructuredOutputError",
     "StructuredOutputParser",
+    "StructuredAgent",
     # ── Persistent memory backends ────────────────────────────────────────────
     "MemoryBackend",
     "InMemoryBackend",
@@ -629,6 +699,46 @@ __all__ = [
     "shadow_run",
     "RegressionAlert",
     "RegressionDetector",
+    # ── Sprint 73: Streaming v2 ───────────────────────────────────────────────
+    "BackpressureQueue",
+    "BackpressureStrategy",
+    "StreamMultiplexer",
+    "Subscription",
+    "PartialStructuredOutput",
+    "PartialOutputChunk",
+    "stream_structured",
+    "RunStreamHub",
+    "get_run_hub",
+    "reset_run_hub",
+    # ── Sprint 72: Production deployment ─────────────────────────────────────
+    "Doctor",
+    "DoctorReport",
+    "CheckResult",
+    "CheckStatus",
+    "EnvGenerator",
+    "ValidationIssue",
+    "DockerDeployer",
+    "DeployResult",
+    # ── Sprint 71: Memory v2 ──────────────────────────────────────────────────
+    "MemoryConsolidator",
+    "ConsolidationReport",
+    "TeamWorkspace",
+    "WorkspaceSummary",
+    # ── Sprint 70: Eval Framework v2 ──────────────────────────────────────────
+    "LLMJudge",
+    "JudgeScore",
+    "JudgeSuiteResult",
+    "ConversationEval",
+    "ConversationCase",
+    "EvalTurn",
+    "EvalConversationResult",
+    "TurnResult",
+    "ABTest",
+    "ABVariant",
+    "ABTestResult",
+    "ABTurnResult",
+    "QualityGate",
+    "QualityReport",
     # ── Cron scheduler ────────────────────────────────────────────────────────
     "CronExpression",
     "CronScheduler",
@@ -758,4 +868,73 @@ __all__ = [
     "CompensationExecutor",
     "AuditLedger",
     "DascGate",
+    # ── Sprint 69: Visual trace server ────────────────────────────────────────
+    "TraceServer",
+    # ── Sprint 67: RAG token budget ───────────────────────────────────────────
+    "RAGTokenBudget",
+    "KnowledgeBudgetResult",
+    # ── Sprint 67: Context window pruning ─────────────────────────────────────
+    "SlidingWindowPruner",
+    "SummaryPruner",
+    "PruneResult",
+    # ── Sprint 67: Cross-session memory ───────────────────────────────────────
+    "CrossSessionMemoryStore",
+    "CrossSessionEntry",
+    # ── Sprint 74: Cloud managed identity providers ───────────────────────────
+    "AzureIdentityProvider",
+    "BedrockIAMProvider",
+    "VertexAIProvider",
+    # ── Sprint 74: Template marketplace ──────────────────────────────────────
+    "AgentTemplate",
+    "TemplateRegistry",
+    "MarketplaceClient",
+    "MarketplaceServer",
+    # ── Sprint 78: @workflow decorator + Anthropic Batch API ─────────────────
+    "workflow",
+    "WorkflowProxy",
+    "AnthropicBatchClient",
+    "BatchRequest",
+    "BatchResult",
+    "BatchJob",
+    "batch_agent_tasks",
+    # ── Sprint 75: ModelRouter, CriticAgent, ToolOutputSummarizer ────────────
+    "ModelRouter",
+    "RouterConfig",
+    "RoutingDecision",
+    "CriticAgent",
+    "CriticResult",
+    "CriticTurn",
+    "ToolOutputSummarizer",
+    "CompressionRecord",
+    # ── Sprint 76: BranchCompare, RoleRouter, RAG pipeline, templates ─────────
+    "BranchCompare",
+    "ForkConfig",
+    "ForkResult",
+    "CompareResult",
+    "RoleRouter",
+    "AgentSpec",
+    "LLMRanker",
+    "HybridRetriever",
+    "SelfCorrectingRAG",
+    "RankedDoc",
+    "RAGAnswer",
+    "CURATED_TEMPLATES",
+    "load_curated_library",
+    "template_by_name",
+    "templates_by_tag",
+    # ── Sprint 74: Gap closures — public API promotion ────────────────────────
+    "AdaptiveAgent",
+    "DebatePanel",
+    "DebateNode",
+    "DebateResult",
+    "EarlyExitAgent",
+    "ContextDeduplicator",
+    "TokenBudgetPlanner",
+    "ModelSizingAdvisor",
+    "RewindEngine",
+    "RewindResult",
+    "StepSnapshot",
+    "ParetoAnalyzer",
+    "ModelBenchmark",
+    "BenchmarkRun",
 ]

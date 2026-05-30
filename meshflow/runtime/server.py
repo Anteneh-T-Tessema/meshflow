@@ -787,6 +787,50 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
 
         return ws
 
+    # ── Run-level WebSocket stream ────────────────────────────────────────────
+    async def ws_run_stream(request: Any) -> Any:
+        """GET /ws/run/{run_id} — WebSocket subscription for a single run's tokens.
+
+        Clients receive JSON-encoded StreamChunk objects in real-time as the
+        run produces them.  The connection closes automatically when the run
+        emits a ``done`` chunk or is garbage-collected from the hub.
+
+        Compatible with the trace UI's live overlay and any custom front-end.
+        """
+        from meshflow.streaming.run_hub import get_run_hub
+        import json as _json
+
+        run_id = request.match_info.get("run_id", "")
+        hub = get_run_hub()
+
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+
+        sid, chunks = await hub.subscribe(run_id)
+        try:
+            async for chunk in chunks:
+                if ws.closed:
+                    break
+                # StreamChunk → JSON
+                if hasattr(chunk, "kind"):
+                    data = {
+                        "kind": chunk.kind,
+                        "content": chunk.content,
+                        "node_name": chunk.node_name,
+                        "task_index": chunk.task_index,
+                        "metadata": chunk.metadata,
+                    }
+                else:
+                    data = chunk if isinstance(chunk, dict) else {"data": str(chunk)}
+                try:
+                    await ws.send_str(_json.dumps(data))
+                except Exception:
+                    break
+        finally:
+            await hub.unsubscribe(run_id, sid)
+
+        return ws
+
     # ── Workflow event SSE stream ─────────────────────────────────────────────
     async def events_sse(request: Any) -> Any:
         """GET /events[?run_id=<id>] — SSE stream of all workflow lifecycle events.
@@ -1208,6 +1252,7 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
     app.router.add_get("/eval-results", list_eval_results)
     app.router.add_get("/events", events_sse)
     app.router.add_get("/ws/bus", ws_bus)
+    app.router.add_get("/ws/run/{run_id}", ws_run_stream)
     app.router.add_get("/traces", list_traces)
     app.router.add_get("/traces/{run_id}", get_trace)
     app.router.add_get("/hitl/pending", hitl_pending)

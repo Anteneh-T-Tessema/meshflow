@@ -5,6 +5,266 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.77.0] — 2026-05-30
+
+### Sprint 77 — Integration, CLI completeness, Studio navigation
+
+**4231 tests passing (19 skipped).**
+
+Wires Sprint 74-76 capabilities into the execution path, adds missing CLI
+commands, integrates HybridRetriever/SelfCorrectingRAG as Agent knowledge
+backends, adds RoleRouter to Crew, adds `model_router:` YAML section, and
+connects the three studio pages with a shared navigation bar.
+
+---
+
+## [0.76.0] — 2026-05-30
+
+### Sprint 76 — Strict competitive gap closure (all 6 frameworks)
+
+**4231 tests passing (19 skipped).**
+
+Closed every remaining gap from the May 2026 Competitive Intelligence document.
+
+#### BranchCompare — LangGraph Branch & Compare mode
+- `BranchCompare` runs N workflow forks in parallel from a checkpoint, diffs
+  outputs, picks winner by confidence score (`core/branch_compare.py`)
+- `ForkConfig(label, model_override, prompt_override, context_patch)` — each fork
+  independently configured; `context_patch` implements LangGraph's State Injection mode
+- `CompareResult.cost_comparison()` / `quality_comparison()` — structured analytics
+- `_word_diff()` — unified diff between fork outputs
+
+#### S3 backend for DurableWorkflowExecutor
+- `_S3Store` — checkpoints stored as S3 objects under `<prefix>/<run_id>/<node_id>.json`
+- `DurableWorkflowExecutor(backend="s3", s3_bucket=..., s3_prefix=...)` — serverless resume
+- Fork method dispatches all four backends: memory / sqlite / redis / postgres / s3
+
+#### RoleRouter — first-mover dynamic role assignment
+- `RoleRouter` — LLM-driven role classification with 13-role catalogue
+- `AgentSpec(role, goal, tools, model_tier)` → `spec.to_agent()` instantiates live agents
+- Keyword heuristic fallback (no LLM required for offline use)
+
+#### RAG depth parity with Haystack
+- `LLMRanker` — LLM relevance scoring with heuristic fallback; `score_threshold` filtering
+- `HybridRetriever` — BM25 + dense Reciprocal Rank Fusion; `add_texts()`, `query()`
+- `SelfCorrectingRAG` — retrieve → grade → refine loop; `grade_threshold`, `max_correction_rounds`
+- `RAGAnswer(text, correction_rounds, grade, context_used)`
+
+#### Curated template library — 20 specialist templates
+- 20 pre-built templates: HIPAA analyst, SOC2 auditor, GDPR DPO, security CVE researcher,
+  contract legal analyst, financial risk, market researcher, Python code reviewer,
+  data pipeline analyst, clinical literature, API planner, incident response, prompt engineer,
+  PCI DSS checker, technical writer, A/B test analyst, cloud cost optimiser, accessibility
+  auditor, agent workflow designer, competitive intelligence analyst
+- `load_curated_library(registry_dir)` — loads all 20 into a local registry
+- `template_by_name(name)` / `templates_by_tag(*tags)` — lookup helpers
+
+#### Interactive studio pages
+- `graph.html` — browser-based interactive Mermaid graph with clickable nodes
+  (cost/latency/token detail panel), runs via `meshflow studio` on `/graph`
+- `rag_builder.html` — no-code RAG pipeline configurator (7 stages: data → chunk →
+  embed → retrieve → rank → generate → guard), YAML export, Dify feature parity
+- `TraceServer.get_mermaid(run_id)` — generates Mermaid TD syntax from ledger steps
+- `/graph` and `/rag` routes added to TraceServer
+
+#### ModelRouter → analytics integration
+- `ModelRouter(analytics_ledger=ledger)` — routing decisions emitted as async
+  fire-and-forget events to the ReplayLedger, closing the cost-analytics feedback loop
+
+---
+
+## [0.75.0] — 2026-05-30
+
+### Sprint 75 — Token optimization layer + CriticAgent + Haystack pipeline parity
+
+**4141 tests passing (19 skipped).**
+
+#### ModelRouter — pre-dispatch model tier routing (first mover)
+- `ModelRouter` with `RouterConfig` — classifies task → nano/small/medium/large
+- YAML-configurable tiers, keyword catalogue, token-count thresholds
+- `record_decisions=True` + `savings_vs_default()` for cost analytics
+- Zero competitors (LangGraph/CrewAI/AutoGen/Dify/Flowise/Haystack) have this
+
+#### CriticAgent — propose / challenge / refine loop
+- `CriticAgent(proposer, critic, max_refinements, stop_on_confidence)` closes AutoGen
+  multi-agent critique gap; lighter than DebatePanel (no arbiter required)
+- `CriticResult.improvement_delta` — confidence gain across refinement turns
+
+#### ToolOutputSummarizer — token Tier 1 gap closure
+- `ToolOutputSummarizer(max_tokens=500)` — nano-model summarization pass when tool
+  output exceeds threshold; `passthrough_tools` set; `summary_report()` analytics
+
+#### WorkflowDefinition.to_yaml() — Haystack pipeline portability
+- Round-trip YAML export: nodes, edges, loop edges, policy, terminal
+- `to_yaml(path=...)` writes to file; closes Haystack pipeline-serialization gap
+
+#### DurableWorkflowExecutor cloud backends
+- `backend="redis"` — `_RedisStore` with TTL, run index (`pip install redis`)
+- `backend="postgres"` — `_PostgresStore` with UPSERT (`pip install psycopg2-binary`)
+
+#### Subprocess sandbox hardening
+- `CodeInterpreter(max_memory_mb=N)` — `resource.setrlimit(RLIMIT_AS)` on Unix
+- `CodeInterpreter(block_network=True)` — strips proxy env vars from subprocess env
+
+---
+
+## [0.74.0] — 2026-05-30
+
+### Sprint 74 — Scorecard gap closures: public API, managed identity, marketplace
+
+**4080 tests passing (19 skipped).**
+
+#### Public API promotion (7 modules → __all__)
+- `AdaptiveAgent`, `DebatePanel`/`DebateNode`/`DebateResult`, `EarlyExitAgent`,
+  `ContextDeduplicator`, `TokenBudgetPlanner`/`ModelSizingAdvisor`, `RewindEngine`/
+  `RewindResult`/`StepSnapshot`, `ParetoAnalyzer`/`ModelBenchmark`/`BenchmarkRun`
+
+#### Cloud managed identity providers
+- `AzureIdentityProvider` — `DefaultAzureCredential` (CLI, managed identity, workload identity)
+- `BedrockIAMProvider` — IAM role assumption via `sts:AssumeRole` + named AWS profiles
+- `VertexAIProvider` — GCP Application Default Credentials, Vertex AI Gemini
+
+#### Marketplace HTTP registry
+- `MarketplaceClient` — `push(tmpl)`, `pull(name)`, `list_all()`, `search(query)`
+- `MarketplaceServer` — self-hostable HTTP server wrapping `TemplateRegistry`
+- CLI: `meshflow templates share <name> --url http://marketplace.example.com`
+
+#### Docker isolation CI test
+- `test_sprint74.py::TestDockerCodeInterpreter` — proves `docker=True` flag wiring
+  and graceful-fail path without Docker daemon
+
+---
+
+## [0.69.0] — 2026-05-29
+
+### Sprint 68 — Structured Output on Agent/LLM
+
+**3747 tests passing (18 skipped).**
+
+#### `Agent.with_structured_output(schema)`
+
+- **`Agent.with_structured_output(schema, *, max_retries=3)`** (`meshflow/agents/builder.py`):
+  Returns a `StructuredAgent` bound to the given schema.  Calling `.run(task)`
+  returns the validated Pydantic instance or dict directly — no
+  `StructuredOutputResult` wrapper.  `.ainvoke(task)` is a LangChain-compatible
+  alias.
+- **`StructuredAgent`** (`meshflow/agents/builder.py`):
+  Thin wrapper around `Agent.run_structured` that unwraps `.data` automatically.
+  Exported as `meshflow.StructuredAgent`.
+
+#### Provider `response_format` parameter
+
+- **`LLMProvider.complete(…, response_format=None)`** (`meshflow/agents/base.py`):
+  Protocol updated — all providers accept an optional `response_format` string.
+- **`AnthropicProvider`**: `response_format="json"` prepends a JSON-only directive
+  to the system prompt.
+- **`OpenAICompatibleProvider`**: `response_format="json"` passes
+  `response_format={"type": "json_object"}` natively to the API.
+- **`EchoProvider`**: `response_format="json"` returns `{"echo": <input>}` JSON,
+  enabling deterministic structured-output tests without an API key.
+
+#### Tests
+
+- `tests/test_structured_output.py` — 27 tests covering `StructuredOutputParser`,
+  `with_structured_output`, `ainvoke`, Pydantic schema validation, and
+  `response_format` on `EchoProvider`.
+
+---
+
+## [0.68.0] — 2026-05-29
+
+### Sprint 67 — Flows Decorator API
+
+**3699+ tests passing.**
+
+#### Event-driven workflow decorators (CrewAI Flows parity)
+
+- **`@start()`** (`meshflow/core/flows.py`):
+  Marks one or more Flow methods as entry points.  All `@start` methods
+  fire concurrently when `Flow.kickoff()` is called.
+- **`@listen(trigger)`** (`meshflow/core/flows.py`):
+  Fires after `trigger` completes.  Trigger may be a method name string,
+  a method reference, or a `(method, route)` tuple for router branches.
+- **`@router(trigger)`** (`meshflow/core/flows.py`):
+  Conditional branching — return a route string; `@listen((trigger, route))`
+  handlers fire only when the route matches.
+- **`Flow[S]`** (`meshflow/core/flows.py`):
+  Generic base class.  `S` must subclass `FlowState`.  Handles BFS execution,
+  state propagation, and result collection.
+- **`Flow.kickoff(inputs=None)`** — async execution entry point.
+- **`Flow.kickoff_sync(inputs=None)`** — synchronous wrapper.
+- **`Flow.plot()`** — returns a Mermaid diagram string of the flow graph.
+- **`FlowState`** — typed shared state base class (subclass to add fields).
+- **`FlowResult`** — `final_output`, `state`, `steps_executed`, `total_tokens`,
+  `total_cost_usd`, `duration_s`.
+
+All six symbols exported as `meshflow.Flow`, `meshflow.FlowState`,
+`meshflow.FlowResult`, `meshflow.flow_start`, `meshflow.flow_listen`,
+`meshflow.flow_router`.
+
+#### Bug fix
+
+- Fixed `Flow` router routing key: routed listeners (`@listen((trigger, route))`)
+  now correctly use the trigger method name as the key, matching the documented
+  `@listen((fn, route))` convention.
+
+#### Tests
+
+- `tests/test_flows_api.py` — 28 tests covering all decorators, `kickoff`,
+  `kickoff_sync`, `plot`, chaining, branching, and public API exports.
+
+---
+
+## [0.67.0] — 2026-05-29
+
+### Sprint 66 — Prebuilt Agent Graphs + StateGraph enhancements + Scorecard gap closure
+
+**3658+ tests passing.**
+
+#### Prebuilt Agent Graphs (LangGraph parity)
+
+- **`MessagesState`** (`meshflow/core/prebuilt.py`):
+  Built-in `TypedDict` with a `messages` channel using the `add` reducer.
+- **`ToolNode`** (`meshflow/core/prebuilt.py`):
+  Graph node that dispatches tool calls from the last AI message.
+  Supports Anthropic content blocks, OpenAI `tool_calls`, and ReAct
+  inline `Action: / Action Input:` format.  `handle_errors=True` by default.
+- **`create_react_agent(model, tools, *, state_schema, system_message, max_iterations)`**:
+  One-liner factory for a full ReAct loop as a `CompiledGraph`.
+- **`create_tool_calling_agent(model, tools, *, system_message)`**:
+  Single-shot tool-calling graph (agent → tools → end, no loop).
+
+#### StateGraph enhancements (Sprint 68)
+
+- **`Send(node, state={})`** — dynamic fan-out: return `Send` or `list[Send]`
+  from a conditional edge to dispatch parallel branches with per-branch state.
+- **`add_sequence([(name, fn), ...])`** — chain nodes in one call.
+- **Subgraph nesting** — pass a `CompiledGraph` directly to `add_node()`.
+- **`MemorySaver`** — in-memory checkpoint store keyed by `thread_id`.
+- **`SqliteSaver`** — SQLite-backed checkpoint store, survives restarts.
+- **`compile(checkpointer=...)`** — attach a checkpointer at compile time.
+- **`CompiledGraph.get_state(config)`** / **`update_state(config, values)`** —
+  inspect and patch saved thread state between runs.
+- **`add_conditional_edges(..., mapping=None)`** — mapping is now optional for
+  `Send`-based routing.
+
+#### Scorecard gap closure (Sprints 67 RAG/context/memory)
+
+- **`RAGTokenBudget`** (`meshflow/agents/rag_budget.py`):
+  Enforce `max_chars` / `max_tokens` per knowledge injection.
+  Strategies: `"truncate"`, `"drop"`, `"tail"`.
+- **`SlidingWindowPruner`** (`meshflow/core/context_pruner.py`):
+  Keep the N most recent messages; always preserves system prompt.
+- **`SummaryPruner`** (`meshflow/core/context_pruner.py`):
+  Compress old messages into a rolling summary when token count exceeds limit.
+  Supports custom sync/async summarise functions.
+- **`CrossSessionMemoryStore`** (`meshflow/intelligence/cross_session.py`):
+  SQLite-backed persistent episodic memory across sessions.
+  Features: bigram-similarity deduplication, LRU eviction, multi-agent
+  isolation, tag/session filtering, keyword search.
+
+---
+
 ## [0.26.0] — 2026-05-24
 
 ### Sprint 26 — Streaming at all layers + Sprint 27 — Native RAG / Knowledge

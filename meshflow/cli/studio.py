@@ -5,7 +5,56 @@ from __future__ import annotations
 import http.server
 import os
 import socketserver
+import tempfile
+import uuid
 import webbrowser
+from typing import Any
+
+
+async def _run_workflow_yaml(yaml_str: str, task: str) -> dict[str, Any]:
+    """Execute a workflow defined as a YAML string and return a result summary.
+
+    Used by the studio Run button (/api/run POST endpoint).  Writes the YAML to
+    a temp file, loads it as a WorkflowDefinition, and executes it with a
+    minimal StepRuntime using the workflow's own policy.
+    """
+    from meshflow.core.workflow import WorkflowDefinition
+    from meshflow.core.runtime import StepRuntime
+    from meshflow.core.schemas import Policy
+
+    run_id = f"studio-{uuid.uuid4().hex[:8]}"
+    tmpfile = tempfile.NamedTemporaryFile(
+        suffix=".yaml", mode="w", delete=False, encoding="utf-8"
+    )
+    try:
+        tmpfile.write(yaml_str)
+        tmpfile.close()
+
+        wf = WorkflowDefinition.from_yaml(tmpfile.name)
+        runtime = StepRuntime(policy=wf.policy or Policy(), run_id=run_id)
+        result = await wf.run(task=task, runtime=runtime)
+
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "output": result.output[:1000] if hasattr(result, "output") else str(result)[:1000],
+            "cost_usd": result.total_cost_usd if hasattr(result, "total_cost_usd") else 0.0,
+            "tokens": result.total_tokens if hasattr(result, "total_tokens") else 0,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "run_id": run_id,
+            "error": str(exc),
+            "output": "",
+            "cost_usd": 0.0,
+            "tokens": 0,
+        }
+    finally:
+        try:
+            os.unlink(tmpfile.name)
+        except OSError:
+            pass
 
 
 class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -88,6 +137,29 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         import json
         from meshflow.registry.templates import AgentTemplate, TemplateRegistry
+
+        if self.path == "/api/run":
+            import asyncio
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_data = self.rfile.read(content_length)
+            try:
+                body = json.loads(post_data.decode("utf-8"))
+                yaml_str = body.get("yaml", "")
+                task = body.get("task", "")
+                if not yaml_str or not task:
+                    raise ValueError("Both 'yaml' and 'task' are required")
+
+                result = asyncio.run(_run_workflow_yaml(yaml_str, task))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(result).encode("utf-8"))
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+            return
 
         if self.path in ("/api/templates", "/api/shared-templates"):
             content_length = int(self.headers.get("Content-Length", 0))

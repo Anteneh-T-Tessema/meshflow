@@ -927,3 +927,235 @@ class LLM:
 
     def __repr__(self) -> str:
         return f"LLM(model={self.model!r}, provider={type(self._provider).__name__})"
+
+
+# ── Azure Managed Identity ────────────────────────────────────────────────────
+
+
+class AzureIdentityProvider(AzureOpenAIProvider):
+    """Azure OpenAI provider using Managed Identity (DefaultAzureCredential).
+
+    Eliminates hardcoded API keys.  Works with:
+    - System-assigned / user-assigned managed identity (Azure VMs, AKS, App Service)
+    - Azure CLI credentials (local dev: ``az login``)
+    - Workload identity (AKS with OIDC)
+    - Service principal via env vars (AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_CLIENT_SECRET)
+
+    Install: pip install azure-identity openai
+
+    Usage::
+
+        provider = AzureIdentityProvider(
+            endpoint="https://my-resource.openai.azure.com/",
+            model="gpt-4o",
+        )
+    """
+
+    _TOKEN_SCOPE = "https://cognitiveservices.azure.com/.default"
+
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        endpoint: str = "",
+        api_version: str = "2025-01-01-preview",
+        input_rate: float = 0.005,
+        output_rate: float = 0.015,
+    ) -> None:
+        super().__init__(
+            model=model,
+            endpoint=endpoint,
+            api_key="",  # no static key — token fetched at runtime
+            api_version=api_version,
+            input_rate=input_rate,
+            output_rate=output_rate,
+        )
+
+    def _get_token(self) -> str:
+        try:
+            from azure.identity import DefaultAzureCredential  # type: ignore[import]
+        except ImportError as exc:
+            raise ImportError(
+                "AzureIdentityProvider requires azure-identity: pip install azure-identity"
+            ) from exc
+        cred = DefaultAzureCredential()
+        token = cred.get_token(self._TOKEN_SCOPE)
+        return token.token
+
+    def _client(self) -> Any:
+        try:
+            from openai import AsyncAzureOpenAI
+        except ImportError as exc:
+            raise ImportError("AzureIdentityProvider requires openai: pip install openai") from exc
+        import os
+
+        return AsyncAzureOpenAI(
+            azure_endpoint=self._endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+            azure_ad_token=self._get_token(),
+            api_version=self._api_version,
+        )
+
+
+# ── AWS Bedrock with IAM Role ─────────────────────────────────────────────────
+
+
+class BedrockIAMProvider(BedrockProvider):
+    """AWS Bedrock provider with IAM role assumption (no hardcoded credentials).
+
+    Supports:
+    - IAM roles via ``sts:AssumeRole``
+    - Named AWS profiles (``~/.aws/credentials``)
+    - ECS task roles / EC2 instance profiles (automatic via boto3)
+    - Cross-account access via role ARN
+
+    Install: pip install boto3
+
+    Usage::
+
+        # Assume an IAM role
+        provider = BedrockIAMProvider(role_arn="arn:aws:iam::123456789012:role/MeshFlowRole")
+
+        # Use a named profile
+        provider = BedrockIAMProvider(profile_name="prod-readonly")
+
+        # Rely on instance/task role (EC2 / ECS / Lambda)
+        provider = BedrockIAMProvider()
+    """
+
+    def __init__(
+        self,
+        model: str = "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        region: str = "us-east-1",
+        role_arn: str = "",
+        profile_name: str = "",
+        session_name: str = "meshflow-session",
+    ) -> None:
+        super().__init__(model=model, region=region)
+        self._role_arn = role_arn
+        self._profile_name = profile_name
+        self._session_name = session_name
+
+    def _client(self) -> Any:
+        try:
+            import boto3  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError("BedrockIAMProvider requires boto3: pip install boto3") from exc
+
+        if self._profile_name:
+            session = boto3.Session(profile_name=self._profile_name)
+        elif self._role_arn:
+            sts = boto3.client("sts", region_name=self._region)
+            assumed = sts.assume_role(
+                RoleArn=self._role_arn,
+                RoleSessionName=self._session_name,
+            )
+            creds = assumed["Credentials"]
+            session = boto3.Session(
+                aws_access_key_id=creds["AccessKeyId"],
+                aws_secret_access_key=creds["SecretAccessKey"],
+                aws_session_token=creds["SessionToken"],
+            )
+        else:
+            session = boto3.Session()
+
+        return session.client("bedrock-runtime", region_name=self._region)
+
+
+# ── GCP Vertex AI ─────────────────────────────────────────────────────────────
+
+
+class VertexAIProvider:
+    """Google Cloud Vertex AI provider for Gemini models.
+
+    Supports:
+    - Application Default Credentials (``gcloud auth application-default login``)
+    - Service account key file (GOOGLE_APPLICATION_CREDENTIALS env var)
+    - Workload Identity (GKE)
+
+    Install: pip install google-cloud-aiplatform
+
+    Usage::
+
+        provider = VertexAIProvider(
+            project="my-gcp-project",
+            location="us-central1",
+            model="gemini-2.0-flash",
+        )
+    """
+
+    def __init__(
+        self,
+        project: str = "",
+        location: str = "us-central1",
+        model: str = "gemini-2.0-flash-001",
+    ) -> None:
+        import os
+        self._project = project or os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+        self._location = location
+        self._model = model
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+    ) -> tuple[str, int, float]:
+        try:
+            import vertexai  # type: ignore[import]
+            from vertexai.generative_models import GenerativeModel, Content, Part  # type: ignore[import]
+        except ImportError as exc:
+            raise ImportError(
+                "VertexAIProvider requires google-cloud-aiplatform: "
+                "pip install google-cloud-aiplatform"
+            ) from exc
+
+        vertexai.init(project=self._project, location=self._location)
+        m = model or self._model
+        gemini = GenerativeModel(
+            m,
+            system_instruction=system if system else None,
+        )
+
+        contents = []
+        for msg in messages:
+            role = "user" if msg.get("role") == "user" else "model"
+            contents.append(Content(role=role, parts=[Part.from_text(msg.get("content", ""))]))
+
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: gemini.generate_content(contents, generation_config={"max_output_tokens": max_tokens}),
+        )
+
+        text = response.text if hasattr(response, "text") else ""
+        usage = getattr(response, "usage_metadata", None)
+        in_tok = getattr(usage, "prompt_token_count", 0) if usage else 0
+        out_tok = getattr(usage, "candidates_token_count", 0) if usage else 0
+        cost = 0.0  # Vertex AI pricing depends on region + model version
+        return text, in_tok + out_tok, cost
+
+    async def complete_with_tools(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        _tool_schemas: list[dict[str, Any]],
+        _tool_fns: dict[str, Any],
+    ) -> tuple[str, int, float]:
+        return await self.complete(model, messages, system, max_tokens)
+
+    async def stream_complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        agent_id: str,
+        step_id: str,
+        run_id: str,
+    ) -> "AsyncIterator[Any]":
+        from meshflow.agents.base import TokenChunk
+        text, _, _ = await self.complete(model, messages, system, max_tokens)
+        if text:
+            yield TokenChunk(text=text, agent_id=agent_id, step_id=step_id, run_id=run_id)

@@ -1217,6 +1217,23 @@ class WorkflowDefinition:
             except Exception:
                 pass  # guard unavailable; workflow continues without it
 
+        # model_router: section — auto-route model tiers for native nodes
+        router_cfg = data.get("model_router", {})
+        if router_cfg:
+            try:
+                from meshflow.agents.model_router import ModelRouter, RouterConfig
+                router = ModelRouter(config=RouterConfig.from_dict({"model_router": router_cfg}))
+                wf.metadata["_model_router"] = router
+                # Apply model routing to nodes that have a task_description in metadata
+                for node in wf._nodes.values():
+                    task_desc = node.metadata.get("task_description", "")
+                    if task_desc:
+                        decision = router.route(task_desc)
+                        node.metadata["_routed_model"] = decision.model
+                        node.metadata["_routed_tier"] = decision.tier
+            except Exception:
+                pass  # router unavailable; workflow continues without it
+
         return wf
 
     def describe(self) -> dict[str, Any]:
@@ -1255,6 +1272,98 @@ class WorkflowDefinition:
                 "enable_guardian": self.policy.enable_guardian,
             },
         }
+
+    def to_yaml(self, path: str | None = None) -> str:
+        """Serialise this WorkflowDefinition back to a YAML string.
+
+        Makes pipelines portable, versionable, and diffable in CI —
+        closing the Haystack pipeline-serialization parity gap.
+
+        Parameters
+        ----------
+        path:
+            If provided, write the YAML to this file path as well as
+            returning it as a string.
+
+        Returns
+        -------
+        YAML string representation of the workflow.
+
+        Example
+        -------
+        ::
+
+            wf = WorkflowDefinition.from_yaml("pipeline.yaml")
+            # … modify nodes …
+            wf.to_yaml("pipeline_v2.yaml")   # round-trip export
+        """
+        import yaml as _yaml
+
+        doc: dict[str, Any] = {
+            "name": self.name,
+            "version": self.version,
+        }
+
+        if self.metadata:
+            doc["metadata"] = self.metadata
+
+        # Policy section
+        p = self.policy
+        doc["policy"] = {
+            "budget_usd": p.budget_usd,
+            "max_steps": p.max_steps,
+            "enable_guardian": p.enable_guardian,
+        }
+
+        # Nodes — reconstruct from MeshNode metadata where possible
+        nodes_out: dict[str, Any] = {}
+        for node in self._nodes.values():
+            nd: dict[str, Any] = {"kind": node.kind.value}
+            # Preserve agent config stored in metadata by from_yaml
+            agent_cfg = node.metadata.get("agent", {})
+            if agent_cfg:
+                nd["agent"] = agent_cfg
+            elif node.metadata:
+                nd.update({k: v for k, v in node.metadata.items()
+                           if k not in ("_from_checkpoint", "run_id", "kind")})
+            nodes_out[node.id] = nd
+        doc["nodes"] = nodes_out
+
+        # Edges
+        edges_out = []
+        for e in self._edges:
+            if e.condition:
+                edges_out.append(f"{e.from_node} -> {e.to_node} [{e.condition}]")
+            else:
+                edges_out.append(f"{e.from_node} -> {e.to_node}")
+        if edges_out:
+            doc["edges"] = edges_out
+
+        # Loop edges
+        if self._loop_edges:
+            doc["loop_edges"] = [
+                {
+                    "from": le.src,
+                    "to": le.dst,
+                    "condition": le.condition,
+                    "max_iterations": le.max_iterations,
+                }
+                for le in self._loop_edges
+            ]
+
+        if self._entry:
+            doc["entry"] = self._entry
+
+        if self._terminal:
+            doc["terminal"] = self._terminal
+
+        yaml_str = _yaml.dump(doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(yaml_str)
+
+        return yaml_str
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

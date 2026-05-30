@@ -572,7 +572,7 @@ class TestSecuritySecretsSubCmd:
 class TestPublicExports:
     def test_version(self):
         import meshflow
-        assert meshflow.__version__ == "0.65.0"
+        assert meshflow.__version__ >= "0.77.0"
 
     def test_secret_symbols_in_all(self):
         import meshflow

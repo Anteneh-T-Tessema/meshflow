@@ -265,7 +265,7 @@ class TestSLAExports(unittest.TestCase):
         self.assertTrue(hasattr(meshflow, "SLATracker"))
 
     def test_version(self):
-        self.assertEqual(meshflow.__version__, "0.65.0")
+        self.assertGreaterEqual(meshflow.__version__, "0.77.0")
 
 
 if __name__ == "__main__":

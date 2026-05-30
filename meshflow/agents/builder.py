@@ -837,3 +837,65 @@ class Agent:
             risk=self.risk,
             capabilities=[self.role.value if isinstance(self.role, AgentRole) else self.role],
         )
+
+    def with_structured_output(
+        self,
+        schema: Any,
+        *,
+        max_retries: int = 3,
+    ) -> "StructuredAgent":
+        """Return a bound agent that always produces schema-validated output.
+
+        Unlike :meth:`run_structured`, this returns the typed data object
+        directly — no ``StructuredOutputResult`` wrapper.
+
+        Parameters
+        ----------
+        schema:
+            A Pydantic ``BaseModel`` subclass **or** a plain JSON-Schema dict.
+        max_retries:
+            LLM retry budget if the model produces malformed JSON.
+
+        Example
+        -------
+        ::
+
+            class Report(BaseModel):
+                title: str
+                findings: list[str]
+
+            analyst = Agent(name="analyst", role="researcher")
+            structured = analyst.with_structured_output(Report)
+            report: Report = await structured.run("Summarise Q3 earnings")
+        """
+        return StructuredAgent(self, schema, max_retries=max_retries)
+
+
+class StructuredAgent:
+    """Agent wrapper that returns schema-validated data directly.
+
+    Created by :meth:`Agent.with_structured_output`.  Not constructed directly.
+    """
+
+    def __init__(self, agent: "Agent", schema: Any, *, max_retries: int = 3) -> None:
+        self._agent = agent
+        self._schema = schema
+        self._max_retries = max_retries
+
+    async def run(
+        self,
+        task: str,
+        context: dict[str, Any] | None = None,
+    ) -> Any:
+        """Run and return the validated data object (Pydantic instance or dict)."""
+        result = await self._agent.run_structured(
+            task,
+            self._schema,
+            max_retries=self._max_retries,
+            context=context,
+        )
+        return result.data
+
+    async def ainvoke(self, task: str, **kwargs: Any) -> Any:
+        """LangChain-compatible alias for :meth:`run`."""
+        return await self.run(task, context=kwargs.get("context"))
