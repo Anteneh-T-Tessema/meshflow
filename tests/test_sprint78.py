@@ -205,7 +205,7 @@ class TestAnthropicBatchAPI(unittest.TestCase):
 
     def test_imports_cleanly(self) -> None:
         from meshflow.batch.anthropic_batch import (
-            AnthropicBatchClient, BatchRequest, BatchResult, BatchJob, batch_agent_tasks
+            AnthropicBatchClient
         )
         self.assertIsNotNone(AnthropicBatchClient)
 
@@ -393,11 +393,11 @@ class TestDocumentCompleteness(unittest.TestCase):
         self.assertIn("model_override", sig.parameters)
 
     def test_branch_compare_parallel_diff(self) -> None:
-        from meshflow.core.branch_compare import BranchCompare, ForkConfig
+        from meshflow.core.branch_compare import BranchCompare
         self.assertTrue(callable(BranchCompare.compare))
 
     def test_cloud_managed_resume_all_backends(self) -> None:
-        from meshflow.core.durable import _RedisStore, _PostgresStore, _S3Store, DurableWorkflowExecutor
+        from meshflow.core.durable import DurableWorkflowExecutor
         import inspect
         sig = inspect.signature(DurableWorkflowExecutor.__init__)
         for param in ("redis_url", "postgres_url", "s3_bucket"):
@@ -408,14 +408,13 @@ class TestDocumentCompleteness(unittest.TestCase):
         self.assertEqual(len(CURATED_TEMPLATES), 20)
 
     def test_dynamic_role_delegation(self) -> None:
-        from meshflow.agents.role_router import RoleRouter, AgentSpec
         from meshflow.agents.crew import Crew
         import inspect
         sig = inspect.signature(Crew.__init__)
         self.assertIn("role_router", sig.parameters)
 
     def test_autogen_critic_agent(self) -> None:
-        from meshflow.agents.critic import CriticAgent, CriticResult
+        from meshflow.agents.critic import CriticAgent
         self.assertIsNotNone(CriticAgent)
 
     def test_autogen_sandboxed_code(self) -> None:
@@ -464,7 +463,6 @@ class TestDocumentCompleteness(unittest.TestCase):
         self.assertIsNotNone(WorkflowProxy)
 
     def test_token_tier1_cache_control(self) -> None:
-        import inspect
         src_b = open(os.path.join(
             os.path.dirname(__file__), "..", "meshflow", "agents", "builder.py"
         )).read()
@@ -485,11 +483,11 @@ class TestDocumentCompleteness(unittest.TestCase):
         self.assertIn("analytics_ledger", sig.parameters)
 
     def test_token_tier2_context_compactor(self) -> None:
-        from meshflow.core.context_pruner import SlidingWindowPruner, SummaryPruner
+        from meshflow.core.context_pruner import SlidingWindowPruner
         self.assertIsNotNone(SlidingWindowPruner)
 
     def test_token_tier2_budget_planner(self) -> None:
-        from meshflow.optimization.planner import TokenBudgetPlanner, ModelSizingAdvisor
+        from meshflow.optimization.planner import TokenBudgetPlanner
         self.assertIsNotNone(TokenBudgetPlanner)
 
     def test_token_tier3_all_items(self) -> None:
@@ -501,7 +499,7 @@ class TestDocumentCompleteness(unittest.TestCase):
             self.assertIsNotNone(cls)
 
     def test_batch_processing_anthropic_api(self) -> None:
-        from meshflow.batch.anthropic_batch import AnthropicBatchClient, batch_agent_tasks
+        from meshflow.batch.anthropic_batch import AnthropicBatchClient
         self.assertIsNotNone(AnthropicBatchClient)
 
     def test_studio_run_button(self) -> None:

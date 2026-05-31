@@ -247,7 +247,6 @@ class WorkflowSweep:
         from meshflow.core.workflow import WorkflowDefinition
         from meshflow.core.runtime import StepRuntime
         from meshflow.core.ledger import ReplayLedger
-        from meshflow.core.schemas import Policy
 
         variant_id = uuid.uuid4().hex[:8]
         run_id = f"sweep_{variant_id}"

@@ -67,6 +67,14 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         
         if path == "/" or path == "/index.html":
             return os.path.join(template_dir, "index.html")
+        if path in ("/templates", "/templates.html"):
+            return os.path.join(template_dir, "templates.html")
+        if path in ("/trace", "/trace.html"):
+            return os.path.join(template_dir, "trace.html")
+        if path in ("/graph", "/graph.html"):
+            return os.path.join(template_dir, "graph.html")
+        if path in ("/rag", "/rag.html"):
+            return os.path.join(template_dir, "rag_builder.html")
             
         return super().translate_path(path)
 
@@ -74,7 +82,16 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         import json
         from meshflow.registry.templates import AgentTemplate, TemplateRegistry
 
-        if self.path == "/api/templates":
+        if self.path == "/api/curated-templates":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            from meshflow.registry.curated_templates import CURATED_TEMPLATES
+            templates = [t.to_dict() for t in CURATED_TEMPLATES]
+            self.wfile.write(json.dumps(templates).encode("utf-8"))
+            return
+
+        elif self.path == "/api/templates":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -186,7 +203,7 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
             return
 
-        super().do_POST()
+        self.send_error(404)
 
 
 def start_studio_server(host: str = "127.0.0.1", port: int = 8765) -> None:

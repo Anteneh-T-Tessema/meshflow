@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -50,7 +50,7 @@ def _async_run_mock(responses: list[dict[str, Any]]) -> Any:
 
 class TestReActAgent:
     def test_imports(self) -> None:
-        from meshflow import ReActAgent, ReActResult, ThoughtStep
+        from meshflow import ReActAgent
         assert ReActAgent is not None
 
     @pytest.mark.asyncio
@@ -138,8 +138,6 @@ class TestRunTyped:
         except ImportError:
             pytest.skip("pydantic not installed")
 
-        from meshflow.agents.builder import _BuiltAgent, AgentConfig
-        from meshflow.core.schemas import Policy, AgentRole
 
         class Out(BaseModel):
             name: str
@@ -205,7 +203,7 @@ class TestRunTyped:
 
 class TestSupervisor:
     def test_imports(self) -> None:
-        from meshflow import Supervisor, SupervisorResult
+        from meshflow import Supervisor
         assert Supervisor is not None
 
     @pytest.mark.asyncio
@@ -301,7 +299,7 @@ class TestSupervisor:
 
 class TestAdversarialTeam:
     def test_imports(self) -> None:
-        from meshflow import AdversarialTeam, AdversarialResult
+        from meshflow import AdversarialTeam
         assert AdversarialTeam is not None
 
     @pytest.mark.asyncio
@@ -400,7 +398,7 @@ class TestAdversarialTeam:
 
 class TestAgentSession:
     def test_imports(self) -> None:
-        from meshflow import AgentSession, SessionResult, Turn
+        from meshflow import AgentSession
         assert AgentSession is not None
 
     @pytest.mark.asyncio
@@ -465,7 +463,7 @@ class TestAgentSession:
 
     @pytest.mark.asyncio
     async def test_history_includes_both_roles(self) -> None:
-        from meshflow.agents.session import AgentSession, Turn
+        from meshflow.agents.session import AgentSession
 
         agent = _make_agent("assistant")
         session = AgentSession(agent)
@@ -484,7 +482,7 @@ class TestAgentSession:
 
 class TestComplianceProfiles:
     def test_imports(self) -> None:
-        from meshflow import ComplianceProfile, compliance_profile, list_profiles
+        from meshflow import ComplianceProfile
         assert ComplianceProfile is not None
 
     @pytest.mark.parametrize("name,threshold", [
@@ -588,7 +586,7 @@ class TestComplianceProfiles:
 
 class TestProviderRouter:
     def test_imports(self) -> None:
-        from meshflow import ProviderRouter, auto_provider, auto_model
+        from meshflow import ProviderRouter, auto_model
         assert ProviderRouter is not None
         assert auto_model is not None
 
@@ -864,7 +862,6 @@ class TestAgentStream:
 class TestGroupChat:
     def _make_agent(self, name: str, reply: str = "ok") -> Any:
         from meshflow import Agent
-        from unittest.mock import AsyncMock, patch
 
         agent = Agent(name=name, role="executor")
         agent.run = AsyncMock(return_value={  # type: ignore[method-assign]
@@ -1203,7 +1200,6 @@ class TestDurableWorkflowExecutor:
 
     def test_clear_removes_checkpoints(self) -> None:
         from meshflow import DurableWorkflowExecutor
-        from meshflow.core.durable import _MemoryStore
         from meshflow.core.node import NodeOutput
         ex = DurableWorkflowExecutor(run_id="r5", backend="memory")
         ex._store.save("r5", "node_x", NodeOutput(content="cached"))
@@ -1479,8 +1475,6 @@ class TestEventProjections:
 
     def test_projections_exported_from_meshflow(self) -> None:
         from meshflow import (
-            AuditTrailProjection, NodeLatencyProjection,
-            PolicyViolationProjection, WorkflowSummaryProjection,
             EventProjector,
         )
         assert EventProjector is not None

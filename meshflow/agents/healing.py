@@ -167,7 +167,6 @@ async def run_with_healing(
             total_attempts += 1
 
         elif strategy == HealingStrategy.retry_different_model:
-            from meshflow.agents.builder import Agent as _Agent
             import dataclasses as _dc
             for fallback_model in p.fallback_models:
                 if total_attempts >= p.max_retries + 1:
@@ -179,7 +178,6 @@ async def run_with_healing(
                     break
 
         elif strategy == HealingStrategy.escalate_to_supervisor:
-            from meshflow.agents.builder import Agent as _Agent
             import dataclasses as _dc
             sup_task = (
                 f"{p.supervisor_prompt}\n\n"
@@ -201,7 +199,6 @@ async def run_with_healing(
             # Try the agent's cache (if any) with a slightly looser threshold
             cache_obj = getattr(agent, "cache", None)
             if cache_obj and cache_obj is not True and cache_obj is not False:
-                from meshflow.cache.core import _make_key, _prompt_text
                 msgs = [{"role": "user", "content": task}]
                 cached = cache_obj.get_semantic(
                     agent.model or "unknown",

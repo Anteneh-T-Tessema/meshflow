@@ -1,6 +1,5 @@
 """Sprint 62 — Distributed Tracing tests."""
 import subprocess
-import sys
 import time
 import unittest
 

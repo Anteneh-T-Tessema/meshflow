@@ -6,12 +6,10 @@ No live API calls, no external services.
 
 from __future__ import annotations
 
-import asyncio
 import operator
 import os
-from dataclasses import dataclass
 from typing import Annotated
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -23,14 +21,10 @@ from meshflow.agents.task import Task, TaskOutput
 from meshflow.agents.crew import Crew, CrewOutput, Process
 from meshflow.agents.skills import SKILLS, Skill, list_skills, skill_prompt
 from meshflow.core.state import (
-    END,
-    START,
-    Channel,
     Command,
     Interrupt,
     StateGraph,
     add,
-    first,
     interrupt,
     last,
     node,
@@ -797,5 +791,4 @@ class TestPublicAPI:
     def test_version_unchanged_or_bumped(self):
         import meshflow
         major, minor, _ = meshflow.__version__.split(".")
-        assert int(major) >= 0
-        assert int(minor) >= 24  # Sprint 24
+        assert int(major) >= 1 or int(minor) >= 24  # Sprint 24+

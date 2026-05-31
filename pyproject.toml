@@ -4,21 +4,27 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meshflow"
-version = "0.65.0"
-description = "The golden standard of multi-agent orchestration — typed state graphs, pre-built agents, GroupChat, governed workflows, eval framework, SwarmTRM neural consensus engine, and the only framework built for regulated industries"
+version = "1.0.0"
+description = "The production-safe infrastructure layer for multi-agent systems — HIPAA/SOX/GDPR built in, SHA-256 audit chain, hard cost caps, 70-85% token savings. 7 lines to ship."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "MeshFlow Contributors" }]
-keywords = ["agents", "llm", "multi-agent", "orchestration", "ai", "governance", "hipaa", "compliance"]
+keywords = ["agents", "llm", "multi-agent", "orchestration", "ai", "governance", "hipaa", "compliance", "gdpr", "sox"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Healthcare Industry",
+    "Intended Audience :: Financial and Insurance Industry",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: System :: Distributed Computing",
+    "Typing :: Typed",
 ]
 
 # ── Mandatory runtime dependencies (kept minimal) ─────────────────────────────

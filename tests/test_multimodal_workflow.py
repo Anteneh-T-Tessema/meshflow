@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import pytest
-from meshflow.core.node import MeshNode, NodeInput, NodeOutput, NodeKind
+from meshflow.core.node import MeshNode, NodeInput
 
 
 # ── NodeInput.attachments ─────────────────────────────────────────────────────
@@ -62,7 +61,9 @@ async def test_native_runner_no_attachments_no_key():
 
 def test_yaml_loader_stores_attachments():
     from meshflow.core.workflow import WorkflowDefinition
-    import tempfile, os, yaml as _yaml
+    import tempfile
+    import os
+    import yaml as _yaml
 
     attachment_block = {"type": "image", "source": {"type": "url", "url": "https://example.com/x.png"}}
     wf_data = {
@@ -91,7 +92,9 @@ def test_yaml_loader_stores_attachments():
 
 def test_yaml_loader_no_attachments_no_key():
     from meshflow.core.workflow import WorkflowDefinition
-    import tempfile, os, yaml as _yaml
+    import tempfile
+    import os
+    import yaml as _yaml
 
     wf_data = {
         "name": "plain_wf",
@@ -116,7 +119,6 @@ def test_yaml_loader_no_attachments_no_key():
 @pytest.mark.asyncio
 async def test_built_agent_step_multimodal_message():
     """When __attachments__ is in context, step() builds a list content block."""
-    from unittest.mock import AsyncMock, MagicMock
     from meshflow.agents.builder import _BuiltAgent
     from meshflow.agents.base import AgentConfig
     from meshflow.core.schemas import AgentRole, Policy

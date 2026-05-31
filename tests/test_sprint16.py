@@ -15,8 +15,7 @@ import json
 import os
 import sys
 import tempfile
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -193,7 +192,6 @@ class TestEvalHistoryCLI:
 
     def test_stored_result_shows_in_table(self):
         """Save an eval result to a real SQLite db, then list it."""
-        import asyncio
         from meshflow.core.ledger import ReplayLedger
         from meshflow.eval.runner import EvalResult, ScenarioResult
 
@@ -236,7 +234,6 @@ class TestEvalHistoryCLI:
 
     def test_suite_filter_isolates_results(self):
         """Two suites stored — filter returns only the matching one."""
-        import asyncio
         from meshflow.core.ledger import ReplayLedger
         from meshflow.eval.runner import EvalResult, ScenarioResult
 

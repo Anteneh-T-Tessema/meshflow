@@ -8,13 +8,11 @@ Sprint 23D: TaskQueue + QueueWorker (SQLite :memory:)
 from __future__ import annotations
 
 import asyncio
-import statistics
 import time
 import uuid
 from typing import Any
 
 import pytest
-import pytest_asyncio
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -189,7 +189,7 @@ class TestVertexAIProvider(unittest.TestCase):
 class TestMarketplaceServerClient(unittest.TestCase):
 
     def setUp(self) -> None:
-        from meshflow.registry.templates import AgentTemplate, MarketplaceServer, TemplateRegistry
+        from meshflow.registry.templates import AgentTemplate, MarketplaceServer
         from meshflow.registry.templates import MarketplaceClient
         self._port = _free_port()
         self._tmpdir = tempfile.mkdtemp()

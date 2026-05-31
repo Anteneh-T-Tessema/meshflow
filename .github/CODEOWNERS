@@ -1,0 +1,25 @@
+# CODEOWNERS — every PR requires review from the relevant owner
+# Format: <pattern> <@owner> [<@owner> ...]
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: all files require maintainer review
+* @Anteneh-T-Tessema
+
+# Governance kernel — highest bar, two maintainers required
+meshflow/core/runtime.py        @Anteneh-T-Tessema
+meshflow/core/ledger.py         @Anteneh-T-Tessema
+meshflow/core/compliance.py     @Anteneh-T-Tessema
+meshflow/security/dasc_gate.py  @Anteneh-T-Tessema
+meshflow/vault/                 @Anteneh-T-Tessema
+
+# Public API surface — any change here requires two approvals
+meshflow/__init__.py            @Anteneh-T-Tessema
+
+# CI / release pipeline — changes here affect all contributors
+.github/workflows/              @Anteneh-T-Tessema
+pyproject.toml                  @Anteneh-T-Tessema
+
+# Governance docs
+GOVERNANCE.md                   @Anteneh-T-Tessema
+CONTRIBUTING.md                 @Anteneh-T-Tessema
+SECURITY.md                     @Anteneh-T-Tessema

@@ -1,5 +1,5 @@
 """Financial Services verifiers — AML, Covenant, 3-Way Match, PCI-DSS, Insurance, Settlement."""
-from typing import Any, Dict, List
+from typing import Any, Dict
 from meshflow.swarm.verifiers import DeterministicVerifier, VerificationResult
 
 

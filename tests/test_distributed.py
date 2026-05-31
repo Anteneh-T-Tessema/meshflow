@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import pytest
 
 from meshflow.runtime.distributed import (
     DistributedPool,
     DistributedWorker,
     TaskHandle,
-    TaskRecord,
     _SQLiteQueue,
 )
 

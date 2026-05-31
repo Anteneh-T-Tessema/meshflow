@@ -46,3 +46,16 @@ Thumbs.db
 # MeshFlow runtime
 meshflow_learning.db
 *.db
+
+# Built docs site (generated — not source)
+site/
+
+# Internal strategy docs
+*.docx
+*.xlsx
+competitive_analysis*.docx
+
+# Secrets that should never be committed
+*.pem
+*.key
+vault.db

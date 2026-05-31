@@ -20,11 +20,27 @@ import gzip
 import hashlib
 import json
 import sqlite3
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 
 from meshflow.core.runtime import StepRecord
+
+
+@dataclass
+class RunDiff:
+    """Structured diff between two ledger runs — output of ReplayLedger.diff()."""
+
+    run_id_a: str
+    run_id_b: str
+    only_in_a: list[str] = field(default_factory=list)   # node_ids only in run A
+    only_in_b: list[str] = field(default_factory=list)   # node_ids only in run B
+    common: list[str] = field(default_factory=list)       # node_ids present in both
+    changed: list[dict[str, Any]] = field(default_factory=list)  # common nodes with differing output/verdict
+    cost_delta_usd: float = 0.0    # run_b - run_a
+    token_delta: int = 0           # run_b - run_a
+
 
 # ── Schema migration registry ─────────────────────────────────────────────────
 # Each entry: (version, sql).  Applied in order; never modified once shipped.
@@ -835,6 +851,131 @@ class ReplayLedger:
                 ).rowcount
             return (n1 or 0) + (n2 or 0)
         return 0
+
+    # ── Interactive replay API ────────────────────────────────────────────────
+
+    async def load_state(self, run_id: str, step_index: int) -> dict[str, Any] | None:
+        """Return the full step record at *step_index* for time-travel inspection.
+
+        Equivalent to ``get_checkpoint()`` but named for clarity in replay workflows.
+        Returns ``None`` if the index is out of range.
+        """
+        return await self.get_checkpoint(run_id, step_index)
+
+    async def diff(self, run_id_a: str, run_id_b: str) -> RunDiff:
+        """Return a structured diff between two runs.
+
+        Compares by ``node_id`` across both runs and identifies:
+        - Nodes that appear only in A or only in B.
+        - Nodes present in both but with differing ``output_content`` or ``verdict``.
+        - Aggregate cost and token deltas (B minus A).
+        """
+        steps_a = await self.get_run(run_id_a)
+        steps_b = await self.get_run(run_id_b)
+
+        by_node_a = {s["node_id"]: s for s in steps_a}
+        by_node_b = {s["node_id"]: s for s in steps_b}
+
+        nodes_a = set(by_node_a)
+        nodes_b = set(by_node_b)
+
+        only_in_a = sorted(nodes_a - nodes_b)
+        only_in_b = sorted(nodes_b - nodes_a)
+        common = sorted(nodes_a & nodes_b)
+
+        changed: list[dict[str, Any]] = []
+        for nid in common:
+            sa, sb = by_node_a[nid], by_node_b[nid]
+            if sa.get("output_content") != sb.get("output_content") or sa.get("verdict") != sb.get("verdict"):
+                changed.append({
+                    "node_id": nid,
+                    "verdict_a": sa.get("verdict"),
+                    "verdict_b": sb.get("verdict"),
+                    "output_a": (sa.get("output_content") or "")[:200],
+                    "output_b": (sb.get("output_content") or "")[:200],
+                    "cost_delta_usd": round(
+                        (sb.get("cost_usd") or 0.0) - (sa.get("cost_usd") or 0.0), 6
+                    ),
+                })
+
+        cost_a = sum(s.get("cost_usd") or 0.0 for s in steps_a)
+        cost_b = sum(s.get("cost_usd") or 0.0 for s in steps_b)
+        tok_a = sum(s.get("tokens_used") or 0 for s in steps_a)
+        tok_b = sum(s.get("tokens_used") or 0 for s in steps_b)
+
+        return RunDiff(
+            run_id_a=run_id_a,
+            run_id_b=run_id_b,
+            only_in_a=only_in_a,
+            only_in_b=only_in_b,
+            common=common,
+            changed=changed,
+            cost_delta_usd=round(cost_b - cost_a, 6),
+            token_delta=tok_b - tok_a,
+        )
+
+    async def fork(
+        self,
+        run_id: str,
+        from_step: int,
+        new_run_id: str | None = None,
+    ) -> str:
+        """Create a new run by copying steps 0 … from_step-1 from *run_id*.
+
+        Returns the new run ID so the caller can resume execution from that
+        checkpoint.  ``from_step=0`` creates an empty run; ``from_step=-1``
+        copies all steps.
+
+        The copied records are written with the new run ID so they appear as a
+        distinct run in ``list_runs()`` and ``get_run()``.
+        """
+        steps = await self.get_run(run_id)
+        if not steps and from_step != 0:
+            raise ValueError(f"No steps found for run '{run_id}'")
+
+        end = len(steps) if from_step < 0 else min(from_step, len(steps))
+        to_copy = steps[:end]
+
+        new_id = new_run_id or str(uuid.uuid4())
+
+        backend = self._backend
+        if isinstance(backend, SQLiteLedgerBackend):
+            with backend._conn:
+                for s in to_copy:
+                    backend._conn.execute(
+                        """
+                        INSERT INTO step_records
+                          (run_id, step_id, node_id, node_kind, input_task,
+                           output_content, output_compressed, verdict, blocked,
+                           block_reason, uncertainty, cost_usd, tokens_used,
+                           carbon_gco2, duration_ms, timestamp,
+                           prev_hash, entry_hash, metadata, tenant_id)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            new_id,
+                            f"{new_id}-{s.get('step_id', uuid.uuid4())}",  # fresh unique step_id
+                            s.get("node_id", ""),
+                            s.get("node_kind", ""),
+                            s.get("input_task", ""),
+                            s.get("output_content", ""),
+                            0,
+                            s.get("verdict", ""),
+                            1 if s.get("blocked") else 0,
+                            s.get("block_reason", ""),
+                            s.get("uncertainty", 0.0),
+                            s.get("cost_usd", 0.0),
+                            s.get("tokens_used", 0),
+                            s.get("carbon_gco2", 0.0),
+                            s.get("duration_ms", 0),
+                            s.get("timestamp", ""),
+                            s.get("prev_hash", ""),
+                            s.get("entry_hash", ""),
+                            json.dumps(s.get("metadata") or {}),
+                            self._tenant_id,
+                        ),
+                    )
+        return new_id
 
     async def anonymize_run(self, run_id: str) -> int:
         """Replace input/output content with [REDACTED] while preserving audit structure."""

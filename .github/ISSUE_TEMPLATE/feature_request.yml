@@ -1,0 +1,77 @@
+name: Feature Request
+description: Propose a new feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: check [open issues](https://github.com/Anteneh-T-Tessema/meshflow/issues) and the [roadmap](https://github.com/Anteneh-T-Tessema/meshflow/discussions/categories/roadmap).
+
+  - type: dropdown
+    id: pillar
+    attributes:
+      label: Which pillar does this strengthen?
+      description: Every MeshFlow feature should strengthen at least one of the three pillars.
+      options:
+        - "Infrastructure — makes agents impossible to replace in production"
+        - "Distribution — meets developers where they are"
+        - "Community — makes sharing and remixing frictionless"
+        - "All three"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent / Team / Crew
+        - StateGraph / Workflow
+        - Governance / Compliance
+        - Guardrails / Security
+        - Token Optimization
+        - Providers / LLM
+        - Memory / RAG
+        - Eval / Quality
+        - CLI / Server / Deployment
+        - Observability / Audit
+        - Integrations / MCP / A2A
+        - Developer Experience
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the specific production scenario where this is needed.
+      placeholder: "When I try to deploy an agent to a HIPAA environment, I can't..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed API / solution
+      description: Show what the API or behavior would look like. Code examples are highly encouraged.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds exist today? Why aren't they sufficient?
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How blocked are you without this?
+      options:
+        - "P1 — blocker for production deployment"
+        - "P2 — significant friction, workaround exists"
+        - "P3 — nice to have"

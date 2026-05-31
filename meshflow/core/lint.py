@@ -28,7 +28,6 @@ Usage (CLI)::
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -143,7 +142,7 @@ def _lint_workflow_data(data: dict[str, Any], source: str = "") -> list[LintIssu
             issues.append(LintIssue(
                 "error", f"nodes.{node_id}.kind",
                 f"Unknown kind {kind!r}. Valid kinds: {sorted(valid_kinds)}",
-                suggestion=f"Did you mean 'native' or 'python'?",
+                suggestion="Did you mean 'native' or 'python'?",
             ))
         if kind == "native":
             role = node_cfg.get("role", "executor")

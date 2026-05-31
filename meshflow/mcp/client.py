@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import urllib.request
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 

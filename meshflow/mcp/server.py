@@ -43,8 +43,7 @@ import asyncio
 import json
 import sys
 import traceback
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 PROTOCOL_VERSION = "2024-11-05"

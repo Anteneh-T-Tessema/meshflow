@@ -2,7 +2,6 @@
 import io
 import json
 import subprocess
-import sys
 import tempfile
 import unittest
 import zipfile
@@ -21,7 +20,8 @@ from meshflow.tenant.store import TenantStore
 class TestSnapshotManifest(unittest.TestCase):
 
     def _manifest(self):
-        import time, uuid
+        import time
+        import uuid
         return SnapshotManifest(
             snapshot_id=str(uuid.uuid4()),
             created_at=time.time(),
@@ -47,7 +47,8 @@ class TestSnapshotManifest(unittest.TestCase):
 class TestSnapshotBundle(unittest.TestCase):
 
     def _bundle(self):
-        import time, uuid
+        import time
+        import uuid
         manifest = SnapshotManifest(
             snapshot_id=str(uuid.uuid4()),
             created_at=time.time(),
@@ -139,7 +140,7 @@ class TestSnapshotExporter(unittest.TestCase):
         self.assertEqual(len(bundle.sections["feature_flags"]), 1)
 
     def test_export_with_policy_store(self):
-        import uuid, time
+        import uuid
         from meshflow.policy.engine import PolicyRule, PolicyAction
         ps = PolicyStore(":memory:")
         rule = PolicyRule(

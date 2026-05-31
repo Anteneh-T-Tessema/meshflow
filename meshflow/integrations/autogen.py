@@ -24,7 +24,7 @@ from typing import Any
 
 from meshflow.core.schemas import RiskTier
 from meshflow.tools.registry import Tool
-from meshflow.integrations._utils import run_sync, extract_tokens, first_nonempty
+from meshflow.integrations._utils import run_sync, extract_tokens
 
 
 # ── Tool conversion ────────────────────────────────────────────────────────────

@@ -146,12 +146,8 @@ def load_guard_yaml(path: str | Path) -> "ComplianceGuard | None":  # type: igno
         ComplianceGuard,
         ComplianceRule,
         HIPAAMinimumNecessary,
-        HIPAAPHIKeywordBlock,
         SOXDualControl,
-        SOXAuditLogRequired,
         GDPRDataMinimisation,
-        GDPRPurposeLimitation,
-        PCICardDataBlock,
         NERCAccessControl,
     )
 

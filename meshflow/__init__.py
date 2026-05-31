@@ -20,7 +20,7 @@ from meshflow.core.govern import GovernedApp, govern
 from meshflow.optimization import token_budget
 from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
 from meshflow.core.contracts import core_contract_schemas
-from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult
+from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult, Workflow, CostCap
 from meshflow.core.events import WorkflowEventBus
 from meshflow.core.state import StateGraph, END, START, add, last, first, Channel, node, interrupt, Command, Interrupt, Send, MemorySaver, SqliteSaver
 from meshflow.core.flows import Flow, FlowState, FlowResult, start as flow_start, listen as flow_listen, router as flow_router
@@ -31,6 +31,7 @@ from meshflow.core.ledger import (
     LedgerBackend,
     PostgresLedgerBackend,
     ReplayLedger,
+    RunDiff,
     S3LedgerArchiveBackend,
     SQLiteLedgerBackend,
 )
@@ -372,7 +373,7 @@ from meshflow.batch.anthropic_batch import (
     AnthropicBatchClient, BatchRequest, BatchResult, BatchJob, batch_agent_tasks,
 )
 
-__version__ = "0.77.0"
+__version__ = "1.0.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -447,11 +448,14 @@ __all__ = [
     "WorkflowResult",
     "HumanDecision",
     "WorkflowEventBus",
+    "Workflow",
+    "CostCap",
     # ── Kernel ────────────────────────────────────────────────────────────────
     "StepRuntime",
     "RuntimeOutcome",
     # ── Ledger ────────────────────────────────────────────────────────────────
     "ReplayLedger",
+    "RunDiff",
     "LedgerArchiveResult",
     "LedgerBackend",
     "SQLiteLedgerBackend",
@@ -699,7 +703,7 @@ __all__ = [
     "shadow_run",
     "RegressionAlert",
     "RegressionDetector",
-    # ── Sprint 73: Streaming v2 ───────────────────────────────────────────────
+    # ── Streaming v2 — backpressure, multiplexer, partial structured output ───
     "BackpressureQueue",
     "BackpressureStrategy",
     "StreamMultiplexer",
@@ -710,7 +714,7 @@ __all__ = [
     "RunStreamHub",
     "get_run_hub",
     "reset_run_hub",
-    # ── Sprint 72: Production deployment ─────────────────────────────────────
+    # ── Production deployment — doctor, env generator, Docker deployer ────────
     "Doctor",
     "DoctorReport",
     "CheckResult",
@@ -719,12 +723,12 @@ __all__ = [
     "ValidationIssue",
     "DockerDeployer",
     "DeployResult",
-    # ── Sprint 71: Memory v2 ──────────────────────────────────────────────────
+    # ── Memory v2 — consolidation, team workspace ─────────────────────────────
     "MemoryConsolidator",
     "ConsolidationReport",
     "TeamWorkspace",
     "WorkspaceSummary",
-    # ── Sprint 70: Eval Framework v2 ──────────────────────────────────────────
+    # ── Eval framework v2 — LLM judge, conversation eval, A/B testing ─────────
     "LLMJudge",
     "JudgeScore",
     "JudgeSuiteResult",
@@ -825,24 +829,24 @@ __all__ = [
     "FlagRule",
     "FlagStore",
     "FlagEvaluator",
-    # ── Secret vault (Sprint 60) ──────────────────────────────────────────────
+    # ── Secret vault ──────────────────────────────────────────────────────────
     "VaultSecret",
     "VaultAuditLog",
     "VaultStore",
-    # ── Tenant isolation (Sprint 61) ──────────────────────────────────────────
+    # ── Tenant isolation ──────────────────────────────────────────────────────
     "Tenant",
     "TenantContext",
     "TenantStore",
     "TenantGuard",
     "scoped_db_path",
-    # ── Distributed tracing (Sprint 62) ──────────────────────────────────────
+    # ── Distributed tracing ───────────────────────────────────────────────────
     "TraceContext",
     "Span",
     "SpanKind",
     "SpanStatus",
     "TraceStore",
     "Tracer",
-    # ── Policy-as-Code engine (Sprint 63) ─────────────────────────────────────
+    # ── Policy-as-code engine ─────────────────────────────────────────────────
     "PolicyAction",
     "ConditionOp",
     "PolicyCondition",
@@ -851,14 +855,14 @@ __all__ = [
     "PolicyStore",
     "PolicyEngine",
     "PolicyLoader",
-    # ── Agent SLA tracker (Sprint 64) ─────────────────────────────────────────
+    # ── Agent SLA tracker ─────────────────────────────────────────────────────
     "SLAContract",
     "LatencyRecord",
     "SLAStats",
     "SLABreach",
     "SLAStore",
     "SLATracker",
-    # ── Compliance snapshot (Sprint 65) ───────────────────────────────────────
+    # ── Compliance snapshot ───────────────────────────────────────────────────
     "SnapshotManifest",
     "SnapshotBundle",
     "SnapshotExporter",
@@ -868,28 +872,27 @@ __all__ = [
     "CompensationExecutor",
     "AuditLedger",
     "DascGate",
-    # ── Sprint 69: Visual trace server ────────────────────────────────────────
+    # ── Visual trace studio ───────────────────────────────────────────────────
     "TraceServer",
-    # ── Sprint 67: RAG token budget ───────────────────────────────────────────
+    # ── RAG token budget + context window pruning ─────────────────────────────
     "RAGTokenBudget",
     "KnowledgeBudgetResult",
-    # ── Sprint 67: Context window pruning ─────────────────────────────────────
     "SlidingWindowPruner",
     "SummaryPruner",
     "PruneResult",
-    # ── Sprint 67: Cross-session memory ───────────────────────────────────────
+    # ── Cross-session memory ───────────────────────────────────────────────────
     "CrossSessionMemoryStore",
     "CrossSessionEntry",
-    # ── Sprint 74: Cloud managed identity providers ───────────────────────────
+    # ── Cloud managed identity providers ──────────────────────────────────────
     "AzureIdentityProvider",
     "BedrockIAMProvider",
     "VertexAIProvider",
-    # ── Sprint 74: Template marketplace ──────────────────────────────────────
+    # ── Agent template marketplace ─────────────────────────────────────────────
     "AgentTemplate",
     "TemplateRegistry",
     "MarketplaceClient",
     "MarketplaceServer",
-    # ── Sprint 78: @workflow decorator + Anthropic Batch API ─────────────────
+    # ── @workflow decorator + Anthropic Batch API ─────────────────────────────
     "workflow",
     "WorkflowProxy",
     "AnthropicBatchClient",
@@ -897,7 +900,7 @@ __all__ = [
     "BatchResult",
     "BatchJob",
     "batch_agent_tasks",
-    # ── Sprint 75: ModelRouter, CriticAgent, ToolOutputSummarizer ────────────
+    # ── Smart routing, critic agent, tool output compression ──────────────────
     "ModelRouter",
     "RouterConfig",
     "RoutingDecision",
@@ -906,7 +909,7 @@ __all__ = [
     "CriticTurn",
     "ToolOutputSummarizer",
     "CompressionRecord",
-    # ── Sprint 76: BranchCompare, RoleRouter, RAG pipeline, templates ─────────
+    # ── Branch compare, role router, RAG pipeline depth, curated templates ─────
     "BranchCompare",
     "ForkConfig",
     "ForkResult",
@@ -922,7 +925,7 @@ __all__ = [
     "load_curated_library",
     "template_by_name",
     "templates_by_tag",
-    # ── Sprint 74: Gap closures — public API promotion ────────────────────────
+    # ── Adaptive, debate, early-exit, and dedup agent patterns ────────────────
     "AdaptiveAgent",
     "DebatePanel",
     "DebateNode",

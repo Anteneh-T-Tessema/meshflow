@@ -8,7 +8,7 @@ import urllib.request
 from typing import Any, Iterator
 
 from .protocol import A2AMessage, A2AResponse, AgentCard
-from .tasks import A2ATask, TaskState
+from .tasks import A2ATask
 
 
 class A2AClient:

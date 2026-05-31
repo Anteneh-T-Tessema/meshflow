@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from meshflow import Agent, AgentRole, token_budget
+from meshflow import Agent, token_budget
 from meshflow.optimization.planner import ModelSizingAdvisor, TokenBudgetPlanner
 from meshflow.optimization.tracker import BudgetExceededError, OptimizationTracker
 

@@ -1,10 +1,9 @@
 """Unit tests for Docker-sandboxed code execution."""
-import os
 import subprocess
 import unittest
 from unittest.mock import MagicMock, patch
 
-from meshflow.tools.code_interpreter import CodeInterpreter, CodeResult
+from meshflow.tools.code_interpreter import CodeInterpreter
 
 
 class TestDockerCodeInterpreter(unittest.TestCase):

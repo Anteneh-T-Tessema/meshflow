@@ -45,7 +45,7 @@ class TestAgentBuilder:
 
     @pytest.mark.asyncio
     async def test_run_returns_dict_without_llm(self, monkeypatch):
-        async def fake_think(self, messages, system=None):
+        async def fake_think(self, messages, system=None, *args, **kwargs):
             return "fake result", 10, 0.001
 
         from meshflow.agents import base
@@ -60,7 +60,7 @@ class TestAgentBuilder:
 
     @pytest.mark.asyncio
     async def test_memory_stores_steps(self, monkeypatch):
-        async def fake_think(self, messages, system=None):
+        async def fake_think(self, messages, system=None, *args, **kwargs):
             return "memory result", 5, 0.0
 
         from meshflow.agents import base
@@ -259,7 +259,7 @@ class TestTeam:
         """Return an Agent whose LLM call is mocked."""
         if monkeypatch:
 
-            async def fake_think(self_inner, messages, system=None):
+            async def fake_think(self_inner, messages, system=None, *args, **kwargs):
                 return f"{name}_output", 5, 0.0
 
             from meshflow.agents import base
@@ -302,7 +302,7 @@ class TestTeam:
 
     @pytest.mark.asyncio
     async def test_team_run_sequential(self, monkeypatch):
-        async def fake_think(self_inner, messages, system=None):
+        async def fake_think(self_inner, messages, system=None, *args, **kwargs):
             return "output", 5, 0.0
 
         from meshflow.agents import base

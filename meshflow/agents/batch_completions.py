@@ -141,7 +141,7 @@ class BatchCompletion:
 
         try:
             return await self._run_batch(requests)
-        except Exception as exc:
+        except Exception:
             if self._fallback:
                 return await self._run_sequential(requests)
             raise

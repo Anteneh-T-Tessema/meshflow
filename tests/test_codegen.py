@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import tempfile
 import os
-import pytest
 from meshflow.core.codegen import SDKCodeGenerator
 
 

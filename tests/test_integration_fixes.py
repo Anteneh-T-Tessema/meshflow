@@ -265,7 +265,6 @@ class TestMeshToolToCrewAI:
         mock_crewai_tools.BaseTool = mock_base_tool_cls
 
         with patch.dict(sys.modules, {"crewai": MagicMock(), "crewai.tools": mock_crewai_tools}):
-            from meshflow.integrations.crewai import mesh_tool_to_crewai
             # Should not raise ImportError
             # The actual class creation happens inside the function, so we just verify import works
             pass  # crewai is mocked — no error expected

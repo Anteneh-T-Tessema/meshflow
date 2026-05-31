@@ -7,13 +7,12 @@ and RunStreamHub. All tests are deterministic and async-safe.
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
 import meshflow
 from meshflow.streaming.backpressure import BackpressureQueue, BackpressureStrategy
-from meshflow.streaming.multiplexer import StreamMultiplexer, Subscription
+from meshflow.streaming.multiplexer import StreamMultiplexer
 from meshflow.streaming.partial_output import (
     PartialStructuredOutput, PartialOutputChunk, stream_structured,
 )

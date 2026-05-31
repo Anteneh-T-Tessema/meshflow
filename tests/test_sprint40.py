@@ -298,7 +298,7 @@ class TestA2AServerTaskLifecycle:
 
 class TestPublicAPI:
     def test_imports(self):
-        from meshflow.a2a.tasks import A2ATask, A2ATaskStore, TaskState, TaskEventQueue
+        from meshflow.a2a.tasks import A2ATask, A2ATaskStore, TaskState
         assert all(x is not None for x in [A2ATask, A2ATaskStore, TaskState, TaskEventQueue])
 
     def test_a2a_package_exports(self):

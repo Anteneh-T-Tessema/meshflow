@@ -8,9 +8,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import os
-import tempfile
 import pytest
 import yaml as _yaml
 
@@ -21,7 +18,7 @@ import yaml as _yaml
 
 class TestFlows:
     def test_imports(self):
-        from meshflow.core.flows import Flow, FlowState, start, listen, router
+        from meshflow.core.flows import Flow, FlowState
         assert Flow
         assert FlowState
 
@@ -250,7 +247,7 @@ class TestContextFilters:
         return t
 
     def test_confidence_filter_passes_high(self):
-        from meshflow.agents.task import Task, TaskOutput, confidence_filter
+        from meshflow.agents.task import Task, confidence_filter
 
         src = self._make_task_with_output("Research", "Good output. CONFIDENCE:0.92")
         consumer = Task(
@@ -262,7 +259,7 @@ class TestContextFilters:
         assert "Good output" in prompt
 
     def test_confidence_filter_blocks_low(self):
-        from meshflow.agents.task import Task, TaskOutput, confidence_filter
+        from meshflow.agents.task import Task, confidence_filter
 
         src = self._make_task_with_output("Research", "Uncertain output. CONFIDENCE:0.50")
         consumer = Task(
@@ -276,7 +273,7 @@ class TestContextFilters:
 
     def test_confidence_filter_includes_no_marker(self):
         """Tasks without CONFIDENCE marker pass by default."""
-        from meshflow.agents.task import Task, TaskOutput, confidence_filter
+        from meshflow.agents.task import Task, confidence_filter
 
         src = self._make_task_with_output("Research", "Output without marker")
         consumer = Task(
@@ -288,7 +285,7 @@ class TestContextFilters:
         assert "Output without marker" in prompt
 
     def test_tag_filter_matches_description(self):
-        from meshflow.agents.task import Task, TaskOutput, tag_filter
+        from meshflow.agents.task import Task, tag_filter
 
         # "verified" is in the description
         src = self._make_task_with_output("Verified high-quality research", "Data")
@@ -301,7 +298,7 @@ class TestContextFilters:
         assert "Data" in prompt
 
     def test_tag_filter_blocks_missing_tag(self):
-        from meshflow.agents.task import Task, TaskOutput, tag_filter
+        from meshflow.agents.task import Task, tag_filter
 
         src = self._make_task_with_output("Basic research", "Data")
         consumer = Task(
@@ -313,7 +310,7 @@ class TestContextFilters:
         assert "Data" not in prompt
 
     def test_min_length_filter(self):
-        from meshflow.agents.task import Task, TaskOutput, min_length_filter
+        from meshflow.agents.task import Task, min_length_filter
 
         short = self._make_task_with_output("Short task", "Hi")
         long_  = self._make_task_with_output("Long task", "A" * 100)
@@ -328,7 +325,7 @@ class TestContextFilters:
         assert "Short task" not in prompt or "Hi" not in prompt
 
     def test_no_filter_injects_all(self):
-        from meshflow.agents.task import Task, TaskOutput
+        from meshflow.agents.task import Task
 
         src_a = self._make_task_with_output("Task A", "Output A")
         src_b = self._make_task_with_output("Task B", "Output B")
@@ -358,16 +355,16 @@ class TestWorkflowStream:
 
     @pytest.mark.asyncio
     async def test_stream_yields_chunks(self, tmp_path):
-        from meshflow.core.streaming import StreamChunk
         from meshflow.core.workflow import WorkflowDefinition
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
         path = self._make_workflow_yaml(tmp_path)
         wf = WorkflowDefinition.from_yaml(path)
 
         from meshflow.core.runtime import StepRuntime, RuntimeOutcome, StepRecord
         from meshflow.core.node import NodeOutput
-        import uuid, datetime
+        import uuid
+        import datetime
 
         runtime = MagicMock(spec=StepRuntime)
         runtime._run_id = "stream-run"
@@ -402,10 +399,10 @@ class TestWorkflowStream:
 
     @pytest.mark.asyncio
     async def test_stream_yields_token_chunk(self, tmp_path):
-        from meshflow.core.streaming import StreamChunk
         from meshflow.core.workflow import WorkflowDefinition
         from unittest.mock import MagicMock
-        import uuid, datetime
+        import uuid
+        import datetime
 
         path = self._make_workflow_yaml(tmp_path)
         wf = WorkflowDefinition.from_yaml(path)
@@ -448,7 +445,7 @@ class TestWorkflowStream:
     async def test_stream_node_end_metadata(self, tmp_path):
         from meshflow.core.workflow import WorkflowDefinition
         from unittest.mock import MagicMock
-        import uuid, datetime
+        import datetime
 
         path = self._make_workflow_yaml(tmp_path)
         wf = WorkflowDefinition.from_yaml(path)
@@ -613,7 +610,8 @@ class TestTerminalDashboard:
     @pytest.mark.asyncio
     async def test_render_missing_db_does_not_raise(self, tmp_path):
         from meshflow.cli.dashboard import TerminalDashboard
-        import io, contextlib
+        import io
+        import contextlib
 
         # Use a non-existent db path — should handle gracefully
         dash = TerminalDashboard(str(tmp_path / "nonexistent.db"), limit=5)

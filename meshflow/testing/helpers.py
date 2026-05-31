@@ -36,7 +36,6 @@ def fake_agent(
         result = await agent.run("some task")
         assert result["result"] == "Research done. CONFIDENCE:0.85"
     """
-    from meshflow.agents.builder import Agent
 
     class _FakeAgent:
         def __init__(self) -> None:

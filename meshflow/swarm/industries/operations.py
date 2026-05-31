@@ -1,5 +1,5 @@
 """Operations verifiers — Supply Chain, Manufacturing, Energy, Transportation."""
-from typing import Any, Dict, List
+from typing import Any, Dict
 from meshflow.swarm.verifiers import DeterministicVerifier, VerificationResult
 
 

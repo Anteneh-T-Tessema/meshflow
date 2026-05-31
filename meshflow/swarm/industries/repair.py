@@ -1,6 +1,6 @@
 """Role-based repair functions for industry domains."""
 import copy
-from typing import Any, Dict
+from typing import Dict
 
 
 def repair_aml(output: Dict, role: str, context: Dict, step: int) -> Dict:

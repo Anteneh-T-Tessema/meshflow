@@ -24,10 +24,9 @@ import hashlib
 import hmac
 import json
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -511,7 +510,6 @@ class TestWebhookDelivery:
 class TestServerCompliance:
     def test_compliance_report_hipaa(self) -> None:
         """GET /compliance/report?framework=hipaa returns a valid report."""
-        from unittest.mock import AsyncMock, patch
 
         async def _mock_list_runs() -> list[str]:
             return ["run_001"]
@@ -624,7 +622,6 @@ class TestServerWebhooks:
 
 class TestCLIComplianceReport:
     def test_compliance_report_json_output(self, tmp_path: Any) -> None:
-        import os
         from meshflow.compliance.reporter import ComplianceReporter
 
         reporter = ComplianceReporter()

@@ -33,6 +33,8 @@ from meshflow.agents.base import (
     _build_tool_schema,
     _extract_confidence,
     _parse_json_retry,
+    sandbox_mode_var,
+    SandboxProvider,
 )
 from meshflow.core.schemas import AgentRole, Policy, RiskTier, policy_for_mode
 
@@ -108,6 +110,8 @@ class _BuiltAgent(BaseAgent):
             self._restore_memory()
         self._input_stack = GuardrailStack(input_guardrails or [], mode="strict")
         self._output_stack = GuardrailStack(output_guardrails or [], mode="strict")
+        self._model_router: Any = None    # set by Agent._build() when model_router= is given
+        self._context_pruner: Any = None  # set by Agent._build() when context_pruner= is given
         if knowledge:
             from meshflow.intelligence.knowledge import AgentKnowledge
             self._knowledge: Any = AgentKnowledge(knowledge)
@@ -245,14 +249,36 @@ class _BuiltAgent(BaseAgent):
             _user_content = text_body
         messages = [{"role": "user", "content": _user_content}]  # type: ignore[assignment]
 
+        # ── ModelRouter: pick model tier per task ─────────────────────────────
+        model_override: str | None = None
+        if self._model_router is not None:
+            try:
+                routing = self._model_router.route(task, tools=self._tools or [])
+                model_override = routing.model or None
+            except Exception:
+                pass  # best-effort — never blocks execution
+
+        # ── ContextCompactor: prune messages before LLM call ──────────────────
+        if self._context_pruner is not None:
+            try:
+                import inspect as _inspect
+                _prune = self._context_pruner.prune(messages)
+                if _inspect.isawaitable(_prune):
+                    _prune = await _prune
+                messages = _prune.messages  # type: ignore[assignment]
+            except Exception:
+                pass  # best-effort
+
         if self._tools:
             tool_schemas = [_build_tool_schema(t) for t in self._tools if hasattr(t, "name")]
             tool_fns = {
                 t.name: t.fn for t in self._tools if hasattr(t, "name") and hasattr(t, "fn")
             }
-            content, tokens, cost = await self.think_with_tools(messages, tool_schemas, tool_fns)
+            content, tokens, cost = await self.think_with_tools(
+                messages, tool_schemas, tool_fns, model_override=model_override
+            )
         else:
-            content, tokens, cost = await self.think(messages)
+            content, tokens, cost = await self.think(messages, model_override=model_override)
 
         confidence, content = _extract_confidence(content)
 
@@ -362,6 +388,9 @@ class Agent:
     risk: RiskTier = RiskTier.READ_ONLY
     policy: Policy | str | None = None
     provider: Any = None         # low-level escape hatch; prefer llm=
+    model_router: Any = None     # ModelRouter — auto-selects model tier per task
+    context_pruner: Any = None   # SlidingWindowPruner | SummaryPruner — auto-prunes context
+    mode: str = "production"
     _prebuilt_node: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -379,6 +408,8 @@ class Agent:
         3. model_to_provider(model) when model is set
         4. auto_detect_provider() from environment
         """
+        if self.mode == "sandbox" or sandbox_mode_var.get():
+            return SandboxProvider()
         if self.llm is not None:
             # LLM class forwards the protocol; any LLMProvider also accepted
             return self.llm
@@ -462,6 +493,7 @@ class Agent:
             system_prompt=prompt,
             tools=[getattr(t, "name", str(t)) for t in all_tools],
             provider=self._resolve_provider(),
+            mode=self.mode,
         )
         built = _BuiltAgent(
             config,
@@ -474,6 +506,10 @@ class Agent:
             memory_backend=self._resolve_memory_backend(),
             memory_session_id=self.memory_session_id or self.name,
         )
+        # Attach optional model router and context pruner
+        built._model_router = self.model_router
+        built._context_pruner = self.context_pruner
+
         # Wrap the fully-resolved provider with cache AFTER BaseAgent.__init__ sets it
         if self.cache is not None and self.cache is not False:
             from meshflow.cache.provider import CachedProvider
@@ -565,7 +601,7 @@ class Agent:
         from collections.abc import AsyncIterator
 
         built = self._build()
-        role = built.config.role
+        _role = built.config.role
         prompt = built.config.system_prompt
         model = built.config.model
 

@@ -39,7 +39,8 @@ class TestVersion(unittest.TestCase):
 
     def test_version_is_0_77_0(self) -> None:
         import meshflow
-        self.assertEqual(meshflow.__version__, "0.77.0")
+        from packaging.version import Version
+        self.assertGreaterEqual(Version(meshflow.__version__), Version("0.77.0"))
 
     def test_changelog_mentions_77(self) -> None:
         import os
@@ -221,7 +222,7 @@ class TestSelfCorrectingRAGKnowledgeBackend(unittest.TestCase):
         self.assertGreater(len(results), 0)
 
     def test_rag_stored_in_rag_pipelines_list(self) -> None:
-        from meshflow.intelligence.rag_pipeline import SelfCorrectingRAG, HybridRetriever
+        from meshflow.intelligence.rag_pipeline import SelfCorrectingRAG
         from meshflow.intelligence.knowledge import AgentKnowledge
         rag = SelfCorrectingRAG(_echo_agent(), max_correction_rounds=0)
         knowledge = AgentKnowledge([rag])
@@ -463,8 +464,9 @@ class TestSprint77Integration(unittest.TestCase):
 
     def test_version_in_all(self) -> None:
         import meshflow
+        from packaging.version import Version
         self.assertIn("__version__", dir(meshflow))
-        self.assertEqual(meshflow.__version__, "0.77.0")
+        self.assertGreaterEqual(Version(meshflow.__version__), Version("0.77.0"))
 
 
 if __name__ == "__main__":

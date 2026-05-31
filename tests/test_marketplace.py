@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import socket
 import threading
 import time
@@ -152,3 +151,22 @@ def test_cli_share_command(tmp_path, monkeypatch):
     shared_tmpl = shared_reg.pull("local-hero")
     assert shared_tmpl.name == "local-hero"
     assert shared_tmpl.description == tmpl.description
+
+
+def test_curated_templates_endpoints(studio_server):
+    # Ensure GET /templates page is served
+    req = urllib.request.Request(f"{studio_server}/templates")
+    with urllib.request.urlopen(req) as resp:
+      assert resp.status == 200
+      html = resp.read().decode("utf-8")
+      assert "<title>MeshFlow Studio — Curated Agent Template Gallery</title>" in html
+
+    # Ensure GET /api/curated-templates returns the 20 pre-built templates
+    req = urllib.request.Request(f"{studio_server}/api/curated-templates")
+    with urllib.request.urlopen(req) as resp:
+      assert resp.status == 200
+      data = json.loads(resp.read().decode("utf-8"))
+      assert isinstance(data, list)
+      assert len(data) == 20
+      assert any(t["name"] == "hipaa-compliance-analyst" for t in data)
+

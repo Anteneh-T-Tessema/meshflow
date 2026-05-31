@@ -6,10 +6,7 @@ All tests run without Docker — Docker calls are mocked or skipped.
 
 from __future__ import annotations
 
-import json
 import os
-import sys
-import tempfile
 
 import pytest
 

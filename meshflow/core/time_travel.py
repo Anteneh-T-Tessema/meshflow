@@ -152,7 +152,6 @@ class RewindEngine:
         """
         from meshflow.core.ledger import ReplayLedger
         from meshflow.core.runtime import StepRuntime
-        from meshflow.core.schemas import Policy
 
         ledger = ReplayLedger(self._db)
         steps = await self.list_steps(run_id)

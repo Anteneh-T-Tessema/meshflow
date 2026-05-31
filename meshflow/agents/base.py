@@ -8,6 +8,7 @@ import json
 import re
 import uuid
 from collections.abc import AsyncIterator
+import contextvars
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
 
@@ -492,6 +493,67 @@ class EchoProvider(LLMProvider):
             yield TokenChunk(text=word + " ", agent_id=agent_id, step_id=step_id, run_id=run_id)
 
 
+sandbox_mode_var = contextvars.ContextVar("meshflow_sandbox_mode", default=False)
+
+
+class SandboxProvider(EchoProvider):
+    """Mock LLM provider used in sandbox mode. Generates structured completions
+    appropriate for agent roles with zero token cost.
+    """
+
+    def __init__(self, response: str = "", name: str = "Agent", role: str = "executor") -> None:
+        super().__init__(response)
+        self.name = name
+        self.role = role
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        response_format: str | None = None,
+    ) -> tuple[str, int, float]:
+        # Try to guess role from system prompt or self.role
+        if "planner" in self.role.lower() or "Planner" in system:
+            # planner expects valid JSON structure
+            if response_format == "json" or "JSON" in system:
+                reply = json.dumps({
+                    "steps": [
+                        {"role": "researcher", "input": "Research details", "expected_output": "data"},
+                        {"role": "analyst", "input": "Analyze data", "expected_output": "analysis"},
+                        {"role": "writer", "input": "Write report", "expected_output": "report"}
+                    ],
+                    "confidence": 0.95
+                })
+            else:
+                reply = '{"steps": [], "confidence": 0.95}'
+            return reply, len(reply.split()), 0.0
+        elif "critic" in self.role.lower() or "Critic" in system:
+            # critic expects success/failure score structure
+            if "SYSTEM_FAILURE" in system or "failure_score" in system:
+                reply = json.dumps({"failure_score": 1, "issues": []})
+            elif "SYSTEM_SUCCESS" in system or "success_score" in system:
+                reply = json.dumps({"success_score": 9, "strengths": ["Clear structure"]})
+            else:
+                reply = json.dumps({"failure_score": 1, "issues": [], "success_score": 9, "strengths": ["Clear structure"]})
+            return reply, len(reply.split()), 0.0
+
+        last = messages[-1].get("content", "") if messages else "task"
+        if isinstance(last, list):
+            last = " ".join(p.get("text", "") for p in last if isinstance(p, dict))
+        
+        # Clean up last if it has "Prior output:"
+        if "Prior output:" in last:
+            last = last.split("Prior output:")[0].strip()
+
+        name_cap = self.name.capitalize()
+        reply = f"[sandbox: {name_cap}] Simulated completion for task: {last}\nCONFIDENCE: 0.95"
+        if response_format == "json" or "JSON" in system:
+            reply = json.dumps({"result": reply, "confidence": 0.95})
+        return reply, len(reply.split()), 0.0
+
+
 def _default_provider() -> LLMProvider:
     """Auto-detect and return the best available LLM provider.
 
@@ -698,6 +760,7 @@ class AgentConfig:
     max_tokens: int = 4096
     temperature: float = 0.7
     provider: LLMProvider | None = None  # None → AnthropicProvider()
+    mode: str = "production"
 
 
 # ── Base agent ────────────────────────────────────────────────────────────────
@@ -716,7 +779,10 @@ class BaseAgent:
     def __init__(self, config: AgentConfig, policy: Policy) -> None:
         self.config = config
         self.policy = policy
-        if config.provider is not None:
+        if getattr(config, "mode", "") == "sandbox" or sandbox_mode_var.get():
+            role_str = config.role.value if hasattr(config.role, "value") else str(config.role)
+            self._provider = SandboxProvider(name=config.agent_id, role=role_str)
+        elif config.provider is not None:
             self._provider: LLMProvider = config.provider
         else:
             # Infer provider from model name first (CrewAI pattern),
@@ -749,12 +815,13 @@ class BaseAgent:
         self,
         messages: list[dict[str, str]],
         system: str | None = None,
+        model_override: str | None = None,
     ) -> tuple[str, int, float]:
         """Single LLM call — returns (content, tokens, cost_usd)."""
         from meshflow.optimization.tracker import active_tracker
         tracker = active_tracker.get()
 
-        model = self.config.model
+        model = model_override or self.config.model
         if tracker is not None and tracker.should_degrade():
             model = tracker.fallback_model
 
@@ -805,12 +872,13 @@ class BaseAgent:
         tool_schemas: list[dict[str, Any]],
         tool_fns: dict[str, Any],
         system: str | None = None,
+        model_override: str | None = None,
     ) -> tuple[str, int, float]:
         """LLM call with real tool dispatch loop — returns (content, tokens, cost_usd)."""
         from meshflow.optimization.tracker import active_tracker
         tracker = active_tracker.get()
 
-        model = self.config.model
+        model = model_override or self.config.model
         if tracker is not None and tracker.should_degrade():
             model = tracker.fallback_model
 

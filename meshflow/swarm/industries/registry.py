@@ -1,5 +1,5 @@
 """Central registry: maps domain keys → verifier class, roles, and agent configs."""
-from typing import Any, Dict, List, Type
+from typing import Any, Dict, List
 
 from meshflow.swarm.verifiers import DeterministicVerifier
 from meshflow.swarm.industries.financial import (

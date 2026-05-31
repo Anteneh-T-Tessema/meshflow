@@ -1,12 +1,10 @@
 """Sprint 63 — Policy-as-Code Engine tests."""
 import subprocess
-import sys
 import unittest
 
 import meshflow
 from meshflow.policy.engine import (
-    ConditionOp, PolicyAction, PolicyCondition, PolicyDecision,
-    PolicyEngine, PolicyLoader, PolicyRule, PolicyStore,
+    ConditionOp, PolicyAction, PolicyCondition, PolicyEngine, PolicyLoader, PolicyRule, PolicyStore,
 )
 
 
@@ -86,7 +84,7 @@ class TestPolicyCondition(unittest.TestCase):
 class TestPolicyRule(unittest.TestCase):
 
     def _rule(self, conditions, action=PolicyAction.DENY):
-        import uuid, time
+        import uuid
         return PolicyRule(
             rule_id=str(uuid.uuid4()),
             name="test-rule",
@@ -125,7 +123,7 @@ class TestPolicyStore(unittest.TestCase):
         self.store = PolicyStore(":memory:")
 
     def _rule(self, name="r", action=PolicyAction.DENY, framework="custom", priority=0):
-        import uuid, time
+        import uuid
         return PolicyRule(
             rule_id=str(uuid.uuid4()),
             name=name,

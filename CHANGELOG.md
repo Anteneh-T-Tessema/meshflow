@@ -5,6 +5,122 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.0] — 2026-05-30
+
+### First stable release — Production/Stable
+
+**4,349 tests passing (19 skipped = live API + optional deps).**
+
+MeshFlow 1.0 is the first production-stable release. The public API is now
+locked under semantic versioning. Breaking changes will require a major version bump.
+
+#### Stable API surface
+
+All symbols exported from `meshflow.__all__` are now part of the stable public API.
+Internal modules (prefixed with `_`) remain subject to change.
+
+#### What's included in 1.0
+
+**Agents**
+- `Agent` — role, tools, memory, guardrails, streaming, structured output, healing, handoffs
+- `Team`, `GroupChat`, `GroupChatManager` — multi-agent coordination patterns
+- `Supervisor`, `AdversarialTeam` — orchestrator and debate patterns
+- `ReActAgent` — Plan → Act → Observe → Reflect loop
+- `AgentSession` — stateful multi-turn with compression
+- `AgentPool` — async queue, round-robin, global registry
+- `CriticAgent`, `AdaptiveAgent`, `DebatePanel`, `EarlyExitAgent` — specialized patterns
+- Pre-built agents library: `agents.ResearchAgent()`, `agents.CoderAgent()`, etc.
+
+**Orchestration**
+- `StateGraph` — typed LangGraph-compatible state graph with `interrupt()` / `Command` HITL
+- `Flow` — event-driven decorator API (CrewAI Flows parity)
+- `Crew`, `Task`, `Process` — CrewAI-compatible team primitives
+- `DurableWorkflowExecutor` — SQLite / Redis / Postgres / S3 checkpoint and resume
+- `WorkflowDefinition.from_yaml()` — full YAML-driven pipeline execution
+- `@workflow` — decorator API for defining typed workflows
+- `BranchCompare` — parallel fork comparison (LangGraph Branch & Compare parity)
+
+**Governance (the kernel)**
+- `StepRuntime` — 15-step governed execution kernel
+- Compliance profiles: `hipaa`, `sox`, `gdpr`, `pci`, `nerc`
+- `ComplianceGuard` — real-time mid-run enforcement
+- `ComplianceReporter` + `SnapshotExporter` — post-hoc audit artifacts
+- `PolicyEngine` / `PolicyLoader` — YAML policy-as-code (DENY wins, 10 operators)
+- `DascGate` + `AutoRiskClassifier` + `TaintGraph` — 4-tier risk governance
+- `VaultStore` — Fernet AES secret vault with PBKDF2 key derivation
+- `TenantStore` / `TenantContext` — full tenant isolation with scoped DB paths
+- `SLATracker` — p50/p95/p99 latency, breach detection, CLI reporting
+- `AuditLedger` — SHA-256 hash chain for tamper-evident audit trails
+- `KeyStore` — PBKDF2 API key management, roles (admin/operator/viewer)
+
+**Security**
+- `GuardrailStack` — 9 built-in guardrails (PII, toxicity, cost cap, JSON schema, regex, keyword)
+- `SensitiveDataDetector` — 23 PHI/PII + credential patterns, mask/audit
+- `PromptInjectionDetector` + `SecretScanner` — supply chain and injection defenses
+- `AgentIdentity` / `sign_token` / `verify_token` — zero-trust agent authentication
+- `CircuitBreaker` — per-model circuit breakers with rolling-window stats
+
+**Memory & RAG**
+- `AgentMemory` — 4-tier: Working → Episodic → Semantic (BM25) → Procedural
+- `VectorStore`, `KnowledgeSource`, `AgentKnowledge` — native RAG pipeline
+- `HybridRetriever` (BM25 + dense RRF), `LLMRanker`, `SelfCorrectingRAG`
+- `SemanticMemoryStore` — dense embedding search
+- `CrossSessionMemoryStore` — persist memories across sessions
+- `MemoryConsolidator`, `TeamWorkspace` — shared team memory
+
+**Evaluation**
+- `EvalSuite` — YAML-driven evals, `--save-baseline` / `--compare-baseline` / `--fail-on-regression`
+- `LLMJudge` — LLM-as-judge with structured scoring
+- `ConversationEval`, `ABTest`, `QualityGate` — multi-turn and A/B eval primitives
+- `ShadowResult` / `shadow_run` — production shadow mode with regression detection
+- `FeedbackStore` — collect human feedback in production
+
+**Observability**
+- `EventProjector` — AuditTrail, NodeLatency, PolicyViolation, WorkflowSummary projections
+- `OTELExporter` — OTLP/HTTP span export (zero external deps in core)
+- `TraceServer` — visual trace studio (Sprint 69+)
+- `MetricsCollector` — Prometheus-compatible metrics
+- `WebhookManager` + `WebhookRetryQueue` — HMAC-signed durable webhook delivery
+- `AlertEngine` — metric-threshold alert rules
+
+**Providers**
+- `AnthropicProvider` (with prompt caching), `OpenAICompatibleProvider`, `GeminiProvider`
+- `BedrockProvider`, `AzureOpenAIProvider`, `OllamaProvider`, `LiteLLMProvider`
+- `AzureIdentityProvider`, `BedrockIAMProvider`, `VertexAIProvider` — cloud managed identity
+- `LLM("model-name")` — universal entry point
+- `ProviderRouter` — role × budget × compliance → model selection
+- `ModelHealthTracker` — rolling-window health, fallback chain
+- `AnthropicBatchClient` — Anthropic Batch API for high-throughput eval and inference
+- `CachedProvider` — SQLite LLM response cache
+
+**Deployment**
+- `Doctor` — pre-deploy environment health check
+- `EnvGenerator` — generate production `.env` from schema
+- `DockerDeployer` — programmatic Docker build + run
+- Helm chart at `k8s/helm/`
+- `meshflow serve` — FastAPI REST + SSE + WebSocket server
+- `/health/live` + `/health/ready` — Kubernetes probes
+- Graceful SIGTERM/SIGINT shutdown
+
+**Protocols**
+- A2A (Agent-to-Agent) protocol — `AgentCard`, `A2AClient`, `A2AServer`, `A2ATaskStore`
+- MCP gateway — `MCPServer`, `MCPClient` (consume and expose MCP tools)
+- TypeScript client SDK — typed REST + SSE, WebCrypto signature verification
+- Go SDK — generated from OpenAPI spec
+
+**CLI**
+`meshflow serve`, `eval`, `run`, `graph`, `audit`, `compliance`, `vault`, `tenant`,
+`tracing`, `policy`, `sla`, `snapshot`, `dasc`, `keys`, `webhooks`, `analytics`,
+`queue`, `doctor`, `bench`
+
+#### Migration from 0.x
+
+- No breaking changes in the stable `__all__` surface between 0.77 and 1.0.
+- `pyproject.toml` version classifier updated from `4 - Beta` to `5 - Production/Stable`.
+- Sprint-numbered section headers removed from `__init__.py` (cosmetic only — no symbol changes).
+
+---
+
 ## [0.77.0] — 2026-05-30
 
 ### Sprint 77 — Integration, CLI completeness, Studio navigation

@@ -2,8 +2,7 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from meshflow.agents.conversation import GroupChat, GroupChatManager, ChatMessage
-from meshflow.agents.builder import Agent
+from meshflow.agents.conversation import GroupChat, GroupChatManager
 
 
 class TestGroupChatTransitionGraphs(unittest.IsolatedAsyncioTestCase):

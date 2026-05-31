@@ -216,12 +216,12 @@ def _diff_dicts(data_a: dict[str, Any], data_b: dict[str, Any]) -> DiffResult:
     for key in set(edges_b_keys) - set(edges_a_keys):
         changes.append(DiffChange(
             kind="edge_added", target=f"edge:{key}",
-            detail=f"New edge added", new_value=edges_b_keys[key],
+            detail="New edge added", new_value=edges_b_keys[key],
         ))
     for key in set(edges_a_keys) - set(edges_b_keys):
         changes.append(DiffChange(
             kind="edge_removed", target=f"edge:{key}",
-            detail=f"Edge removed", old_value=edges_a_keys[key],
+            detail="Edge removed", old_value=edges_a_keys[key],
         ))
 
     # Policy changes

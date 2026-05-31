@@ -5,7 +5,6 @@ Import is deferred so the meshflow package can be imported without torch.
 """
 from __future__ import annotations
 
-from typing import Optional
 
 
 def _require_torch():
@@ -23,7 +22,6 @@ class RecursiveUnit:
 
     def __init__(self, d_model: int = 768, n_heads: int = 8) -> None:
         torch = _require_torch()
-        import torch.nn as nn
 
         self.d_model = d_model
         self._module = _RecursiveModule(d_model, n_heads)
@@ -71,7 +69,6 @@ class _RecursiveModule:
 
     def parameters(self):
         torch = _require_torch()
-        import torch.nn as nn
         params = []
         for attr in ["encoder", "decoder", "reasoning_layer", "plasticity_gate"]:
             m = getattr(self, attr)

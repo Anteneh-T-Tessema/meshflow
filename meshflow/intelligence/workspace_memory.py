@@ -182,7 +182,6 @@ class WorkspaceMemoryStore:
         ttl_seconds:
             Seconds until this entry expires (0 = never).
         """
-        import time as _time
         entry = WorkspaceMemoryEntry(
             workspace_id=workspace_id,
             agent_name=agent_name,

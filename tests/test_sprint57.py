@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import time
 import unittest
@@ -247,14 +246,12 @@ class TestIdentityCLI(unittest.TestCase):
 
     def test_list_empty(self):
         from meshflow.cli.main import _cmd_identity
-        import io
         with patch_stdout() as out:
             _cmd_identity(self._args("list"))
         self.assertIn("No identities", out.getvalue())
 
     def test_create_prints_id(self):
         from meshflow.cli.main import _cmd_identity
-        import io
         with patch_stdout() as out:
             _cmd_identity(self._args("create", name="my-agent", capabilities=[],
                                       issuer="meshflow"))
@@ -278,7 +275,6 @@ class TestIdentityCLI(unittest.TestCase):
 
     def test_verify_valid_token_prints_valid(self):
         from meshflow.cli.main import _cmd_identity
-        import io
         store = IdentityStore(":memory:")
         identity = store.register("test-agent")
         token = sign_token(identity, "my-secret")

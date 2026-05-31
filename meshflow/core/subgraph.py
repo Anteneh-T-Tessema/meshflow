@@ -48,7 +48,6 @@ from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
 from meshflow.core.schemas import RiskTier
 
 if TYPE_CHECKING:
-    from meshflow.core.runtime import StepRuntime
     from meshflow.core.workflow import WorkflowDefinition
 
 
@@ -99,7 +98,6 @@ class SubgraphNode:
 
             # Build a child runtime that inherits the parent's governance
             from meshflow.core.runtime import StepRuntime
-            from meshflow.core.schemas import Policy, policy_for_mode
 
             # Forward parent context with depth tracking
             child_ctx = {

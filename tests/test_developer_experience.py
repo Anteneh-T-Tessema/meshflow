@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import tempfile
 import pytest
 import yaml as _yaml
 
@@ -464,7 +462,6 @@ class TestTestUtilities:
 
     def test_assert_completed_fails_when_blocked(self):
         from meshflow.testing import assert_completed
-        from meshflow.core.workflow import WorkflowResult
 
         class FakeResult:
             completed = False
@@ -533,7 +530,6 @@ class TestMemoryExportImport:
     def test_snapshot_round_trip(self):
         from meshflow.intelligence.memory import AgentMemory
         from meshflow.intelligence.memory_backends import (
-            SQLiteMemoryBackend,
             snapshot_from_memory,
             restore_memory,
         )

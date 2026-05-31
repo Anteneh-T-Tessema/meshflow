@@ -27,7 +27,6 @@ Usage::
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -120,7 +119,6 @@ class TerminalDashboard:
     async def _render_rich(self, data: dict[str, Any], *, clear: bool) -> None:
         from rich.console import Console
         from rich.table import Table
-        from rich.panel import Panel
         from rich import box
 
         console = Console()

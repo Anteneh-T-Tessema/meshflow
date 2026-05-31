@@ -6,7 +6,6 @@ Tools decorated with @tool become Tool objects — call via tool.call(**kwargs).
 from __future__ import annotations
 
 import json
-import sys
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -288,7 +287,6 @@ class TestHttpRequest:
 class TestReadWriteFile:
     @pytest.mark.asyncio
     async def test_write_then_read(self, tmp_path: Any) -> None:
-        import os
         rf = _get_tool("read_file")
         wf_tool = _get_tool("write_file")
         path = str(tmp_path / "mesh_test.txt")

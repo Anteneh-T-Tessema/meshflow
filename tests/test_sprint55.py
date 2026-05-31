@@ -323,14 +323,12 @@ class TestLocksCLI(unittest.TestCase):
 
     def test_list_empty(self):
         from meshflow.cli.main import _cmd_locks
-        import io
         with patch_stdout() as out:
             _cmd_locks(self._args_list())
         self.assertIn("No active locks", out.getvalue())
 
     def test_status_unlocked(self):
         from meshflow.cli.main import _cmd_locks
-        import io
         with patch_stdout() as out:
             _cmd_locks(self._args_status("not-locked"))
         self.assertIn("not locked", out.getvalue())
@@ -342,14 +340,12 @@ class TestLocksCLI(unittest.TestCase):
 
     def test_purge_prints_count(self):
         from meshflow.cli.main import _cmd_locks
-        import io
         with patch_stdout() as out:
             _cmd_locks(self._args_purge())
         self.assertIn("Purged", out.getvalue())
 
     def test_list_json_output(self):
         from meshflow.cli.main import _cmd_locks
-        import io
         store = LockStore(":memory:")
         store.try_acquire("res-1", "owner-A")
 

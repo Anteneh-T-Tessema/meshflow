@@ -13,10 +13,8 @@ import asyncio
 import hashlib
 import hmac
 import json
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

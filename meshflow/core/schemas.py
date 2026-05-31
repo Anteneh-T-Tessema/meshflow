@@ -322,6 +322,7 @@ class Policy:
     max_output_chars: int = 0  # 0 = unlimited; > 0 truncates before ledger write
     scrub_phi: bool = False  # redact PHI patterns before ledger write (HIPAA)
     max_forecast_usd: float = 0.0  # 0 = no pre-run gate; > 0 → abort if forecast exceeds this
+    max_replans: int = 3
 
 
 def policy_for_mode(

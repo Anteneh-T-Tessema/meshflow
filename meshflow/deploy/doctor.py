@@ -266,7 +266,7 @@ class Doctor:
                 name=f"Port {self._port}",
                 status=CheckStatus.WARN,
                 message=f"Port {self._port} is already in use",
-                fix_hint=f"Kill the process or pass --port <other> to meshflow serve.",
+                fix_hint="Kill the process or pass --port <other> to meshflow serve.",
             )
         return CheckResult(
             name=f"Port {self._port}",

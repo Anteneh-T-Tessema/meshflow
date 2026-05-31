@@ -31,7 +31,8 @@ from typing import Any
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Return the fully-configured argument parser (testable without running main)."""
     parser = argparse.ArgumentParser(
         prog="meshflow",
         description="MeshFlow — build agents, form teams, govern everything.",
@@ -99,6 +100,11 @@ def main() -> None:
                                "baseline:model=sonnet haiku:model=haiku,prompt=be-concise")
     p_replay.add_argument("--compare-step", type=int, default=1,
                           help="Step index to fork from in --branch-compare mode (default: 1)")
+    # Interactive replay: diff and fork
+    p_replay.add_argument("--diff", default="", metavar="RUN_ID_B",
+                          help="Diff this run against another run: meshflow replay <a> --diff <b>")
+    p_replay.add_argument("--fork-at", type=int, default=-1, metavar="STEP",
+                          help="Fork this run at step N and print the new run ID")
 
     # conformance
     p_conf = sub.add_parser(
@@ -1212,7 +1218,11 @@ def main() -> None:
     p_diff.add_argument("yaml_b", help="Second workflow YAML")
     p_diff.add_argument("--json", dest="as_json", action="store_true")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     dispatch = {
         "init": _cmd_init,
@@ -1515,7 +1525,7 @@ async def _async_run(args: argparse.Namespace) -> None:
     print(f"[meshflow] run_id={run_id}")
     print(f"[meshflow] workflow={wf.name}  nodes={len(wf._nodes)}  policy.budget=${pol.budget_usd}")
     if wf.compliance_guard is not None:
-        print(f"[meshflow] compliance guard active")
+        print("[meshflow] compliance guard active")
     if wf.metadata:
         print(f"[meshflow] metadata: {wf.metadata}")
 
@@ -1778,6 +1788,28 @@ async def _async_replay(args: argparse.Namespace) -> None:
     from meshflow.core.ledger import ReplayLedger
 
     ledger = ReplayLedger(args.db)
+
+    # ── --diff: compare two runs ──────────────────────────────────────────────
+    if getattr(args, "diff", ""):
+        diff = await ledger.diff(args.run_id, args.diff)
+        print(f"\n  Diff  {args.run_id[:24]}  ↔  {args.diff[:24]}")
+        print(f"  {'─' * 58}")
+        print(f"  Only in A : {', '.join(diff.only_in_a) or '—'}")
+        print(f"  Only in B : {', '.join(diff.only_in_b) or '—'}")
+        print(f"  Common    : {len(diff.common)} node(s)")
+        print(f"  Changed   : {len(diff.changed)} node(s)")
+        for c in diff.changed:
+            print(f"    • {c['node_id']}: verdict {c['verdict_a']} → {c['verdict_b']}")
+        print(f"  Cost Δ    : {diff.cost_delta_usd:+.6f} USD")
+        print(f"  Token Δ   : {diff.token_delta:+d}")
+        return
+
+    # ── --fork-at: copy steps 0..N-1 to a new run ────────────────────────────
+    if getattr(args, "fork_at", -1) >= 0:
+        new_id = await ledger.fork(args.run_id, args.fork_at)
+        print(f"[fork] new run_id={new_id!r} (copied {args.fork_at} step(s) from {args.run_id!r})")
+        return
+
     summary = await ledger.run_summary(args.run_id)
 
     if not summary or summary.get("steps", 0) == 0:
@@ -2659,7 +2691,8 @@ async def _async_eval(args: argparse.Namespace) -> None:
     # If --agent provided, import it and find the agent
     agent: Any = None
     if args.agent:
-        import importlib.util, os
+        import importlib.util
+        import os
 
         spec = importlib.util.spec_from_file_location("_eval_agent", args.agent)
         if spec and spec.loader:
@@ -2796,7 +2829,7 @@ async def _async_graph(args: argparse.Namespace) -> None:
         if not runs:
             print("\n  No runs in ledger.\n")
             return
-        print(f"\n  Available run IDs (use --run-id <id>):\n")
+        print("\n  Available run IDs (use --run-id <id>):\n")
         for r in runs[-20:]:
             print(f"    {r}")
         print()
@@ -3126,7 +3159,7 @@ def _cmd_webhooks(args: argparse.Namespace) -> None:
         if "error" in data:
             print(f"  Registration failed: {data['error']}")
             sys.exit(1)
-        print(f"\n  Webhook registered!")
+        print("\n  Webhook registered!")
         print(f"  ID:     {data.get('id', '?')}")
         print(f"  URL:    {data.get('url', '?')}")
         print(f"  Events: {', '.join(data.get('events', []))}\n")
@@ -3224,7 +3257,7 @@ def _cmd_keys(args: argparse.Namespace) -> None:
         except ValueError as exc:
             print(f"  Error: {exc}")
             sys.exit(1)
-        print(f"\n  API key created!")
+        print("\n  API key created!")
         print(f"  Key ID  : {key_id}")
         print(f"  Raw key : {raw_key}")
         print(f"  Role    : {args.role}")
@@ -3302,7 +3335,7 @@ async def _async_analytics(args: argparse.Namespace) -> None:
               f"(Δ uncertainty {qual.get('delta', 0):+.4f})")
         nodes = report.get("top_costly_nodes", [])
         if nodes:
-            print(f"\n  Top costly nodes:")
+            print("\n  Top costly nodes:")
             print(f"  {'Node':<36}  {'Total $':>10}  {'Calls':>6}  {'Avg $':>10}")
             print(f"  {'─' * 36}  {'─' * 10}  {'─' * 6}  {'─' * 10}")
             for n_row in nodes[:5]:
@@ -3339,7 +3372,7 @@ async def _async_analytics(args: argparse.Namespace) -> None:
             print(f"  {row['run_id']}  {row['carbon_gco2']:.6f} gCO₂")
         print()
     elif metric == "nodes":
-        print(f"\n  Top costly nodes:")
+        print("\n  Top costly nodes:")
         for row in data:
             print(f"  {row['node_id']:<36}  ${row['total_cost_usd']:.6f}  "
                   f"×{row['call_count']}  avg ${row['avg_cost_usd']:.6f}")
@@ -3365,7 +3398,7 @@ async def _async_queue(args: argparse.Namespace) -> None:
             payload["task"] = args.task
         task_id = await q.push(payload, priority=args.priority)
         await q.close()
-        print(f"\n  Task enqueued!")
+        print("\n  Task enqueued!")
         print(f"  ID:       {task_id}")
         print(f"  Workflow: {args.yaml}")
         print(f"  Priority: {args.priority}\n")
@@ -3422,11 +3455,11 @@ async def _async_queue(args: argparse.Namespace) -> None:
             except (NotImplementedError, RuntimeError):
                 pass
 
-        print(f"\n  MeshFlow queue worker started")
+        print("\n  MeshFlow queue worker started")
         print(f"  Queue:       {db}")
         print(f"  Concurrency: {args.concurrency}")
         print(f"  Poll:        {args.poll_interval}s")
-        print(f"  Press Ctrl-C to stop\n")
+        print("  Press Ctrl-C to stop\n")
         await worker.run(stop_event=stop)
         await q.close()
         print("  Worker stopped.")
@@ -3453,12 +3486,12 @@ def _cmd_agent_serve(args: argparse.Namespace) -> None:
     description = getattr(args, "description", "") or f"MeshFlow agent: {args.agent_name}"
     srv = A2AServer(agent, host=args.host, port=args.port, description=description)
 
-    print(f"\n  MeshFlow agent-serve")
+    print("\n  MeshFlow agent-serve")
     print(f"  Agent:  {args.agent_name}  ({args.role})")
     print(f"  URL:    http://{args.host}:{args.port}")
-    print(f"  A2A endpoints: /run  /tasks  /tasks/{{id}}  /tasks/{{id}}/stream")
-    print(f"  Probes:        /health  /ready  /metrics")
-    print(f"  Press Ctrl-C to stop\n")
+    print("  A2A endpoints: /run  /tasks  /tasks/{id}  /tasks/{id}/stream")
+    print("  Probes:        /health  /ready  /metrics")
+    print("  Press Ctrl-C to stop\n")
 
     srv.start()
     stop = _threading.Event()
@@ -3482,7 +3515,6 @@ def _cmd_agent_serve(args: argparse.Namespace) -> None:
 
 
 def _cmd_budget(args: argparse.Namespace) -> None:
-    import json as _json
     from meshflow.budget.store import BudgetAccount, BudgetStore
 
     db = getattr(args, "db", "meshflow_budgets.db")
@@ -4196,7 +4228,7 @@ def _cmd_alerts(args: argparse.Namespace) -> None:
         alert_store = AlertStore(db)
         rules_count = rule_store.count()
         counts = alert_store.counts()
-        print(f"\n  Alert engine status")
+        print("\n  Alert engine status")
         print(f"  {'─' * 30}")
         print(f"  Rules defined:  {rules_count}")
         print(f"  Firing:         {counts.get('firing', 0)}")
@@ -4321,7 +4353,7 @@ def _cmd_lineage(args: argparse.Namespace) -> None:
         print(f"  Deleted {n} lineage node(s) for '{args.name}'.")
 
     elif args.lineage_cmd == "stats":
-        print(f"\n  Lineage graph statistics")
+        print("\n  Lineage graph statistics")
         print(f"  {'─' * 30}")
         print(f"  Nodes: {g.node_count()}")
         print(f"  Edges: {g.edge_count()}")
@@ -4341,7 +4373,7 @@ def _cmd_identity(args: argparse.Namespace) -> None:
             capabilities=getattr(args, "capabilities", []),
             issuer=getattr(args, "issuer", "meshflow"),
         )
-        print(f"\n  Agent identity registered.")
+        print("\n  Agent identity registered.")
         print(f"  ID:           {identity.agent_id}")
         print(f"  Name:         {identity.name}")
         print(f"  Capabilities: {', '.join(identity.capabilities) or '(none)'}\n")
@@ -4396,7 +4428,7 @@ def _cmd_identity(args: argparse.Namespace) -> None:
         if claims is None:
             print("  Token is INVALID or EXPIRED.")
             sys.exit(1)
-        print(f"\n  Token is VALID.")
+        print("\n  Token is VALID.")
         print(f"  Agent:  {claims.agent_name} ({claims.agent_id})")
         print(f"  Issuer: {claims.issuer}")
         print(f"  Caps:   {', '.join(claims.capabilities) or '(none)'}\n")
@@ -4421,7 +4453,7 @@ def _cmd_canary(args: argparse.Namespace) -> None:
             promote_threshold=args.promote_threshold,
             rollback_threshold=args.rollback_threshold,
         )
-        print(f"\n  Canary experiment created.")
+        print("\n  Canary experiment created.")
         print(f"  ID:         {exp.experiment_id}")
         print(f"  Name:       {exp.name}")
         print(f"  Stable:     {exp.stable_agent}")
@@ -4541,7 +4573,7 @@ def _cmd_flags(args: argparse.Namespace) -> None:
             description=getattr(args, "description", ""),
             rollout_pct=getattr(args, "rollout_pct", 100.0),
         )
-        print(f"\n  Feature flag defined.")
+        print("\n  Feature flag defined.")
         print(f"  ID:          {flag.flag_id}")
         print(f"  Name:        {flag.name}")
         print(f"  Type:        {flag.flag_type}")
@@ -4641,7 +4673,6 @@ def _cmd_flags(args: argparse.Namespace) -> None:
 # ── _cmd_vault ────────────────────────────────────────────────────────────────
 
 def _cmd_vault(args: argparse.Namespace) -> None:
-    import json as _json
     from meshflow.vault.store import VaultStore
     db = getattr(args, "db", "meshflow_vault.db")
     passphrase = getattr(args, "passphrase", "meshflow-vault")
@@ -4653,7 +4684,7 @@ def _cmd_vault(args: argparse.Namespace) -> None:
             category=getattr(args, "category", "generic"),
             description=getattr(args, "description", ""),
         )
-        print(f"\n  Secret stored.")
+        print("\n  Secret stored.")
         print(f"  Name:     {secret.name}")
         print(f"  Category: {secret.category}")
         print(f"  ID:       {secret.secret_id}\n")
@@ -4716,14 +4747,13 @@ def _cmd_vault(args: argparse.Namespace) -> None:
 # ── _cmd_tenant ───────────────────────────────────────────────────────────────
 
 def _cmd_tenant(args: argparse.Namespace) -> None:
-    import json as _json
     from meshflow.tenant.store import TenantStore
     db = getattr(args, "db", "meshflow_tenants.db")
 
     if args.tenant_cmd == "create":
         store = TenantStore(db)
         tenant = store.create(args.name, args.slug, plan=getattr(args, "plan", "free"))
-        print(f"\n  Tenant created.")
+        print("\n  Tenant created.")
         print(f"  Name: {tenant.name}  Slug: {tenant.slug}")
         print(f"  Plan: {tenant.plan}  ID: {tenant.tenant_id}\n")
 
@@ -4962,7 +4992,7 @@ def _cmd_snapshot(args: argparse.Namespace) -> None:
             created_by=getattr(args, "created_by", "cli"),
             description=getattr(args, "description", ""),
         )
-        print(f"\n  Compliance snapshot exported.")
+        print("\n  Compliance snapshot exported.")
         print(f"  File:     {output}")
         print(f"  ID:       {bundle.manifest.snapshot_id}")
         print(f"  Sections: {len(bundle.sections)}")
@@ -5154,7 +5184,7 @@ def _cmd_templates(args: argparse.Namespace) -> None:
                 shared_reg = TemplateRegistry(registry_dir=shared_dir)
                 shared_path = shared_reg.publish(tmpl)
                 print(f"  Shared {tmpl.name!r} locally → {shared_path}")
-                print(f"  Tip: use --url http://<host>:<port> to push to a remote marketplace.")
+                print("  Tip: use --url http://<host>:<port> to push to a remote marketplace.")
         except KeyError as exc:
             print(f"  ERROR: {exc}")
             sys.exit(1)
@@ -5187,7 +5217,7 @@ def _cmd_marketplace(args: argparse.Namespace) -> None:
         server.start(daemon=False)  # blocking — serve until Ctrl-C
         print(f"\n  MeshFlow Marketplace running at http://{args.host}:{args.port}")
         print(f"  Registry: {registry_dir}")
-        print(f"  Press Ctrl-C to stop.\n")
+        print("  Press Ctrl-C to stop.\n")
         try:
             import time as _time
             while True:

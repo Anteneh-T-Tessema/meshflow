@@ -8,14 +8,12 @@ from __future__ import annotations
 
 import json
 import pytest
-from typing import Any
 
 import meshflow
 from meshflow import Agent, StructuredAgent
 from meshflow.agents.base import EchoProvider
 from meshflow.agents.structured import (
     StructuredOutputResult,
-    StructuredOutputError,
     StructuredOutputParser,
 )
 

@@ -7,7 +7,6 @@ wrapper definitions to ease cross-language integration.
 from __future__ import annotations
 
 import yaml
-from typing import Any
 
 
 class SDKCodeGenerator:

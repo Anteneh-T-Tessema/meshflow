@@ -148,7 +148,7 @@ class EvalScenario:
         # Inline Python expression / block
         if "\n" in fn_name or "return " in fn_name or "output" in fn_name:
             local_ns: dict[str, Any] = {}
-            exec(f"def _eval_fn(output):\n" + "\n".join("    " + ln for ln in fn_name.splitlines()), local_ns)
+            exec("def _eval_fn(output):\n" + "\n".join("    " + ln for ln in fn_name.splitlines()), local_ns)
             return local_ns["_eval_fn"]
         return None
 

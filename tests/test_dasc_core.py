@@ -5,12 +5,11 @@ import unittest
 
 import meshflow
 from meshflow.core.schemas import (
-    ActionVerdict, CompensationPlan, Evidence, Intent, LedgerEntry, RiskTier,
+    ActionVerdict, CompensationPlan, Intent, LedgerEntry, RiskTier,
 )
 from meshflow.security.dasc_gate import (
     AuditLedger, AutoRiskClassifier, CompensationExecutor, DascGate, TaintGraph,
 )
-from meshflow.core.govern import Policy
 
 
 def _intent(action: str, agent_id: str = "agent-1", tainted: bool = False,

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import pytest
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -334,7 +332,8 @@ team:
   pattern: sequential
   agents: [researcher, writer]
 """
-    import tempfile, os
+    import tempfile
+    import os
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
         f.write(yaml_content)
         f.flush()
@@ -363,7 +362,6 @@ def test_mcp_server_registered_in_aiohttp_app():
 
 def test_mcp_discover_endpoint():
     """GET /mcp returns a discovery JSON with tools."""
-    from aiohttp.test_utils import AioHTTPTestCase, unittest_run_loop
     from meshflow.runtime.server import _build_app
 
     async def run():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import operator
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, TypedDict
 
 import pytest
 

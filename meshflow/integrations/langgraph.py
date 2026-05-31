@@ -15,12 +15,11 @@ Compatibility: LangGraph v0.1 and v0.2 (Pregel).
 from __future__ import annotations
 
 import asyncio
-import inspect
 from typing import Any
 
 from meshflow.core.schemas import RiskTier
 from meshflow.tools.registry import Tool
-from meshflow.integrations._utils import run_sync, extract_tokens, first_nonempty
+from meshflow.integrations._utils import run_sync, extract_tokens
 
 
 # ── Tool conversion ────────────────────────────────────────────────────────────
@@ -129,9 +128,7 @@ def govern_langgraph(
         result = await governed({"input": "Analyse this contract"})
         # result is the original LangGraph output dict; governance runs on the side
     """
-    from meshflow.core.mesh import Mesh
     from meshflow.core.schemas import Policy
-    from meshflow.core.workflow import WorkflowDefinition
 
     if policy is None:
         policy = Policy()
@@ -150,7 +147,8 @@ def govern_langgraph(
         content = _extract_lg_output(result)
 
         # Write a governed record to the ledger
-        import datetime, uuid
+        import datetime
+        import uuid
         from meshflow.core.runtime import StepRecord
         from meshflow.core.ledger import ReplayLedger
         run_id = str(uuid.uuid4())

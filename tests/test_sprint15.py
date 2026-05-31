@@ -11,12 +11,7 @@ Tests:
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import tempfile
-from dataclasses import dataclass, field
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -379,7 +374,6 @@ class TestAgentPool:
     @pytest.mark.asyncio
     async def test_pool_stats_uptime(self) -> None:
         from meshflow.agents.pool import AgentPool
-        import asyncio
 
         pool = AgentPool(agents=[_make_mock_agent()], concurrency=1)
         await pool.start()
@@ -562,7 +556,7 @@ class TestTopLevelExports:
         assert BaselineDiff is not None
 
     def test_agent_pool_exported(self) -> None:
-        from meshflow import AgentPool, PoolStats, register_pool, deregister_pool
+        from meshflow import AgentPool, PoolStats
 
         assert AgentPool is not None
         assert PoolStats is not None

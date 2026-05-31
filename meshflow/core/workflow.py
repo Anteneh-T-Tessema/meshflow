@@ -165,6 +165,28 @@ class WorkflowResult:
     skipped_nodes: list[str]
     ledger_db: str
 
+    @property
+    def cost_usd(self) -> float:
+        """Alias for total_cost_usd — ergonomic shorthand."""
+        return self.total_cost_usd
+
+    @property
+    def tokens(self) -> int:
+        """Alias for total_tokens — ergonomic shorthand."""
+        return self.total_tokens
+
+    def __str__(self) -> str:
+        return self.output
+
+    def summary(self) -> str:
+        """One-line human-readable summary of the run."""
+        status = "✅ completed" if self.completed else "❌ blocked"
+        return (
+            f"{status}  steps={len(self.steps)}  "
+            f"cost=${self.total_cost_usd:.4f}  tokens={self.total_tokens}  "
+            f"duration={self.duration_s:.1f}s"
+        )
+
 
 class WorkflowDefinition:
     """A governed, graph-topological workflow.
@@ -191,6 +213,8 @@ class WorkflowDefinition:
         self.metadata: dict[str, Any] = {}  # free-form workflow metadata from YAML
         self.yaml_sha256: str = ""          # SHA-256 of source YAML (set by from_yaml)
         self.yaml_path: str = ""            # filesystem path to source YAML (set by from_yaml)
+        self.context_bus: dict[str, Any] = {}
+        self._replans_count: int = 0
 
     # ── Builder API ───────────────────────────────────────────────────────────
 
@@ -301,24 +325,33 @@ class WorkflowDefinition:
         self,
         completed: set[str],
         skipped: set[str],
+        failed: set[str],
+        dynamic_next_nodes: set[str],
+        nodes_with_handoff: set[str],
         ctx: dict[str, Any],
         step_outcomes: dict[str, RuntimeOutcome],
     ) -> tuple[list[str], list[str]]:
         """Return (nodes_ready_to_run, nodes_that_can_be_skipped).
 
         A node is ready when:
-          - all its predecessors are done (completed | skipped), AND
-          - at least one incoming edge from a *completed* predecessor fires.
-
-        A node is skipped when all predecessors are done but no incoming edge
-        from a completed predecessor fires (all conditions evaluated False).
+          - it is dynamically queued by a handoff, OR
+          - all its predecessors are done (completed | skipped | failed), AND
+          - its fan-in rule is met, AND
+          - at least one incoming edge from a *completed* predecessor fires (and is not bypassed by handoff).
         """
-        done = completed | skipped
+        done = completed | skipped | failed
         ready: list[str] = []
         newly_skipped: list[str] = []
 
+        # 1. Schedule dynamic handoff nodes immediately if not already done
+        for node_id in list(dynamic_next_nodes):
+            if node_id not in done:
+                ready.append(node_id)
+                dynamic_next_nodes.discard(node_id)
+
+        # 2. Evaluate remaining nodes
         for node_id in self._nodes:
-            if node_id in done:
+            if node_id in done or node_id in ready:
                 continue
             preds = self._predecessors(node_id)
             if not preds:
@@ -326,11 +359,36 @@ class WorkflowDefinition:
                 continue
             if not all(p in done for p in preds):
                 continue  # still waiting on an upstream node
-            any_fires = any(
-                self._condition_fires(e, ctx, step_outcomes)
-                for e in self._edges_to(node_id)
-                if e.from_node in completed  # skipped predecessors don't route forward
-            )
+            
+            # Evaluate Fan-In rule
+            node_obj = self._nodes[node_id]
+            fan_in_rule = node_obj.metadata.get("fan_in_rule", "all")
+            completed_preds = [p for p in preds if p in completed]
+            
+            rule_met = False
+            if fan_in_rule == "all":
+                rule_met = (len(completed_preds) == len(preds))
+            elif fan_in_rule == "any":
+                rule_met = (len(completed_preds) > 0)
+            elif fan_in_rule == "majority":
+                rule_met = (len(completed_preds) > len(preds) / 2)
+            else:
+                rule_met = (len(completed_preds) == len(preds))
+                
+            if not rule_met:
+                newly_skipped.append(node_id)
+                continue
+
+            any_fires = False
+            for e in self._edges_to(node_id):
+                if e.from_node in nodes_with_handoff:
+                    continue
+                if e.from_node not in completed:
+                    continue
+                if self._condition_fires(e, ctx, step_outcomes):
+                    any_fires = True
+                    break
+
             if any_fires:
                 ready.append(node_id)
             else:
@@ -371,6 +429,158 @@ class WorkflowDefinition:
 
     # ── Execution ─────────────────────────────────────────────────────────────
 
+    async def _execute_workflow_node(
+        self,
+        nd: MeshNode,
+        task: str,
+        runtime: StepRuntime,
+        node_ctx: dict[str, Any],
+        run_id: str,
+    ) -> RuntimeOutcome:
+        from meshflow.core.output_validation import OutputValidator
+        schema_cfg = nd.metadata.get("output_schema")
+        validator = (
+            OutputValidator(schema=schema_cfg) if schema_cfg else None
+        )
+        retry_on_fail  = nd.metadata.get("retry_on_fail", False)
+        max_retries    = int(nd.metadata.get("max_retries", 1))
+        timeout_s = nd.metadata.get("timeout_s") or nd.metadata.get("timeout")
+        attempt_limit = max_retries + 1 if retry_on_fail else 1
+
+        current_task = task
+        for attempt in range(attempt_limit):
+            try:
+                if timeout_s is not None:
+                    outcome = await asyncio.wait_for(
+                        runtime.run(
+                            nd,
+                            NodeInput(
+                                task=current_task,
+                                context=node_ctx,
+                                attachments=nd.metadata.get("attachments", []),
+                            ),
+                            node_ctx,
+                        ),
+                        timeout=float(timeout_s),
+                    )
+                else:
+                    outcome = await runtime.run(
+                        nd,
+                        NodeInput(
+                            task=current_task,
+                            context=node_ctx,
+                            attachments=nd.metadata.get("attachments", []),
+                        ),
+                        node_ctx,
+                    )
+                
+                if not outcome.ok:
+                    return outcome
+                if validator is None:
+                    return outcome
+                vresult = validator.validate(outcome.output.content)
+                if vresult.valid:
+                    return outcome
+                
+                if attempt < attempt_limit - 1:
+                    current_task = validator.retry_prompt(outcome.output.content, vresult.error)
+                    await asyncio.sleep(1.0)
+                else:
+                    # Construct a validation block outcome
+                    from meshflow.core.runtime import RuntimeOutcome as RO, StepRecord
+                    import datetime
+                    import uuid as _uuid
+                    blk_rec = StepRecord(
+                        run_id=outcome.record.run_id,
+                        step_id=_uuid.uuid4().hex[:8],
+                        node_id=nd.id,
+                        node_kind=outcome.record.node_kind,
+                        input_task=task,
+                        output_content=outcome.output.content,
+                        verdict="block",
+                        blocked=True,
+                        block_reason=f"output_schema validation failed: {vresult.error}",
+                        uncertainty=outcome.record.uncertainty,
+                        cost_usd=outcome.record.cost_usd,
+                        tokens_used=outcome.record.tokens_used,
+                        carbon_gco2=outcome.record.carbon_gco2,
+                        duration_ms=outcome.record.duration_ms,
+                        timestamp=datetime.datetime.now().isoformat(),
+                    )
+                    return RO(
+                        ok=False,
+                        node_id=nd.id,
+                        node_kind=outcome.record.node_kind,
+                        output=outcome.output,
+                        record=blk_rec,
+                        blocked_by=f"output_schema:{vresult.error[:80]}",
+                        paused_for_human=False,
+                        human_context={},
+                    )
+            except (asyncio.TimeoutError, Exception) as exc:
+                if attempt < attempt_limit - 1:
+                    await asyncio.sleep(1.0)
+                    continue
+                else:
+                    from meshflow.core.runtime import RuntimeOutcome as RO, StepRecord
+                    import datetime
+                    import uuid as _uuid
+                    
+                    # Create a dummy failed StepRecord
+                    blk_rec = StepRecord(
+                        run_id=run_id,
+                        step_id=_uuid.uuid4().hex[:8],
+                        node_id=nd.id,
+                        node_kind=nd.kind.value,
+                        input_task=task,
+                        output_content="",
+                        verdict="block",
+                        blocked=True,
+                        block_reason=f"Execution failed: {exc}",
+                        uncertainty=0.0,
+                        cost_usd=0.0,
+                        tokens_used=0,
+                        carbon_gco2=0.0,
+                        duration_ms=0.0,
+                        timestamp=datetime.datetime.now().isoformat(),
+                    )
+                    return RO(
+                        ok=False,
+                        node_id=nd.id,
+                        node_kind=nd.kind.value,
+                        output=NodeOutput(content="", structured={}),
+                        record=blk_rec,
+                        blocked_by=f"execution_error:{str(exc)[:80]}",
+                        paused_for_human=False,
+                        human_context={},
+                    )
+        return RuntimeOutcome(
+            ok=False,
+            node_id=nd.id,
+            node_kind=nd.kind.value,
+            output=NodeOutput(content="", structured={}),
+            record=StepRecord(
+                run_id=run_id,
+                step_id=uuid.uuid4().hex[:8],
+                node_id=nd.id,
+                node_kind=nd.kind.value,
+                input_task=task,
+                output_content="",
+                verdict="block",
+                blocked=True,
+                block_reason="Retry loop exited without outcome",
+                uncertainty=0.0,
+                cost_usd=0.0,
+                tokens_used=0,
+                carbon_gco2=0.0,
+                duration_ms=0.0,
+                timestamp=datetime.datetime.now().isoformat(),
+            ),
+            blocked_by="error",
+            paused_for_human=False,
+            human_context={},
+        )
+
     async def run(
         self,
         task: str,
@@ -378,22 +588,12 @@ class WorkflowDefinition:
         context: dict[str, Any] | None = None,
         event_bus: WorkflowEventBus | None = None,
     ) -> WorkflowResult:
-        """Execute the workflow with full StepRuntime governance on every node.
-
-        Uses a dynamic ready-queue so conditional edges are respected at
-        runtime. Nodes with no dependency between them run concurrently via
-        asyncio.gather(). All governance (guardian, budget, HITL, ledger)
-        fires per node regardless of parallelism or routing.
-
-        ``event_bus`` receives structured WorkflowEvents for every state
-        transition. Defaults to the process-wide ``global_event_bus``.
-        """
+        """Execute the workflow with full StepRuntime governance on every node."""
         bus = event_bus if event_bus is not None else global_event_bus
         run_id = runtime._run_id
         start = time.monotonic()
         ctx = dict(context or {})
         ctx["task"] = task
-        # Propagate workflow version pin so it lands in ledger step records
         if self.yaml_sha256:
             ctx["_workflow_sha256"] = self.yaml_sha256
             ctx["_workflow_version"] = self.version
@@ -442,16 +642,18 @@ class WorkflowDefinition:
         skipped_nodes: list[str] = []
         completed: set[str] = set()
         skipped: set[str] = set()
+        failed: set[str] = set()
+        dynamic_next_nodes: set[str] = set()
+        nodes_with_handoff: set[str] = set()
         step_outcomes: dict[str, RuntimeOutcome] = {}
 
-        ready, _ = self._compute_ready(completed, skipped, ctx, step_outcomes)
+        ready, _ = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
 
         while ready:
             level_nodes = [self._nodes[nid] for nid in ready if nid in self._nodes]
             if not level_nodes:
                 break
 
-            # Emit step_start for all nodes in this level
             for nd in level_nodes:
                 await bus.emit(WorkflowEvent(
                     kind=EventKind.STEP_START,
@@ -460,13 +662,8 @@ class WorkflowDefinition:
                     data={"kind": nd.kind.value},
                 ))
 
-            # Snapshot context: all parallel nodes see the same input state.
-            # Each gets its own copy so runtime can write back internal keys
-            # (_upstream_confidence etc.) without cross-node interference.
             ctx_snapshot = ctx.copy()
 
-            # When 2+ nodes run in parallel, deduplicate large repeated context
-            # values to avoid paying for the same tokens N times.
             _dedup = None
             if len(level_nodes) > 1:
                 from meshflow.agents.context_dedup import ContextDeduplicator
@@ -476,73 +673,13 @@ class WorkflowDefinition:
                 node_ctx = ctx_snapshot.copy()
                 if _dedup is not None:
                     node_ctx = _dedup.deduplicate(node_ctx, agent_name=nd.id)
-
-                # Build output validator from node metadata
-                from meshflow.core.output_validation import OutputValidator, validator_from_yaml
-                schema_cfg = nd.metadata.get("output_schema")
-                validator = (
-                    OutputValidator(schema=schema_cfg) if schema_cfg else None
-                )
-                retry_on_fail  = nd.metadata.get("retry_on_fail", False)
-                max_retries    = int(nd.metadata.get("max_retries", 1))
-
-                current_task = task
-                for attempt in range(max(1, max_retries + 1 if retry_on_fail else 1)):
-                    outcome = await runtime.run(
-                        nd,
-                        NodeInput(
-                            task=current_task,
-                            context=node_ctx,
-                            attachments=nd.metadata.get("attachments", []),
-                        ),
-                        node_ctx,
-                    )
-                    if not outcome.ok:
-                        break  # governance block — no retry
-                    if validator is None:
-                        break  # no schema — accept as-is
-                    vresult = validator.validate(outcome.output.content)
-                    if vresult.valid:
-                        break  # valid output
-                    if attempt < max_retries:
-                        # Build retry prompt and re-run
-                        current_task = validator.retry_prompt(outcome.output.content, vresult.error)
-                    else:
-                        # Max retries reached — mark as blocked
-                        from meshflow.core.runtime import RuntimeOutcome as RO, StepRecord
-                        import datetime, uuid as _uuid
-                        blk_rec = StepRecord(
-                            run_id=outcome.record.run_id,
-                            step_id=_uuid.uuid4().hex[:8],
-                            node_id=nd.id,
-                            node_kind=outcome.record.node_kind,
-                            input_task=task,
-                            output_content=outcome.output.content,
-                            verdict="block",
-                            blocked=True,
-                            block_reason=f"output_schema validation failed: {vresult.error}",
-                            uncertainty=outcome.record.uncertainty,
-                            cost_usd=outcome.record.cost_usd,
-                            tokens_used=outcome.record.tokens_used,
-                            carbon_gco2=outcome.record.carbon_gco2,
-                            duration_ms=outcome.record.duration_ms,
-                            timestamp=datetime.datetime.now().isoformat(),
-                        )
-                        outcome = RO(
-                            ok=False,
-                            node_id=nd.id,
-                            node_kind=outcome.record.node_kind,
-                            output=outcome.output,
-                            record=blk_rec,
-                            blocked_by=f"output_schema:{vresult.error[:80]}",
-                            paused_for_human=False,
-                            human_context={},
-                        )
-                return outcome
+                return await self._execute_workflow_node(nd, task, runtime, node_ctx, run_id)
 
             level_outcomes: list[RuntimeOutcome] = list(
                 await asyncio.gather(*[_run_node(nd) for nd in level_nodes])
             )
+
+            level_updates: dict[str, list[tuple[str, Any, float]]] = {}
 
             for node_id, outcome in zip(ready, level_outcomes):
                 step_outcomes[node_id] = outcome
@@ -564,7 +701,6 @@ class WorkflowDefinition:
                         node_id=node_id,
                         data={"human_context": outcome.human_context or {}},
                     ))
-                    # Persist durable checkpoint so the workflow survives restarts
                     if hasattr(runtime, "_ledger") and runtime._ledger is not None:
                         await _save_checkpoint(
                             ledger=runtime._ledger,
@@ -585,6 +721,7 @@ class WorkflowDefinition:
                         ))
                 elif not outcome.ok:
                     blocked_nodes.append(node_id)
+                    failed.add(node_id)
                     await bus.emit(WorkflowEvent(
                         kind=EventKind.STEP_BLOCKED,
                         run_id=run_id,
@@ -609,20 +746,72 @@ class WorkflowDefinition:
                     ))
                     if outcome.output.content:
                         ctx[f"{node_id}_output"] = outcome.output.content
-                    if outcome.output.structured:
-                        ctx.update(
-                            {
-                                k: v
-                                for k, v in outcome.output.structured.items()
-                                if not k.startswith("_")
-                            }
-                        )
 
-            if blocked_nodes or paused_nodes:
+                    if outcome.output.structured and "next_node" in outcome.output.structured:
+                        next_node_id = outcome.output.structured["next_node"]
+                        if next_node_id in self._nodes:
+                            dynamic_next_nodes.add(next_node_id)
+                            nodes_with_handoff.add(node_id)
+
+                    if outcome.output.structured:
+                        confidence = outcome.output.confidence if hasattr(outcome.output, "confidence") else 0.8
+                        for k, v in outcome.output.structured.items():
+                            if k.startswith("_"):
+                                continue
+                            if k not in level_updates:
+                                level_updates[k] = []
+                            level_updates[k].append((node_id, v, confidence))
+
+            if paused_nodes:
                 break
 
-            # Check loop edges: if a completed src triggers a loop back to dst,
-            # remove dst from completed so it re-enters the ready queue.
+            # Apply merge strategies for Context Bus
+            for key, updates in level_updates.items():
+                strategy = self.context_bus.get("merge_strategies", {}).get(key, "overwrite")
+                
+                if strategy == "overwrite":
+                    for node_id, val, conf in updates:
+                        ctx[key] = val
+                elif strategy == "append":
+                    merged = ctx.get(key)
+                    for node_id, val, conf in updates:
+                        if merged is None:
+                            merged = val
+                        else:
+                            if isinstance(merged, list) and isinstance(val, list):
+                                merged = merged + val
+                            elif isinstance(merged, dict) and isinstance(val, dict):
+                                merged = {**merged, **val}
+                            elif isinstance(merged, str) and isinstance(val, str):
+                                merged = merged + "\n" + val
+                            else:
+                                if not isinstance(merged, list):
+                                    merged = [merged]
+                                if isinstance(val, list):
+                                    merged = merged + val
+                                else:
+                                    merged.append(val)
+                    ctx[key] = merged
+                elif strategy == "select_highest_confidence":
+                    best_val = None
+                    best_conf = -1.0
+                    for node_id, val, conf in updates:
+                        if conf > best_conf:
+                            best_conf = conf
+                            best_val = val
+                    if best_val is not None:
+                        ctx[key] = best_val
+                elif strategy == "logical_and":
+                    vals = [ctx[key]] if key in ctx else []
+                    for node_id, val, conf in updates:
+                        vals.append(val)
+                    ctx[key] = all(bool(v) for v in vals)
+                elif strategy == "logical_or":
+                    vals = [ctx[key]] if key in ctx else []
+                    for node_id, val, conf in updates:
+                        vals.append(val)
+                    ctx[key] = any(bool(v) for v in vals)
+
             for le in self._loop_edges:
                 if le.src in ready and le.src in completed:
                     src_outcome = step_outcomes.get(le.src)
@@ -643,9 +832,79 @@ class WorkflowDefinition:
                         le._count += 1
                         completed.discard(le.dst)
 
-            # Propagate skips transitively until stable: if B is skipped, C
-            # (which depends only on B) also becomes skipped without running.
-            ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+            # Check for Dynamic Replanning
+            replanned = False
+            for node_id, outcome in zip(ready, level_outcomes):
+                if outcome.ok and outcome.output.structured:
+                    new_yaml = outcome.output.structured.get("replanned_workflow_yaml")
+                    new_dict = outcome.output.structured.get("replanned_workflow")
+                    
+                    if new_yaml or new_dict:
+                        max_replans = int(self.policy.max_replans) if hasattr(self.policy, "max_replans") else 3
+                        if self._replans_count >= max_replans:
+                            raise MaxIterationsError(
+                                f"Workflow replanning exceeded limit of {max_replans} replans"
+                            )
+                        
+                        self._replans_count += 1
+                        
+                        if new_yaml:
+                            new_wf = WorkflowDefinition.from_yaml_string(new_yaml, getattr(self, "_node_registry", None))
+                        else:
+                            import yaml as _yaml
+                            yaml_str = _yaml.dump(new_dict)
+                            new_wf = WorkflowDefinition.from_yaml_string(yaml_str, getattr(self, "_node_registry", None))
+                            
+                        # Copy runners from the current workflow for any matching node IDs
+                        for nid, node in new_wf._nodes.items():
+                            if nid in self._nodes and node._runner is None:
+                                node._runner = self._nodes[nid]._runner
+                                node.capabilities = self._nodes[nid].capabilities
+                                node.risk_profile = self._nodes[nid].risk_profile
+                                if not node.metadata:
+                                    node.metadata = {}
+                                node.metadata.update(self._nodes[nid].metadata)
+                            
+                        from meshflow.core.diff import workflow_diff_objects
+                        diff_res = workflow_diff_objects(self, new_wf)
+                        
+                        if diff_res.has_changes:
+                            print(diff_res.summary())
+                            
+                            await bus.emit(WorkflowEvent(
+                                kind=EventKind.STEP_COMPLETE,
+                                run_id=run_id,
+                                node_id=node_id,
+                                data={"message": f"Workflow replanned: {len(diff_res.changes)} changes", "diff": diff_res.to_dict()},
+                            ))
+                            
+                            self._nodes = new_wf._nodes
+                            self._edges = new_wf._edges
+                            self._loop_edges = new_wf._loop_edges
+                            self._entry = new_wf._entry
+                            self._terminal = new_wf._terminal
+                            self.policy = new_wf.policy
+                            self.compliance_guard = new_wf.compliance_guard
+                            self.metadata = new_wf.metadata
+                            replanned = True
+                            break
+            
+            if replanned:
+                ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
+                while newly_skipped:
+                    for skipped_id in newly_skipped:
+                        await bus.emit(WorkflowEvent(
+                            kind=EventKind.STEP_SKIPPED,
+                            run_id=run_id,
+                            node_id=skipped_id,
+                            data={},
+                        ))
+                    skipped.update(newly_skipped)
+                    skipped_nodes.extend(newly_skipped)
+                    ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
+                continue
+
+            ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
             while newly_skipped:
                 for skipped_id in newly_skipped:
                     await bus.emit(WorkflowEvent(
@@ -656,7 +915,7 @@ class WorkflowDefinition:
                     ))
                 skipped.update(newly_skipped)
                 skipped_nodes.extend(newly_skipped)
-                ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+                ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
 
         final_output = ""
         for outcome in reversed(steps):
@@ -669,20 +928,29 @@ class WorkflowDefinition:
         total_carbon = sum(s.record.carbon_gco2 for s in steps)
         duration = round(time.monotonic() - start, 2)
 
+        is_completed = True
+        if paused_nodes:
+            is_completed = False
+        elif failed:
+            if self._terminal:
+                is_completed = all(t in completed or t in skipped for t in self._terminal) and any(t in completed for t in self._terminal)
+            else:
+                is_completed = len(failed) == 0
+
         terminal_kind = (
-            EventKind.WORKFLOW_FAILED
-            if (blocked_nodes and not paused_nodes)
-            else EventKind.WORKFLOW_COMPLETE
+            EventKind.WORKFLOW_COMPLETE
+            if is_completed
+            else EventKind.WORKFLOW_FAILED
         )
         await bus.emit(WorkflowEvent(
             kind=terminal_kind,
             run_id=run_id,
             data={
-                "completed": not blocked_nodes and not paused_nodes,
+                "completed": is_completed,
                 "total_cost_usd": round(total_cost, 6),
                 "total_tokens": total_tokens,
                 "duration_s": duration,
-                "blocked_nodes": blocked_nodes,
+                "blocked_nodes": list(failed),
                 "paused_nodes": paused_nodes,
             },
         ))
@@ -692,14 +960,14 @@ class WorkflowDefinition:
         return WorkflowResult(
             run_id=run_id,
             workflow_name=self.name,
-            completed=not blocked_nodes and not paused_nodes,
+            completed=is_completed,
             output=final_output,
             steps=steps,
             total_cost_usd=round(total_cost, 6),
             total_tokens=total_tokens,
             total_carbon_gco2=round(total_carbon, 4),
             duration_s=duration,
-            blocked_nodes=blocked_nodes,
+            blocked_nodes=list(failed),
             paused_nodes=paused_nodes,
             skipped_nodes=skipped_nodes,
             ledger_db=ledger_db,
@@ -714,20 +982,7 @@ class WorkflowDefinition:
         *,
         context: dict[str, Any] | None = None,
     ):
-        """Async generator that yields :class:`~meshflow.core.streaming.StreamChunk` objects.
-
-        Combines step-lifecycle events (``node_start`` / ``node_end``) with
-        token-level streaming from native agent nodes.  Non-native nodes emit
-        lifecycle chunks only (no per-token granularity).
-
-        Usage::
-
-            async for chunk in wf.stream(task="Analyse Q3", runtime=runtime):
-                if chunk.kind == "token":
-                    print(chunk.content, end="", flush=True)
-                elif chunk.kind == "node_end":
-                    print(f"\\n[{chunk.node_name}] cost=${chunk.metadata.get('cost_usd',0):.5f}")
-        """
+        """Async generator that yields :class:`~meshflow.core.streaming.StreamChunk` objects."""
         from meshflow.core.streaming import StreamChunk
 
         ctx = dict(context or {})
@@ -739,6 +994,9 @@ class WorkflowDefinition:
         run_id = runtime._run_id
         completed: set[str] = set()
         skipped: set[str] = set()
+        failed: set[str] = set()
+        dynamic_next_nodes: set[str] = set()
+        nodes_with_handoff: set[str] = set()
         step_outcomes: dict[str, Any] = {}
 
         yield StreamChunk(
@@ -747,7 +1005,7 @@ class WorkflowDefinition:
             metadata={"run_id": run_id, "task": task[:120]},
         )
 
-        ready, _ = self._compute_ready(completed, skipped, ctx, step_outcomes)
+        ready, _ = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
 
         while ready:
             level_nodes = [self._nodes[nid] for nid in ready if nid in self._nodes]
@@ -755,13 +1013,13 @@ class WorkflowDefinition:
                 break
             ctx_snapshot = ctx.copy()
 
+            replanned = False
             for nd in level_nodes:
                 yield StreamChunk(kind="node_start", node_name=nd.id,
                                   metadata={"kind": nd.kind.value, "run_id": run_id})
                 try:
                     tokens_streamed = False
 
-                    # Attempt token-level streaming for native nodes
                     if nd.kind.value == "native" and nd._runner is not None:
                         agent_obj = _extract_agent_from_closure(nd._runner)
                         if agent_obj is not None and hasattr(agent_obj, "_provider"):
@@ -772,37 +1030,65 @@ class WorkflowDefinition:
                                     yield StreamChunk(kind="token", content=tok, node_name=nd.id)
                                     tokens_streamed = True
                             except Exception:
-                                pass  # governance run below will still execute
+                                pass
 
-                    # Governance kernel run (audit/ledger/HITL — always executed)
-                    from meshflow.core.node import NodeInput
-                    outcome = await runtime.run(
-                        nd,
-                        NodeInput(
-                            task=task,
-                            context=ctx_snapshot.copy(),
-                            attachments=nd.metadata.get("attachments", []),
-                        ),
-                        ctx_snapshot.copy(),
-                    )
+                    node_ctx = ctx_snapshot.copy()
+                    outcome = await self._execute_workflow_node(nd, task, runtime, node_ctx, run_id)
                     step_outcomes[nd.id] = outcome
 
                     if outcome.ok:
                         completed.add(nd.id)
                         if outcome.output.content:
                             ctx[f"{nd.id}_output"] = outcome.output.content
+                        
+                        if outcome.output.structured and "next_node" in outcome.output.structured:
+                            next_node_id = outcome.output.structured["next_node"]
+                            if next_node_id in self._nodes:
+                                dynamic_next_nodes.add(next_node_id)
+                                nodes_with_handoff.add(nd.id)
+
                         if outcome.output.structured:
-                            ctx.update({
-                                k: v for k, v in outcome.output.structured.items()
-                                if not k.startswith("_")
-                            })
-                        # Emit final output as token if nothing was streamed live
+                            confidence = outcome.output.confidence if hasattr(outcome.output, "confidence") else 0.8
+                            for k, v in outcome.output.structured.items():
+                                if k.startswith("_"):
+                                    continue
+                                strategy = self.context_bus.get("merge_strategies", {}).get(k, "overwrite")
+                                if strategy == "overwrite":
+                                    ctx[k] = v
+                                elif strategy == "append":
+                                    merged = ctx.get(k)
+                                    if merged is None:
+                                        merged = v
+                                    else:
+                                        if isinstance(merged, list) and isinstance(v, list):
+                                            merged = merged + v
+                                        elif isinstance(merged, dict) and isinstance(v, dict):
+                                            merged = {**merged, **v}
+                                        elif isinstance(merged, str) and isinstance(v, str):
+                                            merged = merged + "\n" + v
+                                        else:
+                                            if not isinstance(merged, list):
+                                                merged = [merged]
+                                            if isinstance(v, list):
+                                                merged = merged + v
+                                            else:
+                                                merged.append(v)
+                                    ctx[k] = merged
+                                elif strategy == "select_highest_confidence":
+                                    ctx[k] = v
+                                elif strategy == "logical_and":
+                                    ctx[k] = bool(ctx[k]) and bool(v) if k in ctx else bool(v)
+                                elif strategy == "logical_or":
+                                    ctx[k] = bool(ctx[k]) or bool(v) if k in ctx else bool(v)
+
                         if not tokens_streamed and outcome.output.content:
                             yield StreamChunk(
                                 kind="token",
                                 content=outcome.output.content,
                                 node_name=nd.id,
                             )
+                    else:
+                        failed.add(nd.id)
 
                     yield StreamChunk(
                         kind="node_end",
@@ -815,11 +1101,61 @@ class WorkflowDefinition:
                             "run_id": run_id,
                         },
                     )
+
+                    # Check for Dynamic Replanning
+                    if outcome.ok and outcome.output.structured:
+                        new_yaml = outcome.output.structured.get("replanned_workflow_yaml")
+                        new_dict = outcome.output.structured.get("replanned_workflow")
+                        
+                        if new_yaml or new_dict:
+                            max_replans = int(self.policy.max_replans) if hasattr(self.policy, "max_replans") else 3
+                            if self._replans_count >= max_replans:
+                                raise MaxIterationsError(
+                                    f"Workflow replanning exceeded limit of {max_replans} replans"
+                                )
+                            
+                            self._replans_count += 1
+                            
+                            if new_yaml:
+                                new_wf = WorkflowDefinition.from_yaml_string(new_yaml, getattr(self, "_node_registry", None))
+                            else:
+                                import yaml as _yaml
+                                yaml_str = _yaml.dump(new_dict)
+                                new_wf = WorkflowDefinition.from_yaml_string(yaml_str, getattr(self, "_node_registry", None))
+                                
+                            # Copy runners from the current workflow for any matching node IDs
+                            for nid, node in new_wf._nodes.items():
+                                if nid in self._nodes and node._runner is None:
+                                    node._runner = self._nodes[nid]._runner
+                                    node.capabilities = self._nodes[nid].capabilities
+                                    node.risk_profile = self._nodes[nid].risk_profile
+                                    if not node.metadata:
+                                        node.metadata = {}
+                                    node.metadata.update(self._nodes[nid].metadata)
+                                
+                            self._nodes = new_wf._nodes
+                            self._edges = new_wf._edges
+                            self._loop_edges = new_wf._loop_edges
+                            self._entry = new_wf._entry
+                            self._terminal = new_wf._terminal
+                            self.policy = new_wf.policy
+                            self.compliance_guard = new_wf.compliance_guard
+                            self.metadata = new_wf.metadata
+                            replanned = True
+                            break
                 except Exception as exc:
                     yield StreamChunk(kind="error", content=str(exc), node_name=nd.id)
                     break
 
-            ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+            if replanned:
+                ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
+                while newly_skipped:
+                    for skipped_id in newly_skipped:
+                        yield StreamChunk(kind="error", content=f"Node {skipped_id} skipped", node_name=skipped_id)
+                    skipped.update(newly_skipped)
+                continue
+
+            ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
             skipped.update(newly_skipped)
 
         yield StreamChunk(kind="done", node_name=self.name, metadata={"run_id": run_id})
@@ -931,12 +1267,15 @@ class WorkflowDefinition:
         steps: list[RuntimeOutcome] = [human_outcome]
         blocked_nodes: list[str] = []
         paused_nodes: list[str] = []
+        failed: set[str] = set()
+        dynamic_next_nodes: set[str] = set()
+        nodes_with_handoff: set[str] = set()
 
-        ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+        ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
         while newly_skipped:
             skipped.update(newly_skipped)
             skipped_nodes.extend(newly_skipped)
-            ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+            ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
 
         while ready:
             level_nodes = [self._nodes[nid] for nid in ready if nid in self._nodes]
@@ -945,20 +1284,22 @@ class WorkflowDefinition:
 
             ctx_snapshot = ctx.copy()
 
+            _dedup = None
+            if len(level_nodes) > 1:
+                from meshflow.agents.context_dedup import ContextDeduplicator
+                _dedup = ContextDeduplicator()
+
             async def _run_node(nd: MeshNode) -> RuntimeOutcome:
-                return await runtime.run(
-                    nd,
-                    NodeInput(
-                        task=task,
-                        context=ctx_snapshot.copy(),
-                        attachments=nd.metadata.get("attachments", []),
-                    ),
-                    ctx_snapshot.copy(),
-                )
+                node_ctx = ctx_snapshot.copy()
+                if _dedup is not None:
+                    node_ctx = _dedup.deduplicate(node_ctx, agent_name=nd.id)
+                return await self._execute_workflow_node(nd, task, runtime, node_ctx, run_id)
 
             level_outcomes: list[RuntimeOutcome] = list(
                 await asyncio.gather(*[_run_node(nd) for nd in level_nodes])
             )
+
+            level_updates: dict[str, list[tuple[str, Any, float]]] = {}
 
             for node_id, outcome in zip(ready, level_outcomes):
                 step_outcomes[node_id] = outcome
@@ -978,30 +1319,152 @@ class WorkflowDefinition:
                     )
                 elif not outcome.ok:
                     blocked_nodes.append(node_id)
+                    failed.add(node_id)
                 else:
                     completed.add(node_id)
                     if outcome.output.content:
                         ctx[f"{node_id}_output"] = outcome.output.content
-                    if outcome.output.structured:
-                        ctx.update(
-                            {
-                                k: v
-                                for k, v in outcome.output.structured.items()
-                                if not k.startswith("_")
-                            }
-                        )
+                    
+                    if outcome.output.structured and "next_node" in outcome.output.structured:
+                        next_node_id = outcome.output.structured["next_node"]
+                        if next_node_id in self._nodes:
+                            dynamic_next_nodes.add(next_node_id)
+                            nodes_with_handoff.add(node_id)
 
-            if blocked_nodes or paused_nodes:
+                    if outcome.output.structured:
+                        confidence = outcome.output.confidence if hasattr(outcome.output, "confidence") else 0.8
+                        for k, v in outcome.output.structured.items():
+                            if k.startswith("_"):
+                                continue
+                            if k not in level_updates:
+                                level_updates[k] = []
+                            level_updates[k].append((node_id, v, confidence))
+
+            if paused_nodes:
                 break
 
-            ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+            # Apply merge strategies for Context Bus
+            for key, updates in level_updates.items():
+                strategy = self.context_bus.get("merge_strategies", {}).get(key, "overwrite")
+                
+                if strategy == "overwrite":
+                    for node_id, val, conf in updates:
+                        ctx[key] = val
+                elif strategy == "append":
+                    merged = ctx.get(key)
+                    for node_id, val, conf in updates:
+                        if merged is None:
+                            merged = val
+                        else:
+                            if isinstance(merged, list) and isinstance(val, list):
+                                merged = merged + val
+                            elif isinstance(merged, dict) and isinstance(val, dict):
+                                merged = {**merged, **val}
+                            elif isinstance(merged, str) and isinstance(val, str):
+                                merged = merged + "\n" + val
+                            else:
+                                if not isinstance(merged, list):
+                                    merged = [merged]
+                                if isinstance(val, list):
+                                    merged = merged + val
+                                else:
+                                    merged.append(val)
+                    ctx[key] = merged
+                elif strategy == "select_highest_confidence":
+                    best_val = None
+                    best_conf = -1.0
+                    for node_id, val, conf in updates:
+                        if conf > best_conf:
+                            best_conf = conf
+                            best_val = val
+                    if best_val is not None:
+                        ctx[key] = best_val
+                elif strategy == "logical_and":
+                    vals = [ctx[key]] if key in ctx else []
+                    for node_id, val, conf in updates:
+                        vals.append(val)
+                    ctx[key] = all(bool(v) for v in vals)
+                elif strategy == "logical_or":
+                    vals = [ctx[key]] if key in ctx else []
+                    for node_id, val, conf in updates:
+                        vals.append(val)
+                    ctx[key] = any(bool(v) for v in vals)
+
+            # Check for Dynamic Replanning
+            replanned = False
+            for node_id, outcome in zip(ready, level_outcomes):
+                if outcome.ok and outcome.output.structured:
+                    new_yaml = outcome.output.structured.get("replanned_workflow_yaml")
+                    new_dict = outcome.output.structured.get("replanned_workflow")
+                    
+                    if new_yaml or new_dict:
+                        max_replans = int(self.policy.max_replans) if hasattr(self.policy, "max_replans") else 3
+                        if self._replans_count >= max_replans:
+                            raise MaxIterationsError(
+                                f"Workflow replanning exceeded limit of {max_replans} replans"
+                            )
+                        
+                        self._replans_count += 1
+                        
+                        if new_yaml:
+                            new_wf = WorkflowDefinition.from_yaml_string(new_yaml, getattr(self, "_node_registry", None))
+                        else:
+                            import yaml as _yaml
+                            yaml_str = _yaml.dump(new_dict)
+                            new_wf = WorkflowDefinition.from_yaml_string(yaml_str, getattr(self, "_node_registry", None))
+                            
+                        # Copy runners from the current workflow for any matching node IDs
+                        for nid, node in new_wf._nodes.items():
+                            if nid in self._nodes and node._runner is None:
+                                node._runner = self._nodes[nid]._runner
+                                node.capabilities = self._nodes[nid].capabilities
+                                node.risk_profile = self._nodes[nid].risk_profile
+                                if not node.metadata:
+                                    node.metadata = {}
+                                node.metadata.update(self._nodes[nid].metadata)
+                            
+                        from meshflow.core.diff import workflow_diff_objects
+                        diff_res = workflow_diff_objects(self, new_wf)
+                        
+                        if diff_res.has_changes:
+                            print(diff_res.summary())
+                            
+                            self._nodes = new_wf._nodes
+                            self._edges = new_wf._edges
+                            self._loop_edges = new_wf._loop_edges
+                            self._entry = new_wf._entry
+                            self._terminal = new_wf._terminal
+                            self.policy = new_wf.policy
+                            self.compliance_guard = new_wf.compliance_guard
+                            self.metadata = new_wf.metadata
+                            replanned = True
+                            break
+            
+            if replanned:
+                ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
+                while newly_skipped:
+                    skipped.update(newly_skipped)
+                    skipped_nodes.extend(newly_skipped)
+                    ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
+                continue
+
+            ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
             while newly_skipped:
                 skipped.update(newly_skipped)
                 skipped_nodes.extend(newly_skipped)
-                ready, newly_skipped = self._compute_ready(completed, skipped, ctx, step_outcomes)
+                ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
 
         # Delete checkpoint on clean completion
-        if not blocked_nodes and not paused_nodes:
+        is_completed = True
+        if paused_nodes:
+            is_completed = False
+        elif failed:
+            if self._terminal:
+                is_completed = all(t in completed or t in skipped for t in self._terminal) and any(t in completed for t in self._terminal)
+            else:
+                is_completed = len(failed) == 0
+
+        if is_completed and not paused_nodes:
             await ledger.delete_checkpoint(run_id)
 
         final_output = ""
@@ -1017,14 +1480,14 @@ class WorkflowDefinition:
         return WorkflowResult(
             run_id=run_id,
             workflow_name=self.name,
-            completed=not blocked_nodes and not paused_nodes,
+            completed=is_completed,
             output=final_output,
             steps=steps,
             total_cost_usd=round(total_cost, 6),
             total_tokens=total_tokens,
             total_carbon_gco2=round(total_carbon, 4),
             duration_s=round(time.monotonic() - start, 2),
-            blocked_nodes=blocked_nodes,
+            blocked_nodes=list(failed),
             paused_nodes=paused_nodes,
             skipped_nodes=skipped_nodes,
             ledger_db=getattr(ledger, "_db_path", ":memory:"),
@@ -1054,7 +1517,28 @@ class WorkflowDefinition:
         _yaml_sha256 = _hashlib.sha256(_raw_bytes).hexdigest()
         with open(path) as fh:
             data = yaml.safe_load(fh)
+        return cls._from_dict(data, _yaml_sha256, path, node_registry)
 
+    @classmethod
+    def from_yaml_string(
+        cls,
+        yaml_str: str,
+        node_registry: dict[str, Any] | None = None,
+    ) -> "WorkflowDefinition":
+        """Load a WorkflowDefinition from a YAML string."""
+        import hashlib as _hashlib
+        _yaml_sha256 = _hashlib.sha256(yaml_str.encode("utf-8")).hexdigest()
+        data = yaml.safe_load(yaml_str)
+        return cls._from_dict(data, _yaml_sha256, "", node_registry)
+
+    @classmethod
+    def _from_dict(
+        cls,
+        data: dict[str, Any],
+        yaml_sha256: str,
+        path: str,
+        node_registry: dict[str, Any] | None = None,
+    ) -> "WorkflowDefinition":
         # Policy
         pol_cfg = data.get("policy", {})
         mode = pol_cfg.get("mode", "standard")
@@ -1084,12 +1568,16 @@ class WorkflowDefinition:
         )
         if pol_cfg.get("max_forecast_usd", 0.0):
             pol.max_forecast_usd = float(pol_cfg["max_forecast_usd"])
+        if pol_cfg.get("max_replans") is not None:
+            pol.max_replans = int(pol_cfg["max_replans"])
 
         wf = cls(
             name=data.get("name", "unnamed"),
             version=str(data.get("version", "1")),
             policy=pol,
         )
+        wf.context_bus = dict(data.get("context_bus", {}))
+        wf._node_registry = node_registry
 
         # Nodes
         for node_id, node_cfg in data.get("nodes", {}).items():
@@ -1198,7 +1686,7 @@ class WorkflowDefinition:
 
         # Metadata — user-defined only; fingerprint lives on separate attributes
         wf.metadata = dict(data.get("metadata", {}))
-        wf.yaml_sha256 = _yaml_sha256    # SHA-256 of the YAML for exact-replay version pinning
+        wf.yaml_sha256 = yaml_sha256    # SHA-256 of the YAML for exact-replay version pinning
         wf.yaml_path = path
 
         # Compliance guard — optional section activates real-time rule enforcement
@@ -1307,12 +1795,16 @@ class WorkflowDefinition:
         if self.metadata:
             doc["metadata"] = self.metadata
 
+        if self.context_bus:
+            doc["context_bus"] = self.context_bus
+
         # Policy section
         p = self.policy
         doc["policy"] = {
             "budget_usd": p.budget_usd,
             "max_steps": p.max_steps,
             "enable_guardian": p.enable_guardian,
+            "max_replans": p.max_replans,
         }
 
         # Nodes — reconstruct from MeshNode metadata where possible
@@ -1553,3 +2045,56 @@ async def _stream_agent_tokens(agent: Any, task: str, context: dict[str, Any]):
             yield text
     except Exception:
         pass
+
+
+@dataclass
+class CostCap:
+    """Configures the cost limit (USD) for a Workflow run."""
+
+    usd: float = 1.0
+
+
+class Workflow:
+    """High-level synchronous wrapper executing agents sequentially.
+
+    Combines progressive governance, durability, and cost cap constraints by
+    compiling the agent list into a Team running sequentially.
+    """
+
+    def __init__(self, cost_cap: CostCap | None = None, mode: str = "production") -> None:
+        self.cost_cap = cost_cap
+        self.mode = mode
+        self.agents: list[Any] = []
+
+    def add(self, *agents: Any) -> "Workflow":
+        """Add one or more agents to the sequential workflow. Supports chaining."""
+        self.agents.extend(agents)
+        return self
+
+    def run(self, task: str) -> WorkflowResult:
+        """Run the workflow sequentially and synchronously."""
+        from meshflow.agents.base import sandbox_mode_var
+        from meshflow.agents.team import Team
+        from meshflow.core.schemas import policy_for_mode
+        from meshflow.integrations._utils import run_sync
+
+        is_sandbox = (self.mode == "sandbox")
+        token = sandbox_mode_var.set(is_sandbox)
+        try:
+            if is_sandbox:
+                for agent in self.agents:
+                    agent.mode = "sandbox"
+
+            budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
+            policy = policy_for_mode("standard", budget_usd=budget_usd)
+
+            team = Team(
+                name="simple_workflow_team",
+                agents=self.agents,
+                pattern="sequential",
+                policy=policy,
+                budget_usd=budget_usd,
+            )
+            return run_sync(team.run(task))
+        finally:
+            sandbox_mode_var.reset(token)

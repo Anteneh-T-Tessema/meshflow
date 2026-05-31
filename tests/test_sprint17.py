@@ -20,9 +20,8 @@ import sys
 import tempfile
 import time
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,16 +206,13 @@ class TestGraphExport:
 
     def test_state_graph_to_mermaid(self):
         from meshflow.core.graph_export import graph_to_mermaid
-        from meshflow.core.graph import StateGraph, GraphEdge
-        from meshflow.core.node import MeshNode, NodeKind
+        from meshflow.core.graph import StateGraph
 
         async def _noop(inp: Any) -> Any:
             return MagicMock(content="")
 
         g = StateGraph("run-g")
-        from meshflow.core.graph import GraphNode
         g._nodes = {"a": MagicMock(), "b": MagicMock()}
-        from meshflow.core.graph import GraphEdge as GE
         g._edges = {"a": [MagicMock(target="b", condition=None)]}
         g._entry = "a"
         g._terminals = {"b"}
@@ -344,7 +340,7 @@ class TestNodeLatencyTracker:
         assert s.count == 5
 
     def test_sla_recorded_by_step_runtime(self):
-        from meshflow.observability.sla import get_sla_tracker, NodeLatencyTracker
+        from meshflow.observability.sla import NodeLatencyTracker
         from meshflow.core.runtime import StepRuntime
         from meshflow.core.schemas import Policy
         from meshflow.core.node import NodeInput, NodeOutput
@@ -510,7 +506,8 @@ class TestSprint17ServerRoutes:
 
 class TestSprint17CLI:
     def _run(self, *argv: str) -> tuple[int, str]:
-        import argparse, io
+        import argparse
+        import io
         from meshflow.cli.main import _cmd_graph, _cmd_audit
 
         buf = io.StringIO()

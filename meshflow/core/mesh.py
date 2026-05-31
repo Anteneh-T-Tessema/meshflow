@@ -58,7 +58,7 @@ from meshflow.agents.base import (
     ResearcherAgent,
 )
 from meshflow.core.executor import GovernedStepExecutor, StepOutcome
-from meshflow.core.policy import PolicyEngine
+from meshflow.core.policy import PolicyEngine, BudgetTracker
 from meshflow.core.schemas import (
     AgentRole,
     Policy,
@@ -525,6 +525,7 @@ class Mesh:
             telemetry=self._new_tracer(),
             eco=EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None,
             ledger=ledger,
+            budget=BudgetTracker(pol),
         )
 
         return await workflow.run(task or f"Execute {workflow.name}", runtime, event_bus=event_bus)
@@ -584,6 +585,7 @@ class Mesh:
             telemetry=self._new_tracer(),
             eco=EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None,
             ledger=ledger,
+            budget=BudgetTracker(pol),
         )
 
         return await workflow.resume(run_id, decision, ledger, runtime)

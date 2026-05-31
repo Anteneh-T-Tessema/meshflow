@@ -7,8 +7,6 @@ All tests use EchoProvider — no API key required.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 
 import pytest
 
@@ -16,10 +14,10 @@ import meshflow
 from meshflow.agents.base import EchoProvider
 from meshflow.eval.judge import LLMJudge, JudgeScore, JudgeSuiteResult
 from meshflow.eval.conversation_eval import (
-    ConversationEval, ConversationCase, Turn, TurnResult, ConversationResult,
+    ConversationEval, ConversationCase, Turn, ConversationResult,
 )
 from meshflow.eval.ab_test import ABTest, ABVariant, ABTestResult, ABTurnResult
-from meshflow.eval.quality_gate import QualityGate, QualityReport
+from meshflow.eval.quality_gate import QualityGate
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

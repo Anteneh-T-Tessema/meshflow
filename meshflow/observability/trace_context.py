@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import os
 import re
-import struct
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 _TRACEPARENT_RE = re.compile(
     r"^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$"

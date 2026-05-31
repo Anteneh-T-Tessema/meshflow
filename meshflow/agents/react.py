@@ -25,10 +25,9 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from meshflow.agents.base import _build_tool_schema
 
 
 # ── Data types ────────────────────────────────────────────────────────────────
@@ -221,7 +220,8 @@ class ReActAgent:
                         f"Available tools: {list(tool_fns)}"
                     )
                 else:
-                    import asyncio, inspect
+                    import asyncio
+                    import inspect
                     try:
                         kwargs = action_input if isinstance(action_input, dict) else {"input": str(action_input)}
                         if inspect.iscoroutinefunction(fn):

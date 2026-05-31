@@ -1,5 +1,5 @@
 """Sector-specific verifiers — Government, Agriculture, Real Estate, Automotive, Media, Sports."""
-from typing import Any, Dict, List
+from typing import Any, Dict
 from meshflow.swarm.verifiers import DeterministicVerifier, VerificationResult
 
 

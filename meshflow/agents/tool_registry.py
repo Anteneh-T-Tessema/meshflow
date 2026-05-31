@@ -29,7 +29,6 @@ Usage::
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import time
 from dataclasses import dataclass, field

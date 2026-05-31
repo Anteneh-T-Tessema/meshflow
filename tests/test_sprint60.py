@@ -1,11 +1,10 @@
 """Sprint 60 — Secret Vault tests."""
 import subprocess
-import sys
 import tempfile
 import unittest
 
 import meshflow
-from meshflow.vault.store import VaultAuditLog, VaultSecret, VaultStore
+from meshflow.vault.store import VaultStore
 
 
 # ── VaultSecret ───────────────────────────────────────────────────────────────

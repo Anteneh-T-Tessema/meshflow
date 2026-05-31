@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-from meshflow.core.node import MeshNode, NodeInput, NodeOutput, NodeKind
-from meshflow.core.subgraph import SubgraphNode, subgraph_from_yaml
-from meshflow.core.schemas import RiskTier
+from meshflow.core.node import NodeInput, NodeKind
+from meshflow.core.subgraph import SubgraphNode
 
 
 class _FakeWorkflowResult:
@@ -87,7 +85,9 @@ def test_workflow_yaml_registers_subgraph_kind():
     inner = _FakeWorkflow("inner")
     registry = {"inner_wf": inner}
 
-    import tempfile, os, yaml as _yaml
+    import tempfile
+    import os
+    import yaml as _yaml
     wf_data = {
         "name": "outer",
         "nodes": {

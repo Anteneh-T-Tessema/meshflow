@@ -190,7 +190,6 @@ class TestAgentRunStructured:
         """Verify retry mechanism via direct parser stubbing."""
         from meshflow.agents.structured import (
             StructuredOutputParser,
-            StructuredOutputError,
         )
         from unittest.mock import patch
 

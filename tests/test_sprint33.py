@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-import time
 
 import pytest
 
@@ -265,7 +264,7 @@ class TestAgentPersistentMemory:
 class TestPublicAPI:
     def test_backends_importable(self):
         from meshflow.intelligence.memory_backends import (
-            MemoryBackend, InMemoryBackend, SQLiteMemoryBackend,
+            InMemoryBackend, SQLiteMemoryBackend,
             PostgresMemoryBackend, snapshot_from_memory, restore_memory,
         )
         assert all(x is not None for x in [

@@ -219,7 +219,8 @@ def run_crew_governed(
     Records cost, tokens, and output in the MeshFlow ledger.
     Returns the original CrewOutput / string from kickoff().
     """
-    import datetime, uuid, asyncio as _asyncio
+    import datetime
+    import uuid
     from meshflow.core.runtime import StepRecord
     from meshflow.core.ledger import ReplayLedger
     from meshflow.core.schemas import Policy

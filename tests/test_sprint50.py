@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 import threading
 import time
 
@@ -581,7 +580,6 @@ class TestCircuitCLIHandlers:
         return ns
 
     def _run_with_store(self, args, store, capsys, monkeypatch):
-        from meshflow.cli import main as cli_main
         monkeypatch.setattr(
             "meshflow.resilience.store.CircuitBreakerStore.__init__",
             lambda self, path: CircuitBreakerStore.__init__(self, ":memory:"),
@@ -713,10 +711,5 @@ class TestPublicExports:
     def test_importable_from_top_level(self):
         from meshflow import (
             CircuitBreaker,
-            CircuitBreakerConfig,
-            CircuitBreakerOpenError,
-            CircuitBreakerState,
-            get_circuit_registry,
-            reset_circuit_registry,
         )
         assert CircuitBreaker is not None

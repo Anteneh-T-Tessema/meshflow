@@ -1,0 +1,82 @@
+name: Bug Report
+description: Something isn't working as documented
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Fill in as much detail as you can — it helps us fix it faster.
+
+  - type: input
+    id: version
+    attributes:
+      label: MeshFlow version
+      description: Output of `python -c "import meshflow; print(meshflow.__version__)"`
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.3"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent / Team / Crew
+        - StateGraph / Workflow
+        - Governance / Compliance
+        - Guardrails / Security
+        - Providers / LLM
+        - Memory / RAG
+        - Eval
+        - CLI / Server
+        - Observability / Ledger
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug. Include the exact error message.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The shortest code that reproduces the bug. Set MESHFLOW_MOCK=1 if possible.
+      render: python
+      placeholder: |
+        import os
+        os.environ["MESHFLOW_MOCK"] = "1"
+        from meshflow import Agent
+        # ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Provider, backend, OS, anything else relevant.

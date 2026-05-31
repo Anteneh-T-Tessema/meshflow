@@ -21,7 +21,6 @@ Covers (in order):
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import tempfile
@@ -46,7 +45,7 @@ def _fake_agent(name: str = "agent", response: str = "result. CONFIDENCE:0.85") 
 
 
 def test_rewind_engine_import():
-    from meshflow.core.time_travel import RewindEngine, RewindResult, StepSnapshot
+    from meshflow.core.time_travel import RewindEngine
     engine = RewindEngine(":memory:")
     assert engine is not None
 

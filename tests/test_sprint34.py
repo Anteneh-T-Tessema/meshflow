@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -16,7 +15,6 @@ from meshflow.cache.core import (
     CacheEntry,
     InMemoryCache,
     SQLiteCache,
-    LLMCache,
     _make_key,
     _prompt_text,
 )

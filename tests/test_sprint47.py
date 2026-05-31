@@ -12,7 +12,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from meshflow.scheduler.cron import CronExpression, _parse_field
-from meshflow.scheduler.store import ScheduleStore, ScheduledTask, ScheduleRun
+from meshflow.scheduler.store import ScheduleStore, ScheduledTask
 from meshflow.scheduler.engine import CronScheduler
 
 

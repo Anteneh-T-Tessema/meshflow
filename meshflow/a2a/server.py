@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Any
 

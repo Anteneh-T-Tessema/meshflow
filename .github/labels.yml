@@ -1,0 +1,139 @@
+# MeshFlow GitHub Labels
+# Apply with: gh label create --force -R Anteneh-T-Tessema/meshflow <name> --color <hex> --description <desc>
+# Or use the bulk script: .github/scripts/sync-labels.sh
+
+# ── Type ─────────────────────────────────────────────────────────────────────
+- name: bug
+  color: "d73a4a"
+  description: Something isn't working as documented
+
+- name: enhancement
+  color: "a2eeef"
+  description: New feature or improvement to existing behavior
+
+- name: documentation
+  color: "0075ca"
+  description: Documentation only — no code changes
+
+- name: compliance
+  color: "e4e669"
+  description: Regulatory or compliance gap (HIPAA/SOX/GDPR/PCI/NERC)
+
+- name: security
+  color: "b60205"
+  description: Security issue or vulnerability
+
+- name: performance
+  color: "f9d0c4"
+  description: Token cost, latency, or throughput improvement
+
+- name: refactor
+  color: "d4c5f9"
+  description: Internal code quality — no behavior change
+
+# ── Priority ──────────────────────────────────────────────────────────────────
+- name: "P0: critical"
+  color: "b60205"
+  description: Production breakage, data loss, or security vulnerability — fix immediately
+
+- name: "P1: high"
+  color: "d93f0b"
+  description: Blocks production deployment for at least two buyer segments
+
+- name: "P2: medium"
+  color: "e4e669"
+  description: Important but workaround exists
+
+- name: "P3: low"
+  color: "0e8a16"
+  description: Nice to have — no production blocker
+
+# ── Area ─────────────────────────────────────────────────────────────────────
+- name: "area: agents"
+  color: "c2e0c6"
+  description: Agent, Team, Crew, GroupChat, AgentSession
+
+- name: "area: governance"
+  color: "fef2c0"
+  description: StepRuntime, compliance profiles, policy engine, guardrails
+
+- name: "area: ledger"
+  color: "bfd4f2"
+  description: ReplayLedger, audit chain, replay, fork, diff
+
+- name: "area: providers"
+  color: "d4c5f9"
+  description: LLM providers, ModelRouter, caching, batch
+
+- name: "area: memory"
+  color: "c2e0c6"
+  description: AgentMemory, VectorStore, RAG, KnowledgeSource
+
+- name: "area: eval"
+  color: "f9d0c4"
+  description: EvalSuite, LLMJudge, baselines, cost regression gate
+
+- name: "area: observability"
+  color: "bfd4f2"
+  description: OTEL, tracing, metrics, projections, TraceServer
+
+- name: "area: security"
+  color: "d73a4a"
+  description: Guardrails, sandbox, injection, secret scanning, DASC, vault
+
+- name: "area: deployment"
+  color: "d4c5f9"
+  description: CLI, meshflow serve, Docker, Helm, Doctor
+
+- name: "area: integrations"
+  color: "c2e0c6"
+  description: MCP, A2A, adapters, TypeScript SDK
+
+- name: "area: token-optimization"
+  color: "0e8a16"
+  description: Cost reduction — cache_control, ModelRouter, ContextCompactor, RAGBudget
+
+- name: "area: docs"
+  color: "0075ca"
+  description: Documentation, examples, QUICKSTART, SKILL.md
+
+- name: "area: ci"
+  color: "bfd4f2"
+  description: GitHub Actions, cost-regression gate, test infrastructure
+
+# ── Status ────────────────────────────────────────────────────────────────────
+- name: needs-triage
+  color: "ededed"
+  description: New — needs a maintainer to evaluate and label
+
+- name: needs-reproduction
+  color: "e4e669"
+  description: Cannot reproduce — waiting for a minimal reproduction case
+
+- name: needs-rfc
+  color: "fef2c0"
+  description: Significant enough to require an RFC discussion before implementation
+
+- name: in-progress
+  color: "0075ca"
+  description: Actively being worked on
+
+- name: blocked
+  color: "d73a4a"
+  description: Waiting on external dependency or decision
+
+- name: good-first-issue
+  color: "7057ff"
+  description: Scoped, clear, and approachable for first-time contributors
+
+- name: help-wanted
+  color: "008672"
+  description: Extra attention needed — maintainers cannot prioritize this right now
+
+- name: wontfix
+  color: "ffffff"
+  description: Out of scope or intentionally not being addressed (see comment for reason)
+
+- name: duplicate
+  color: "cfd3d7"
+  description: Duplicate of another issue

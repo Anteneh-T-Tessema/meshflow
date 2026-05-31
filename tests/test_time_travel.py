@@ -1,5 +1,4 @@
 """Unit tests for DurableWorkflowExecutor State Forking ("Time Travel")."""
-import asyncio
 import unittest
 import time
 

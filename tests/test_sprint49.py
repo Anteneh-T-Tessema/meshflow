@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 
 import pytest
 
@@ -543,8 +542,6 @@ class TestPublicExports:
 
     def test_symbols_importable_from_top_level(self):
         from meshflow import (
-            InjectionMatch,
-            InjectionResult,
             PromptInjectionDetector,
             PromptInjectionGuardrail,
         )

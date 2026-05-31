@@ -6,8 +6,6 @@ All tests are deterministic (no API key needed — uses EchoProvider).
 
 from __future__ import annotations
 
-import asyncio
-import json
 import pytest
 from typing import Annotated, Any, TypedDict
 
@@ -19,9 +17,8 @@ from meshflow.core.prebuilt import (
     create_react_agent,
     create_tool_calling_agent,
     _has_tool_calls,
-    _make_agent_node,
 )
-from meshflow.core.state import StateGraph, CompiledGraph, END, add
+from meshflow.core.state import StateGraph, CompiledGraph, add
 from meshflow.tools.registry import Tool
 from meshflow.core.schemas import RiskTier
 from meshflow.agents.base import EchoProvider

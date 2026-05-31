@@ -1,12 +1,11 @@
 """Sprint 61 — Tenant Isolation tests."""
 import subprocess
-import sys
 import threading
 import unittest
 
 import meshflow
 from meshflow.tenant.store import (
-    Tenant, TenantContext, TenantGuard, TenantStore, scoped_db_path,
+    TenantContext, TenantGuard, TenantStore, scoped_db_path,
 )
 
 

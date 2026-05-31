@@ -49,7 +49,7 @@ def _free_port() -> int:
 class TestBranchCompare(unittest.TestCase):
 
     def test_imports_cleanly(self) -> None:
-        from meshflow.core.branch_compare import BranchCompare, ForkConfig, ForkResult, CompareResult
+        from meshflow.core.branch_compare import BranchCompare
         self.assertIsNotNone(BranchCompare)
 
     def test_fork_config_defaults(self) -> None:
@@ -235,7 +235,8 @@ class TestDurableS3Backend(unittest.TestCase):
 
     def test_executor_s3_backend_type(self) -> None:
         # boto3 import is lazy — _S3Store is constructed fine but _conn() raises.
-        import os, sys
+        import os
+        import sys
         os.environ["MESHFLOW_S3_BUCKET"] = "test-bucket"
         saved = sys.modules.get("boto3")
         sys.modules["boto3"] = None  # type: ignore[assignment]
@@ -800,7 +801,7 @@ class TestSprint76PublicAPI(unittest.TestCase):
         self.assertTrue(callable(getattr(WorkflowDefinition, "to_yaml", None)))
 
     def test_role_router_catalogue_size(self) -> None:
-        from meshflow.agents.role_router import RoleRouter, _ROLE_CATALOGUE
+        from meshflow.agents.role_router import _ROLE_CATALOGUE
         self.assertGreaterEqual(len(_ROLE_CATALOGUE), 13)
 
 

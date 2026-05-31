@@ -29,8 +29,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar, overload
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
 _T = TypeVar("_T")
 

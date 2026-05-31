@@ -1,5 +1,5 @@
 """Healthcare & Life Sciences verifiers — ICD-10, Drug Interaction, HIPAA, Prior Auth, Clinical Trial."""
-from typing import Any, Dict, List
+from typing import Any, Dict
 from meshflow.swarm.verifiers import DeterministicVerifier, VerificationResult
 
 

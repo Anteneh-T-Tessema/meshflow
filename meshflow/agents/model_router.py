@@ -287,7 +287,6 @@ class ModelRouter:
         if self._ledger is not None:
             try:
                 import asyncio
-                import json as _json
                 event = {
                     "event_type": "model_router_decision",
                     "tier": decision.tier,

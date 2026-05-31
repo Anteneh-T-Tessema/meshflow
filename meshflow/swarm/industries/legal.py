@@ -1,5 +1,5 @@
 """Legal & Compliance verifiers — SOX, GDPR, Contract Obligations, OFAC Sanctions."""
-from typing import Any, Dict, List
+from typing import Any, Dict
 from meshflow.swarm.verifiers import DeterministicVerifier, VerificationResult
 
 

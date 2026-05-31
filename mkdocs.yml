@@ -1,0 +1,165 @@
+site_name: MeshFlow
+site_description: The golden standard of multi-agent orchestration for regulated industries
+site_url: https://meshflow.dev
+repo_url: https://github.com/meshflow-ai/meshflow
+repo_name: meshflow-ai/meshflow
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            docstring_style: google
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: "."
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quick Start: QUICKSTART.md
+    - Installation: installation.md
+    - Configuration: configuration.md
+  - Agents:
+    - Building Agents: agents/building.md
+    - Pre-built Agents: agents/prebuilt.md
+    - Multi-Agent Teams: agents/teams.md
+    - ReAct Agent: agents/react.md
+    - GroupChat: agents/groupchat.md
+    - Streaming: agents/streaming.md
+  - Orchestration:
+    - State Graphs: orchestration/state-graphs.md
+    - Workflows (YAML): orchestration/yaml-workflows.md
+    - Flows (Event-Driven): orchestration/flows.md
+    - Durable Execution: orchestration/durable.md
+    - Human-in-the-Loop: orchestration/hitl.md
+  - Governance:
+    - Overview: governance/overview.md
+    - Compliance Profiles: governance/compliance.md
+    - Guardrails: governance/guardrails.md
+    - Policy-as-Code: governance/policy.md
+    - Audit & Ledger: governance/audit.md
+    - Secret Vault: governance/vault.md
+    - Tenant Isolation: governance/tenants.md
+    - SLA Tracking: governance/sla.md
+    - Compliance Snapshots: governance/snapshots.md
+  - Providers & Models:
+    - LLM Providers: providers/overview.md
+    - Provider Router: providers/router.md
+    - Model Health: providers/health.md
+    - Prompt Caching: providers/caching.md
+    - Batch API: providers/batch.md
+  - Memory & RAG:
+    - 4-Tier Memory: memory/four-tier.md
+    - Vector Store & RAG: memory/rag.md
+    - Semantic Memory: memory/semantic.md
+    - Cross-Session Memory: memory/cross-session.md
+    - Knowledge Sources: memory/knowledge.md
+  - Evaluation:
+    - Running Evals: eval/running.md
+    - LLM Judge: eval/judge.md
+    - Conversation Eval: eval/conversation.md
+    - A/B Testing: eval/ab-testing.md
+    - Quality Gate: eval/quality-gate.md
+    - Baselines & Regression: eval/baselines.md
+  - Observability:
+    - Distributed Tracing: observability/tracing.md
+    - Metrics & OTEL: observability/metrics.md
+    - Event Projections: observability/projections.md
+    - Visual Studio: observability/studio.md
+    - Webhooks & Alerts: observability/webhooks.md
+  - Security:
+    - Sensitive Data Detection: security/sensitive-data.md
+    - Prompt Injection: security/injection.md
+    - Secret Scanning: security/secrets.md
+    - DASC Risk Gate: security/dasc.md
+    - Agent Identity: security/identity.md
+  - Deployment:
+    - Doctor & Health Checks: deployment/doctor.md
+    - Environment Generator: deployment/env-generator.md
+    - Docker: deployment/docker.md
+    - Kubernetes / Helm: deployment/kubernetes.md
+    - Serving the API: deployment/serving.md
+  - Protocols & Integrations:
+    - A2A Protocol: integrations/a2a.md
+    - MCP Servers: integrations/mcp.md
+    - Framework Adapters: integrations/adapters.md
+    - TypeScript Client SDK: integrations/typescript-sdk.md
+  - Advanced:
+    - SwarmTRM Neural Consensus: advanced/swarm.md
+    - Code Interpreter: advanced/code-interpreter.md
+    - Multi-Modal Inputs: advanced/multimodal.md
+    - Fine-Tuning Export: advanced/finetune-export.md
+    - Plugin System: advanced/plugins.md
+    - Agent Marketplace: advanced/marketplace.md
+  - API Reference:
+    - meshflow: api/meshflow.md
+    - meshflow.agents: api/agents.md
+    - meshflow.core: api/core.md
+    - meshflow.governance: api/governance.md
+    - meshflow.eval: api/eval.md
+  - CLI Reference: cli.md
+  - Migration:
+    - Flowise → MeshFlow: migration/flowise-to-meshflow.md
+  - Changelog: changelog.md
+  - Security Policy: security-policy.md
+
+extra:
+  version:
+    provider: mike
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/meshflow-ai/meshflow
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/meshflow/
+  analytics:
+    provider: google
+    property: G-XXXXXXXXXX

@@ -5,10 +5,7 @@ All tests are deterministic (no live API calls, MESHFLOW_MOCK=1).
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -175,7 +172,6 @@ class TestRegexGuardrail:
         assert not g.check("DROP TABLE users").passed
 
     def test_case_sensitive_no_match(self):
-        import re
         g = RegexGuardrail(r"drop table", mode="forbid", flags=0)
         assert g.check("DROP TABLE users").passed  # case-sensitive: no match
 
@@ -607,7 +603,7 @@ class TestGuardrailPublicAPI:
     def test_version_bumped(self):
         import meshflow
         major, minor, _ = meshflow.__version__.split(".")
-        assert int(minor) >= 25
+        assert int(major) >= 1 or int(minor) >= 25  # Sprint 25+
 
     def test_all_guardrails_have_repr(self):
         guards = [

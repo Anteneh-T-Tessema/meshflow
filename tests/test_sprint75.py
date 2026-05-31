@@ -112,7 +112,7 @@ class TestModelRouter(unittest.TestCase):
         self.assertEqual(r._config.fallback, "small")
 
     def test_router_config_from_yaml(self) -> None:
-        from meshflow.agents.model_router import ModelRouter, RouterConfig
+        from meshflow.agents.model_router import RouterConfig
         yaml_content = "model_router:\n  fallback: nano\n  tiers:\n    nano: claude-haiku-4-5-20251001\n"
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(yaml_content)
@@ -387,7 +387,7 @@ class TestDurableRedisBackend(unittest.TestCase):
         )
 
     def test_executor_accepts_redis_backend(self) -> None:
-        from meshflow.core.durable import DurableWorkflowExecutor, _RedisStore
+        from meshflow.core.durable import DurableWorkflowExecutor
         import sys
         # Patch redis out so no real connection is made
         saved = sys.modules.get("redis")
@@ -545,7 +545,7 @@ class TestSprint75PublicAPI(unittest.TestCase):
         self.assertTrue(callable(getattr(WorkflowDefinition, "to_yaml", None)))
 
     def test_durable_executor_accepts_all_backends(self) -> None:
-        from meshflow.core.durable import DurableWorkflowExecutor, _RedisStore, _PostgresStore
+        from meshflow.core.durable import DurableWorkflowExecutor
         # memory and sqlite both work without extra deps
         m = DurableWorkflowExecutor(backend="memory")
         self.assertIsNotNone(m)

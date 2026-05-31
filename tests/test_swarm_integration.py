@@ -6,10 +6,8 @@ SwarmNode / SwarmTRM tests mock the engine so torch is not required in CI.
 
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,12 +15,10 @@ import pytest
 
 from meshflow.swarm.verifiers import (
     VerificationResult,
-    DeterministicVerifier,
     ERPAuditVerifier,
     BillableCaptureVerifier,
     CodeModernizationVerifier,
     DASCVerifier,
-    PytestVerifier,
 )
 from meshflow.swarm.node import SwarmNode, swarm_verifier, register_swarm_domain
 from meshflow.swarm import available_domains

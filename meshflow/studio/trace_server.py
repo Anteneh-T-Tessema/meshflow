@@ -78,6 +78,16 @@ class _TraceHandler(http.server.BaseHTTPRequestHandler):
             self._html(os.path.join(_TEMPLATE_DIR, "rag_builder.html"))
             return
 
+        if path in ("/templates", "/templates/"):
+            self._html(os.path.join(_TEMPLATE_DIR, "templates.html"))
+            return
+
+        if path == "/api/curated-templates":
+            from meshflow.registry.curated_templates import CURATED_TEMPLATES
+            curated_data = [t.to_dict() for t in CURATED_TEMPLATES]
+            self._json(curated_data)
+            return
+
         if path.startswith("/api/graph/"):
             run_id = path[len("/api/graph/"):]
             data = asyncio.run(self.server_instance.get_mermaid(run_id))

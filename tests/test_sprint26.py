@@ -5,9 +5,7 @@ All tests are deterministic (MESHFLOW_MOCK=1, EchoProvider).
 
 from __future__ import annotations
 
-import asyncio
 import os
-from typing import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -103,7 +101,6 @@ class TestStreamChunk:
 class TestTeamStreamSequential:
     @pytest.mark.asyncio
     async def test_yields_tokens(self):
-        from meshflow import Agent, Team
 
         a1 = _make_streaming_agent("a1", ["tok1", "tok2"])
         a2 = _make_streaming_agent("a2", ["tok3"])

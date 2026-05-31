@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,7 +19,6 @@ from meshflow.intelligence.knowledge import (
     KnowledgeSource,
     VectorStore,
     _chunk_text,
-    _load_and_chunk,
 )
 from meshflow import Task
 
@@ -428,4 +427,4 @@ class TestKnowledgePublicAPI:
     def test_version_bumped(self):
         import meshflow
         major, minor, _ = meshflow.__version__.split(".")
-        assert int(minor) >= 26
+        assert int(major) >= 1 or int(minor) >= 26  # Sprint 27+

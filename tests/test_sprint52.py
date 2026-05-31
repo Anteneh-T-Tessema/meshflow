@@ -30,7 +30,6 @@ import argparse
 import json
 import math
 import subprocess
-import sys
 import time
 
 import pytest
@@ -38,7 +37,6 @@ import pytest
 from meshflow.intelligence.embedding import (
     EmbeddingProvider,
     HashEmbeddingProvider,
-    SentenceTransformerProvider,
     cosine_similarity,
     get_embedding_provider,
     reset_embedding_provider,
@@ -624,9 +622,6 @@ class TestPublicExports:
 
     def test_importable_from_top_level(self):
         from meshflow import (
-            HashEmbeddingProvider,
             SemanticMemoryStore,
-            cosine_similarity,
-            embed_text,
         )
         assert SemanticMemoryStore is not None

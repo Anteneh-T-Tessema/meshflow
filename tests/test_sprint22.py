@@ -6,16 +6,10 @@ to production paths).
 """
 from __future__ import annotations
 
-import asyncio
 import json
-import os
-import sys
-import tempfile
 import time
-import uuid
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -246,13 +240,12 @@ class TestScheduledReporter:
     @pytest.mark.asyncio
     async def test_run_now_stdout(self, tmp_path):
         from meshflow.compliance.scheduler import (
-            ReportSchedule, ScheduledReporter, create_schedule,
+            ScheduledReporter, create_schedule,
         )
         import uuid as _uuid
 
         # Build a minimal ledger with one run
         from meshflow.core.ledger import ReplayLedger
-        from meshflow.core.schemas import RunStatus
         from meshflow.core.runtime import StepRecord
 
         db_path = str(tmp_path / "test.db")
@@ -557,7 +550,6 @@ class TestDashboardFetchHelpers:
 
     def test_create_api_key_builds_correct_request(self):
         """create_api_key() sends POST /keys with correct JSON body."""
-        import urllib.request as _ur
 
         calls: list[dict] = []
 
@@ -590,7 +582,8 @@ class TestDashboardFetchHelpers:
 
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             # Import and exercise the function logic inline (no Streamlit)
-            import importlib, sys, types
+            import sys
+            import types
 
             # Build a minimal stub so we can import create_api_key logic
             # without invoking Streamlit at module level.
@@ -673,7 +666,7 @@ class TestDashboardFetchHelpers:
 
 class TestRateLimiterSingleton:
     def test_singleton_returns_same_instance(self):
-        from meshflow.observability.sla import get_rate_limiter, _rl_lock
+        from meshflow.observability.sla import get_rate_limiter
         import meshflow.observability.sla as sla_mod
         # Reset singleton for isolation
         orig = sla_mod._global_rate_limiter
@@ -708,9 +701,8 @@ class TestRateLimiterSingleton:
 
 class TestWebhookSinkSignature:
     def test_hmac_signature_included(self):
-        import hashlib, hmac as _hmac
         from meshflow.compliance.scheduler import _deliver_webhook
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
 
         captured_headers: dict[str, str] = {}
 

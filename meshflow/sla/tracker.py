@@ -11,7 +11,6 @@ SLABreach      — a recorded contract violation.
 
 from __future__ import annotations
 
-import math
 import sqlite3
 import time
 import uuid

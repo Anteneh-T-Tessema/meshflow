@@ -1,5 +1,5 @@
 """HR, Technology & Retail verifiers — Labor, Benefits, Security, SLA, Pricing, Consumer."""
-from typing import Any, Dict, List
+from typing import Any, Dict
 from meshflow.swarm.verifiers import DeterministicVerifier, VerificationResult
 
 

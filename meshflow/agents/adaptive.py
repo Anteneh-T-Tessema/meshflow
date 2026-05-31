@@ -151,7 +151,6 @@ class AdaptiveAgent:
         if not model:
             return
         try:
-            import dataclasses
             object.__setattr__(self._base, "model", model)
         except (AttributeError, TypeError):
             pass

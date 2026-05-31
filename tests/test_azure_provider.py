@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from meshflow.agents.providers import AzureOpenAIProvider, provider_for, auto_detect_provider
+from meshflow.agents.providers import AzureOpenAIProvider, provider_for
 
 
 @pytest.mark.asyncio

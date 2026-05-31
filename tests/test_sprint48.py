@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from meshflow.ratelimit.window import (
     RateLimitPolicy,
-    RateLimitResult,
     RateLimitStore,
     _Window,
     get_rate_limit_store,

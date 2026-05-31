@@ -116,35 +116,30 @@ async def web_fetch(url: str) -> str:
 
 @tool(
     name="python_repl",
-    description="Execute Python code in a sandbox subprocess",
+    description="Execute Python code in a hardened sandbox subprocess (memory-limited, network-blocked)",
     risk=RiskTier.EXTERNAL_IO,
     tags=["code", "python"],
 )
 async def python_repl(code: str) -> str:
-    """Run Python code in a subprocess with a 5-second timeout. Returns stdout + stderr."""
+    """Run Python code via CodeInterpreter — memory-capped at 256 MB, network-blocked, 5 s timeout."""
     import asyncio
+    from meshflow.tools.code_interpreter import CodeInterpreter
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "python3",
-            "-c",
-            code,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        except asyncio.TimeoutError:
-            proc.kill()
-            return "Error: execution timed out after 5 seconds"
-        out = stdout.decode("utf-8", errors="replace")
-        err = stderr.decode("utf-8", errors="replace")
-        result = out
-        if err:
-            result += f"\n[stderr]\n{err}"
-        return result[:4000] or "(no output)"
-    except Exception as exc:
-        return f"Execution error: {exc}"
+    interpreter = CodeInterpreter(
+        timeout_s=5.0,
+        max_memory_mb=256,
+        block_network=True,
+    )
+    result = await asyncio.to_thread(interpreter.run, code)
+    if result.timed_out:
+        return "Error: execution timed out after 5 seconds"
+    out = result.stdout or ""
+    err = result.stderr or ""
+    if err:
+        out = f"{out}\n[stderr]\n{err}" if out else f"[stderr]\n{err}"
+    if not result.success and not out:
+        return f"Error: {result.error or 'unknown error'}"
+    return out[:4000] or "(no output)"
 
 
 # ── 4. read_file ──────────────────────────────────────────────────────────────

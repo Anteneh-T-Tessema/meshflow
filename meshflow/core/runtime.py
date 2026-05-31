@@ -481,7 +481,7 @@ class StepRuntime:
 
         # 15b. OTEL span export — fire-and-forget; never blocks the step
         try:
-            from meshflow.observability.otel_exporter import get_global_exporter as _get_otel, now_ns as _now_ns
+            from meshflow.observability.otel_exporter import get_global_exporter as _get_otel
             _otel = _get_otel()
             if _otel._enabled:
                 import asyncio as _ao

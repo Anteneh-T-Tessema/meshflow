@@ -1,200 +1,293 @@
-# MeshFlow Developer Quickstart
+# MeshFlow Quick Start
 
-Get governed multi-agent workflows running in 5 minutes.
+Get a governed multi-agent system running in under 5 minutes.
+
+---
 
 ## Install
 
 ```bash
 pip install meshflow
-# With server support:
-pip install "meshflow[server]"   # adds aiohttp
-# With crypto (API key management, agent identity):
-pip install "meshflow[crypto]"   # adds cryptography
 ```
 
-Or install from source:
+For specific LLM providers:
 
 ```bash
-git clone https://github.com/Anteneh-T-Tessema/meshflow
-cd meshflow
-pip install -e .
+pip install "meshflow[openai]"      # OpenAI / GPT-4o
+pip install "meshflow[gemini]"      # Google Gemini
+pip install "meshflow[bedrock]"     # AWS Bedrock
+pip install "meshflow[full]"        # all providers + RAG + OTEL
 ```
 
 ---
 
-## 1. Your first governed run
+## Hello, Agent
 
 ```python
-import asyncio
-from meshflow.core.mesh import Mesh
-from meshflow.core.schemas import policy_for_mode
+import meshflow
 
-async def main():
-    policy = policy_for_mode("standard", budget_usd=0.10, max_steps=5)
-    mesh = Mesh(policy=policy)
-    result = await mesh.run("Summarise the key risks in this contract: ...")
-    print(result.output)
-    print(f"Cost: ${result.total_cost_usd:.4f}  |  Steps: {result.ledger_entries}")
+agent = meshflow.Agent(
+    name="assistant",
+    role="You are a helpful assistant.",
+)
 
-asyncio.run(main())
+result = agent.run("What is the capital of France?")
+print(result.output)
+```
+
+Set `ANTHROPIC_API_KEY` in your environment, or use the offline echo provider for testing:
+
+```bash
+MESHFLOW_MOCK=1 python my_script.py
 ```
 
 ---
 
-## 2. Multi-agent team
+## Tools
+
+```python
+from meshflow import Agent, tool, RiskTier
+
+@tool(name="search_web", risk=RiskTier.EXTERNAL_IO)
+def search_web(query: str) -> str:
+    return f"Results for: {query}"
+
+agent = Agent(
+    name="researcher",
+    role="You research topics thoroughly.",
+    tools=[search_web],
+)
+
+result = agent.run("What are the latest AI safety papers?")
+print(result.output)
+```
+
+---
+
+## Team of Agents
 
 ```python
 from meshflow import Agent, Team
 
-researcher = Agent("researcher", role="Research specialist")
-writer     = Agent("writer",     role="Content writer")
-critic     = Agent("critic",     role="Quality reviewer")
+planner  = Agent(name="planner",  role="You break tasks into steps.")
+coder    = Agent(name="coder",    role="You write clean Python code.")
+reviewer = Agent(name="reviewer", role="You review code for correctness.")
 
-team = Team([researcher, writer, critic], pattern="supervised")
-result = asyncio.run(team.run("Write a market analysis for LLM governance tools"))
+team = Team([planner, coder, reviewer], pattern="supervised")
+result = team.run("Build a function that sorts a list of dicts by a key.")
+print(result.output)
 ```
 
 ---
 
-## 3. Policy-as-code (YAML)
+## Compliance Profiles
+
+Apply governance policies with one line:
+
+```python
+from meshflow import Agent, compliance_profile
+
+hipaa_policy = compliance_profile("hipaa")
+
+agent = Agent(
+    name="clinical-assistant",
+    role="You answer clinical questions.",
+    policy=hipaa_policy,
+)
+```
+
+Built-in profiles: `hipaa`, `sox`, `gdpr`, `pci`, `nerc`.
+
+---
+
+## Guardrails
+
+```python
+from meshflow import Agent, PIIBlockGuardrail, LengthGuardrail
+
+agent = Agent(
+    name="safe-agent",
+    role="You are a customer support agent.",
+    input_guardrails=[PIIBlockGuardrail()],
+    output_guardrails=[LengthGuardrail(max_chars=2000)],
+)
+```
+
+---
+
+## Structured Output
+
+```python
+from pydantic import BaseModel
+from meshflow import StructuredAgent
+
+class Summary(BaseModel):
+    title: str
+    key_points: list[str]
+    sentiment: str
+
+agent = StructuredAgent(name="summarizer", schema=Summary)
+result = agent.run("MeshFlow 1.0 ships with 4,349 tests and full HIPAA compliance.")
+print(result.parsed.key_points)
+```
+
+---
+
+## State Graph (LangGraph-style)
+
+```python
+from typing import TypedDict
+from meshflow import StateGraph, END
+
+class State(TypedDict):
+    message: str
+    count: int
+
+def increment(state: State) -> State:
+    return {"count": state["count"] + 1}
+
+def check(state: State) -> str:
+    return "done" if state["count"] >= 3 else "increment"
+
+graph = (
+    StateGraph(State)
+    .add_node("increment", increment)
+    .add_conditional_edges("increment", check, {"done": END, "increment": "increment"})
+    .set_entry_point("increment")
+    .compile()
+)
+
+result = graph.invoke({"message": "hello", "count": 0})
+print(result["count"])  # 3
+```
+
+---
+
+## YAML Workflow
+
+Define an entire workflow without Python:
 
 ```yaml
-# meshflow.policy.yaml
-mode: legal-critical
-budget_usd: 5.0
+# workflow.yaml
+kind: workflow
+name: research-pipeline
+nodes:
+  - name: fetch
+    role: "You fetch and summarize web content."
+  - name: analyze
+    role: "You analyze and extract key insights."
+edges:
+  - from: fetch
+    to: analyze
 compliance:
-  frameworks: [hipaa, sox]
-  block_on_violation: true
+  profile: gdpr
 ```
+
+```bash
+meshflow run workflow.yaml --input "Summarize AI safety research from 2025"
+```
+
+---
+
+## Evaluation
+
+```yaml
+# evals.yaml
+suite: my-agent-eval
+scenarios:
+  - name: basic-math
+    input: "What is 2 + 2?"
+    expected: "4"
+    judge: exact_match
+  - name: summarization
+    input: "Summarize: The sky is blue."
+    judge: llm
+    criteria: "Response is a concise summary"
+```
+
+```bash
+meshflow eval run evals.yaml --save-baseline baseline.json
+```
+
+---
+
+## Serve as HTTP API
+
+```bash
+meshflow serve --host 0.0.0.0 --port 8000
+```
+
+Then call from any language via the REST client:
 
 ```python
-from meshflow.core.policy_loader import load_policy_yaml, load_guard_yaml
+from meshflow import MeshFlowClient
 
-policy = load_policy_yaml("meshflow.policy.yaml")
-guard  = load_guard_yaml("meshflow.policy.yaml")
-result = await mesh.run(task, policy=policy)
+client = MeshFlowClient("http://localhost:8000", api_key="your-key")
+result = client.run_agent("assistant", "What is 2 + 2?")
+print(result.output)
 ```
 
 ---
 
-## 4. Start the HTTP server
+## API Keys
+
+Generate a server API key for production:
 
 ```bash
-# Dev mode (no auth, in-memory ledger)
-meshflow dev
-
-# Production mode
-export MESHFLOW_API_KEYS="mfk_your_key_here"
-meshflow serve --host 0.0.0.0 --port 8000 --ledger runs.db
-
-# With policy file
-meshflow serve --policy-file meshflow.policy.yaml
+meshflow keys generate --name prod-key --role operator
 ```
 
-### Generate API keys
-
-```bash
-# Create an admin key (first key bootstraps the system)
-meshflow keys generate "bootstrap-admin" --role admin --db runs.db
-
-# Create an operator key for CI
-meshflow keys generate "ci-pipeline" --role operator --db runs.db
-```
-
----
-
-## 5. Key endpoints
-
-```bash
-BASE=http://localhost:8000
-KEY=mfk_your_key_here
-
-# Run a task
-curl -X POST $BASE/run \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"task": "Analyse the attached contract", "policy": {"mode": "legal-critical"}}'
-
-# Stream events (NDJSON)
-curl -N -X POST $BASE/stream \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"task": "Research market trends"}'
-
-# Check who you are
-curl $BASE/keys/whoami -H "Authorization: Bearer $KEY"
-
-# Compliance report
-curl "$BASE/compliance/report?framework=hipaa&format=text" \
-  -H "Authorization: Bearer $KEY"
-
-# Register a webhook
-curl -X POST $BASE/webhooks \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://hooks.example.com/meshflow", "events": ["policy_violation", "run_failed"]}'
-```
-
----
-
-## 6. Compliance modes
-
-| Mode | Use case |
-|---|---|
-| `standard` | General AI tasks, default guardrails |
-| `regulated` | Financial services, additional controls |
-| `legal-critical` | Contract review, legal advice — maximum oversight |
-| `hipaa` | Healthcare, PHI scrubbing, audit trail |
+Pass the key to clients:
 
 ```python
-policy = policy_for_mode("hipaa", budget_usd=2.0)
+client = MeshFlowClient("http://localhost:8000", api_key="mf-...")
 ```
 
 ---
 
-## 7. Human-in-the-loop
+## OpenTelemetry (OTEL)
 
-```python
-from meshflow.core.schemas import HumanInLoopConfig, RiskTier
-
-policy = policy_for_mode("legal-critical")
-# HITL triggers automatically when risk_tier >= IRREVERSIBLE
-# Approve via API:
-# POST /hitl/{run_id}/approve  {"reviewer_id": "alice", "notes": "Reviewed and approved"}
-```
-
----
-
-## 8. Deploy to Kubernetes
+Export spans to any OTLP-compatible backend (Jaeger, Tempo, Honeycomb, etc.):
 
 ```bash
-# Using Helm
+meshflow serve --otlp-endpoint http://localhost:4318
+```
+
+Or configure at runtime:
+
+```python
+from meshflow import set_global_exporter, OTELExporter
+
+set_global_exporter(OTELExporter(endpoint="http://localhost:4318"))
+```
+
+Check live exporter status:
+
+```bash
+meshflow serve  # then GET /otel/config
+```
+
+---
+
+## Kubernetes / Helm
+
+Deploy to Kubernetes using the bundled Helm chart:
+
+```bash
 helm install meshflow ./k8s/helm \
-  --set apiKeys="mfk_your_key" \
-  --set webhookSecret="your-secret"
-
-# Using raw manifests
-kubectl apply -f k8s/deployment.yaml
+  --set apiKey=$ANTHROPIC_API_KEY \
+  --set replicaCount=3
 ```
+
+MeshFlow exposes `/health/live` and `/health/ready` for k8s probes automatically.
+
+Run `meshflow doctor` before deploying to verify your environment is ready.
 
 ---
 
-## 9. OTEL tracing
+## Next Steps
 
-```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export OTEL_SERVICE_NAME=my-meshflow
-meshflow serve --port 8000
-# Spans are now exported per step to your OTLP collector
-```
-
----
-
-## Resources
-
-- [HIPAA Deployment Guide](compliance/HIPAA_GUIDE.md)
-- [GDPR Guide](compliance/GDPR_GUIDE.md)
-- [SOC2 Controls Mapping](compliance/SOC2_CONTROLS_MAPPING.md)
-- [Security Policy](compliance/SECURITY.md)
-- [Golden Standard Platform Plan](golden-standard-platform.md)
-- [Benchmarks](../benchmarks/README.md)
+- **[Feature Overview](index.md)** — full feature overview
+- **[Security Policy](security-policy.md)** — security policy and vulnerability reporting
+- **`meshflow --help`** — CLI reference
+- **`meshflow doctor`** — diagnose your environment before deploying

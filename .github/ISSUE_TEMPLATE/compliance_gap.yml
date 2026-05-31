@@ -1,0 +1,71 @@
+name: Compliance Gap
+description: A regulatory or compliance requirement that MeshFlow doesn't cover
+title: "[Compliance]: "
+labels: ["compliance", "needs-triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        MeshFlow's goal is to be the gold standard for regulated industry deployments.
+        If you've hit a compliance requirement we don't cover, tell us — this is the
+        highest-priority feedback we receive.
+
+  - type: dropdown
+    id: framework
+    attributes:
+      label: Regulatory framework
+      options:
+        - HIPAA
+        - SOC 2
+        - GDPR
+        - PCI DSS
+        - NERC CIP
+        - ISO 27001
+        - FedRAMP
+        - CCPA
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: requirement
+    attributes:
+      label: Specific requirement
+      description: The exact control or article (e.g. "HIPAA §164.312(b)", "SOC 2 CC6.1")
+      placeholder: "HIPAA §164.312(b) — Audit controls"
+    validations:
+      required: true
+
+  - type: textarea
+    id: gap
+    attributes:
+      label: What's missing?
+      description: What does MeshFlow not currently do that this requirement mandates?
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: What evidence would satisfy this requirement?
+      description: What artifact, log format, or behavior would close the gap?
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How are you handling this today?
+
+  - type: dropdown
+    id: industry
+    attributes:
+      label: Your industry
+      options:
+        - Healthcare
+        - Financial Services
+        - Government / Public Sector
+        - Legal
+        - Insurance
+        - Critical Infrastructure
+        - Other

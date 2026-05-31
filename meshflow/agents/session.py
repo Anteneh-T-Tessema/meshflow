@@ -21,7 +21,7 @@ Usage::
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from meshflow.agents.builder import Agent
@@ -76,10 +76,12 @@ class AgentSession:
         agent: Agent,
         max_history_turns: int = 20,
         system_context: str = "",
+        context_pruner: Any = None,
     ) -> None:
         self._agent = agent
         self._max_history = max_history_turns
         self._system_context = system_context
+        self._context_pruner = context_pruner  # SlidingWindowPruner | SummaryPruner | None
         self._history: list[Turn] = []
         self._summary: str = ""  # compressed older turns
         self._turn_count = 0
@@ -120,6 +122,22 @@ class AgentSession:
                 context_parts.append(f"{turn.role.upper()}: {turn.content}")
         if self._system_context:
             context_parts.append(f"[System context]\n{self._system_context}")
+
+        # ── ContextCompactor: prune history before sending ────────────────────
+        if self._context_pruner is not None and context_parts:
+            try:
+                import inspect as _inspect
+                history_msgs = [
+                    {"role": "user" if i % 2 == 0 else "assistant", "content": p}
+                    for i, p in enumerate(context_parts)
+                ]
+                _prune = self._context_pruner.prune(history_msgs)
+                if _inspect.isawaitable(_prune):
+                    _prune = await _prune
+                pruned_parts = [m["content"] for m in _prune.messages]
+                context_parts = pruned_parts
+            except Exception:
+                pass  # best-effort
 
         task = message
         ctx: dict[str, Any] = {"conversation": "\n".join(context_parts)}
