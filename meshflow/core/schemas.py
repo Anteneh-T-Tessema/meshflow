@@ -294,6 +294,8 @@ class Policy:
     budget_usd: float = 1.0
     budget_tokens: int = 500_000
     timeout_s: float = 300.0
+    step_timeout_s: float = 0.0          # per-step timeout (0 = disabled)
+    step_timeout_action: str = "fail"    # "fail" | "skip" | "retry"
     max_steps: int = 50
     deterministic_gate: bool = True  # enable dasc-gate (L2.5)
     validate_handoffs: bool = True  # enable dual-judge on handoffs

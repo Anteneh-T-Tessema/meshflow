@@ -208,6 +208,7 @@ from meshflow.registry.templates import AgentTemplate, TemplateRegistry, Marketp
 from meshflow.eval.feedback import FeedbackRecord, FeedbackStore
 from meshflow.eval.shadow import ShadowResult, shadow_run, RegressionAlert, RegressionDetector
 from meshflow.observability.metrics import MetricsCollector
+from meshflow.observability.arize_phoenix import PhoenixExporter, auto_instrument
 from meshflow.observability.otel_exporter import (
     OTELExporter,
     get_global_exporter,
@@ -674,6 +675,8 @@ __all__ = [
     "budget_period_key",
     # ── Prometheus metrics + OTLP wire export ────────────────────────────────
     "MetricsCollector",
+    "PhoenixExporter",
+    "auto_instrument",
     "OTELExporter",
     "get_global_exporter",
     "set_global_exporter",

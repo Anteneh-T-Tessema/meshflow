@@ -312,7 +312,32 @@ class StepRuntime:
 
         if not blocked and not paused:
             try:
-                output = await node.run(node_input)
+                _step_timeout = getattr(self._policy, "step_timeout_s", 0.0)
+                if _step_timeout and _step_timeout > 0:
+                    import asyncio as _ato_step
+                    try:
+                        output = await _ato_step.wait_for(
+                            node.run(node_input), timeout=_step_timeout
+                        )
+                    except _ato_step.TimeoutError:
+                        _action = getattr(self._policy, "step_timeout_action", "fail")
+                        if _action == "skip":
+                            output = NodeOutput(content="[step_timeout: skipped]", confidence=0.0)
+                        elif _action == "retry":
+                            try:
+                                output = await _ato_step.wait_for(
+                                    node.run(node_input), timeout=_step_timeout
+                                )
+                            except _ato_step.TimeoutError:
+                                output = NodeOutput(content="[step_timeout: retry_exhausted]", confidence=0.0)
+                                blocked = True
+                                block_reason = f"step_timeout:{_step_timeout}s"
+                        else:  # "fail"
+                            blocked = True
+                            block_reason = f"step_timeout:{_step_timeout}s"
+                            output = NodeOutput(content=f"[step_timeout: {_step_timeout}s exceeded]", confidence=0.0)
+                else:
+                    output = await node.run(node_input)
                 if self._cbs and node.id in self._cbs:
                     self._cbs[node.id].record_success(node.id)
                 if self._telemetry:
