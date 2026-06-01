@@ -8,7 +8,7 @@
 
 ## Post
 
-**We just open-sourced MeshFlow. Here's the problem it solves — and why every other framework gets it wrong.**
+**We just open-sourced MeshFlow — the first agentic framework with Zero Trust security built in.**
 
 ---
 
@@ -22,7 +22,9 @@ What lives in that gap is a question the frameworks don't answer: **can we prove
 
 Not "do we have logs." Prove it. Cryptographically. In a format a compliance officer will sign off on. In a format that survives a HIPAA audit. In a format that shows every LLM call, every tool invocation, every cost incurred, every policy check, and that none of it was tampered with after the fact.
 
-No framework answers that question. Not LangGraph. Not CrewAI. Not AutoGen.
+No framework answers that question. Not LangGraph. Not CrewAI. Not AutoGen. And two weeks ago, Anthropic published their [Zero Trust for AI Agents](https://www.anthropic.com/security/zero-trust-ai-agents) guide — confirming this is exactly the gap the industry is staring at.
+
+MeshFlow is the first framework to implement it. Foundation tier active on every run by default. Zero configuration.
 
 They answer "can we build agents." MeshFlow answers "can we ship agents."
 
