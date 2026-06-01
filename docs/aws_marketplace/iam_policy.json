@@ -1,0 +1,75 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "MeshFlowReadSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:*:secret:meshflow/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/meshflow:managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "MeshFlowListSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:ListSecrets"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "secretsmanager:ResourceTag/aws:RequestedRegion": "*"
+        }
+      }
+    },
+    {
+      "Sid": "MeshFlowWriteSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:TagResource",
+        "secretsmanager:UpdateSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:*:secret:meshflow/*"
+    },
+    {
+      "Sid": "MeshFlowRotateSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:RotateSecret",
+        "secretsmanager:CancelRotateSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:*:secret:meshflow/*"
+    },
+    {
+      "Sid": "MeshFlowDeleteSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:DeleteSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:*:secret:meshflow/*"
+    },
+    {
+      "Sid": "MeshFlowKMSDecrypt",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "kms:ViaService": "secretsmanager.*.amazonaws.com"
+        }
+      }
+    }
+  ]
+}

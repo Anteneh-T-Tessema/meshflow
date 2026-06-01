@@ -1,0 +1,346 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  MeshFlow — Production-Safe Multi-Agent Orchestration.
+  Deploys MeshFlow on a single Amazon Linux 2023 EC2 instance with a
+  systemd service, security group, and Secrets Manager integration.
+
+# ── Parameters ─────────────────────────────────────────────────────────────────
+
+Parameters:
+
+  APIKey:
+    Type: String
+    NoEcho: true
+    Description: >
+      Your LLM provider API key (Anthropic, OpenAI, etc.).
+      Stored in AWS Secrets Manager under meshflow/api-key.
+      Leave blank to configure via the MeshFlow VaultStore after deployment.
+    Default: ""
+
+  Port:
+    Type: Number
+    Default: 8000
+    MinValue: 1024
+    MaxValue: 65535
+    Description: TCP port for the MeshFlow Studio and REST API.
+
+  DBPath:
+    Type: String
+    Default: /var/lib/meshflow/runs.db
+    Description: >
+      Absolute path on the instance for the SQLite durable execution
+      database. Change to an EFS mount path for multi-instance setups.
+
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues:
+      - t3.medium
+      - t3.large
+      - m6i.xlarge
+      - m6i.2xlarge
+    Description: EC2 instance type for the MeshFlow server.
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 key pair for SSH access (port 22).
+
+  SSHCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      CIDR range allowed to SSH into the instance.
+      Restrict to your office/VPN IP range in production.
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$"
+    ConstraintDescription: Must be a valid IPv4 CIDR block (e.g., 10.0.0.0/8).
+
+# ── Mappings ────────────────────────────────────────────────────────────────────
+# Amazon Linux 2023 AMI IDs per region (update periodically)
+
+Mappings:
+  RegionAMI:
+    us-east-1:
+      AMI: ami-0f9fc25dd2506cf6d
+    us-east-2:
+      AMI: ami-0ccabb5f82d4c9af5
+    us-west-1:
+      AMI: ami-0ce2cb35386fc22e9
+    us-west-2:
+      AMI: ami-0688ba7eeeeefe3cd
+    eu-west-1:
+      AMI: ami-0f0f1c02e5e4d9d9f
+    eu-central-1:
+      AMI: ami-0a23a9827c6dab833
+    ap-southeast-1:
+      AMI: ami-0672fd5b9210e2f3b
+    ap-northeast-1:
+      AMI: ami-0a2da6d0a47f6e5a6
+
+# ── Resources ───────────────────────────────────────────────────────────────────
+
+Resources:
+
+  # ── IAM ────────────────────────────────────────────────────────────────────
+
+  MeshFlowInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "meshflow-instance-role-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore   # SSM Session Manager
+      Policies:
+        - PolicyName: MeshFlowSecretsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadMeshFlowSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:meshflow/*"
+              - Sid: ListMeshFlowSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:ListSecrets
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    secretsmanager:SecretId: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:meshflow/*"
+              - Sid: WriteMeshFlowSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:TagResource
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:meshflow/*"
+
+  MeshFlowInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "meshflow-instance-profile-${AWS::StackName}"
+      Roles:
+        - !Ref MeshFlowInstanceRole
+
+  # ── Networking ─────────────────────────────────────────────────────────────
+
+  MeshFlowSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "meshflow-sg-${AWS::StackName}"
+      GroupDescription: >
+        MeshFlow server — allows inbound on the configured port and SSH.
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref Port
+          ToPort: !Ref Port
+          CidrIp: 0.0.0.0/0
+          Description: MeshFlow Studio & REST API
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHCidr
+          Description: SSH access
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound (LLM API calls, package installs)
+      Tags:
+        - Key: Name
+          Value: !Sub "meshflow-sg-${AWS::StackName}"
+        - Key: ManagedBy
+          Value: MeshFlow-CloudFormation
+
+  # ── Secrets Manager ────────────────────────────────────────────────────────
+
+  MeshFlowAPIKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: meshflow/api-key
+      Description: LLM provider API key used by MeshFlow AWSSecretsProvider.
+      SecretString: !If
+        - HasAPIKey
+        - !Ref APIKey
+        - "REPLACE_ME"
+      Tags:
+        - Key: meshflow:category
+          Value: llm-api-key
+        - Key: ManagedBy
+          Value: MeshFlow-CloudFormation
+
+  # ── EC2 Instance ───────────────────────────────────────────────────────────
+
+  MeshFlowInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: MeshFlowAPIKeySecret
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !FindInMap [RegionAMI, !Ref "AWS::Region", AMI]
+      KeyName: !Ref KeyPairName
+      IamInstanceProfile: !Ref MeshFlowInstanceProfile
+      SecurityGroups:
+        - !Ref MeshFlowSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub "meshflow-server-${AWS::StackName}"
+        - Key: ManagedBy
+          Value: MeshFlow-CloudFormation
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          exec > >(tee /var/log/meshflow-install.log | logger -t meshflow-install) 2>&1
+
+          echo "=== MeshFlow Bootstrap: $(date) ==="
+
+          # ── System update ────────────────────────────────────────────────
+          dnf update -y
+          dnf install -y python3.11 python3.11-pip python3.11-devel \
+                         git curl unzip sqlite jq
+
+          # Create service user
+          useradd -r -s /sbin/nologin -d /var/lib/meshflow meshflow || true
+          mkdir -p /var/lib/meshflow /var/log/meshflow /etc/meshflow
+          chown -R meshflow:meshflow /var/lib/meshflow /var/log/meshflow /etc/meshflow
+
+          # ── Python virtual environment ────────────────────────────────────
+          python3.11 -m venv /opt/meshflow/venv
+          /opt/meshflow/venv/bin/pip install --upgrade pip wheel
+          /opt/meshflow/venv/bin/pip install meshflow boto3
+
+          # ── Configuration file ────────────────────────────────────────────
+          cat > /etc/meshflow/config.env <<EOF
+          MESHFLOW_DB_PATH=${DBPath}
+          MESHFLOW_PORT=${Port}
+          MESHFLOW_AWS_REGION=${AWS::Region}
+          MESHFLOW_SECRET_PREFIX=meshflow/
+          AWS_DEFAULT_REGION=${AWS::Region}
+          EOF
+          chmod 640 /etc/meshflow/config.env
+          chown root:meshflow /etc/meshflow/config.env
+
+          # ── Systemd service ───────────────────────────────────────────────
+          cat > /etc/systemd/system/meshflow.service <<'UNIT'
+          [Unit]
+          Description=MeshFlow Production-Safe Multi-Agent Orchestration Server
+          Documentation=https://meshflow.dev/docs
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=meshflow
+          Group=meshflow
+          WorkingDirectory=/var/lib/meshflow
+          EnvironmentFile=/etc/meshflow/config.env
+          ExecStart=/opt/meshflow/venv/bin/meshflow studio \
+            --port ${Port} \
+            --host 0.0.0.0 \
+            --db ${DBPath}
+          Restart=on-failure
+          RestartSec=10
+          StandardOutput=append:/var/log/meshflow/meshflow.log
+          StandardError=append:/var/log/meshflow/meshflow-error.log
+          LimitNOFILE=65536
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=strict
+          ReadWritePaths=/var/lib/meshflow /var/log/meshflow
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          # ── Log rotation ───────────────────────────────────────────────────
+          cat > /etc/logrotate.d/meshflow <<'LOGROTATE'
+          /var/log/meshflow/*.log {
+            daily
+            rotate 14
+            compress
+            missingok
+            notifempty
+            copytruncate
+          }
+          LOGROTATE
+
+          # ── Enable and start ───────────────────────────────────────────────
+          systemctl daemon-reload
+          systemctl enable meshflow
+          systemctl start meshflow
+
+          echo "=== MeshFlow Bootstrap Complete: $(date) ==="
+          echo "Service status:"
+          systemctl status meshflow --no-pager || true
+
+          # Signal CloudFormation success
+          /opt/aws/bin/cfn-signal -e $? \
+            --stack '${AWS::StackName}' \
+            --resource MeshFlowInstance \
+            --region '${AWS::Region}' || true
+
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
+
+# ── Conditions ──────────────────────────────────────────────────────────────────
+
+Conditions:
+  HasAPIKey: !Not [!Equals [!Ref APIKey, ""]]
+
+# ── Outputs ─────────────────────────────────────────────────────────────────────
+
+Outputs:
+
+  MeshFlowURL:
+    Description: >
+      URL for the MeshFlow Studio and REST API.
+      Allow 2–3 minutes after stack creation for the service to start.
+    Value: !Sub "http://${MeshFlowInstance.PublicIp}:${Port}"
+    Export:
+      Name: !Sub "${AWS::StackName}-MeshFlowURL"
+
+  MeshFlowPublicIP:
+    Description: Public IP address of the MeshFlow EC2 instance.
+    Value: !GetAtt MeshFlowInstance.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicIP"
+
+  SSHCommand:
+    Description: SSH command to connect to the instance (if key pair provided).
+    Value: !Sub "ssh -i ${KeyPairName}.pem ec2-user@${MeshFlowInstance.PublicIp}"
+
+  SecretManagerARN:
+    Description: ARN of the Secrets Manager secret holding the LLM API key.
+    Value: !Ref MeshFlowAPIKeySecret
+    Export:
+      Name: !Sub "${AWS::StackName}-APIKeySecretARN"
+
+  InstanceID:
+    Description: EC2 instance ID for the MeshFlow server.
+    Value: !Ref MeshFlowInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-InstanceID"
+
+  InstallLog:
+    Description: Bootstrap install log location on the instance.
+    Value: /var/log/meshflow-install.log
+
+  ServiceLog:
+    Description: MeshFlow runtime log location on the instance.
+    Value: /var/log/meshflow/meshflow.log

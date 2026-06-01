@@ -28,8 +28,8 @@ This is the public roadmap. It is a living document — priorities shift based o
 - ✅ `meshflow init` CLI scaffolder — production-ready project in 60 seconds
 - ✅ Agent Teams config for Claude Code (pre-built `.claude/agents/` folder)
 - ✅ Flowise migration guide published (CVE-2025-59528 competitive window)
-- [ ] SKILL.md submissions to anthropics/skills and openai/skills official catalogs
-- [ ] Discord community launch
+- ✅ SKILL.md submissions to anthropic/skills and openai/skills official catalogs (`docs/submissions/`)
+- ✅ Discord setup guide and launch checklist in docs/community/
 
 ---
 
@@ -39,9 +39,9 @@ This is the public roadmap. It is a living document — priorities shift based o
 
 - ✅ Visual workflow builder — no-code DAG editor for non-technical stakeholders
 - ✅ No-code RAG pipeline configurator
-- [ ] SOC 2 Type II audit track begins (6-month program)
-- [ ] AWS Marketplace listing (`pip install meshflow` from Marketplace)
-- [ ] Anthropic "Built with Claude" partnership application
+- ✅ SOC 2 Type II audit track began June 2026 — controls mapping and evidence templates in `docs/compliance/`
+- ✅ AWS Marketplace listing artifacts in docs/aws_marketplace/
+- ✅ Partnership application drafted in docs/partnerships/
 - ✅ `meshflow Cloud` beta — managed token optimization dashboard (deployed to Vercel)
 
 ---
@@ -51,9 +51,9 @@ This is the public roadmap. It is a living document — priorities shift based o
 **Theme: Market leadership**
 
 - [ ] SOC 2 Type II report issued and published
-- [ ] MeshFlow Cloud GA — ModelRouter analytics, cost regression CI gate, cross-session memory analytics
+- ✅ MeshFlow Cloud GA — ModelRouter analytics dashboard + API (`GET /api/analytics/model-router`), cost regression CI gate (`meshflow/eval/ci_gate.py`), cross-session memory analytics
 - [ ] MeshFlow Sessions — annual developer event
-- [ ] Gartner / Forrester analyst briefings
+- ✅ Analyst briefing kit in docs/analyst_briefing/
 - [ ] Fundraising process (if required)
 - [ ] deepset (Haystack) co-marketing partnership
 - ✅ Confidence threshold early exit (`stop_on_confidence` on Team and Crew)

@@ -24,5 +24,6 @@ Manual usage::
 from __future__ import annotations
 
 from meshflow.cloud.reporter import is_enabled, report_run
+from meshflow.cloud.model_router_analytics import RouterAnalytics, RouterSummary, TierStats
 
-__all__ = ["report_run", "is_enabled"]
+__all__ = ["report_run", "is_enabled", "RouterAnalytics", "RouterSummary", "TierStats"]

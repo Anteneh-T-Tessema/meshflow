@@ -101,6 +101,13 @@ class _TraceHandler(http.server.BaseHTTPRequestHandler):
             self._json(data)
             return
 
+        if path == "/api/analytics/model-router":
+            qs = parse_qs(parsed.query)
+            n = int(qs.get("n", ["50"])[0])
+            data = asyncio.run(self.server_instance.get_router_analytics(n))  # type: ignore[arg-type]
+            self._json(data)
+            return
+
         if path == "/api/runs":
             data = asyncio.run(self.server_instance.get_runs())  # type: ignore[arg-type]
             self._json(data)
@@ -228,6 +235,15 @@ class TraceServer:
         return f"http://127.0.0.1:{self._port}"
 
     # ── Data methods (called from request handlers) ────────────────────────────
+
+    async def get_router_analytics(self, n_runs: int = 50) -> dict[str, Any]:
+        """Return ModelRouter tier distribution and cost-savings summary."""
+        try:
+            from meshflow.cloud.model_router_analytics import RouterAnalytics
+            summary = RouterAnalytics(db=self._db, n_runs=n_runs).summary()
+            return summary.to_dict()
+        except Exception as exc:
+            return {"error": str(exc)}
 
     async def get_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         """Return recent runs from the ledger as enriched dicts."""

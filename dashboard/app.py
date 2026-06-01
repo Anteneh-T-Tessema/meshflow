@@ -263,6 +263,24 @@ def fetch_analytics(n: int = 20) -> dict[str, Any]:
         return {"error": str(e)}
 
 
+def fetch_router_analytics(n: int = 50) -> dict[str, Any]:
+    import urllib.request
+    # Hits the TraceServer's /api/analytics/model-router endpoint
+    ts_port = int(os.environ.get("MESHFLOW_STUDIO_PORT", "7788"))
+    url = f"http://127.0.0.1:{ts_port}/api/analytics/model-router?n={n}"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        # Fallback: compute inline from the local ledger
+        try:
+            from meshflow.cloud.model_router_analytics import RouterAnalytics
+            db = os.environ.get("MESHFLOW_DB", "meshflow_runs.db")
+            return RouterAnalytics(db=db, n_runs=n).summary().to_dict()
+        except Exception as e2:
+            return {"error": f"{e} / {e2}"}
+
+
 # ── Metrics parser ────────────────────────────────────────────────────────────
 
 def parse_prometheus(text: str) -> dict[str, float]:
@@ -303,7 +321,7 @@ with st.sidebar:
         "Navigate",
         ["Overview", "Runs", "HITL Queue", "Metrics", "Submit Task", "Live", "Pool",
          "Evals", "Plugins", "Graph", "Audit", "SLA", "OTEL",
-         "Compliance", "Alerts", "API Keys", "Analytics"],
+         "Compliance", "Alerts", "API Keys", "Analytics", "Model Router"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -1364,6 +1382,88 @@ elif page == "Analytics":
             import pandas as pd  # type: ignore[import]
             df = pd.DataFrame(nodes)
             st.dataframe(df, use_container_width=True)
+
+
+# ── Model Router Analytics ────────────────────────────────────────────────────
+
+elif page == "Model Router":
+    st.header("ModelRouter Analytics")
+    st.caption("Routing decisions, tier distribution, and token savings vs always-using the largest model.")
+
+    n_runs = st.slider("Runs to analyse", min_value=5, max_value=200, value=50, step=5)
+    data = fetch_router_analytics(n_runs)
+
+    if "error" in data:
+        st.warning(f"Model Router analytics unavailable: {data['error']}")
+        st.info("Start the Trace Studio (`meshflow studio`) or ensure MESHFLOW_DB points to your ledger.")
+    else:
+        # ── KPI tiles ─────────────────────────────────────────────────────────
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Runs analysed",  data.get("runs_analysed", 0))
+        c2.metric("Total steps",    data.get("total_steps", 0))
+        c3.metric("Routed steps",   data.get("routed_steps", 0))
+        actual  = data.get("actual_cost_usd", 0.0)
+        large   = data.get("always_large_cost_usd", 0.0)
+        savings = data.get("savings_usd", 0.0)
+        pct     = data.get("savings_pct", 0.0)
+        c4.metric("Actual cost",    f"${actual:.4f}")
+        c5.metric("Savings vs large", f"${savings:.4f}  ({pct*100:.0f}%)", delta=f"-{pct*100:.0f}%", delta_color="inverse")
+
+        st.divider()
+
+        # ── Tier distribution ─────────────────────────────────────────────────
+        tiers = data.get("tier_distribution", {})
+        if any(v.get("calls", 0) for v in tiers.values()):
+            st.subheader("Tier distribution")
+            import pandas as pd  # type: ignore[import]
+            tier_rows = [
+                {
+                    "Tier":     t,
+                    "Calls":    v.get("calls", 0),
+                    "Tokens":   v.get("tokens", 0),
+                    "Cost USD": round(v.get("cost_usd", 0.0), 6),
+                }
+                for t, v in tiers.items()
+                if v.get("calls", 0) > 0
+            ]
+            if tier_rows:
+                df_tiers = pd.DataFrame(tier_rows).set_index("Tier")
+                col_tier, col_bar = st.columns([1, 2])
+                col_tier.dataframe(df_tiers, use_container_width=True)
+                col_bar.bar_chart(df_tiers["Calls"])
+
+        # ── Cost: actual vs always-large ──────────────────────────────────────
+        if large > 0:
+            st.subheader("Cost savings breakdown")
+            col_a, col_b = st.columns(2)
+            col_a.metric("Actual cost", f"${actual:.6f}")
+            col_b.metric("Always-large projected", f"${large:.6f}")
+            st.progress(min(1.0 - pct, 1.0), text=f"You spent {(1-pct)*100:.0f}% of what always-large would cost")
+
+        # ── Top models ────────────────────────────────────────────────────────
+        top = data.get("top_models", [])
+        if top:
+            st.subheader("Top models by cost")
+            df_models = pd.DataFrame(top)
+            st.dataframe(df_models, use_container_width=True)
+
+        # ── Per-run cost trend ────────────────────────────────────────────────
+        trend = data.get("cost_trend", [])
+        if trend:
+            st.subheader("Per-run cost trend")
+            chart_data = {r["run_id"][-8:]: r["cost_usd"] for r in trend}
+            st.bar_chart(chart_data)
+
+        # ── Cross-session memory analytics ───────────────────────────────────
+        mem = data.get("memory_usage", {})
+        if mem:
+            st.subheader("Cross-session memory tier hits")
+            mem_rows = [{"Memory tier": k, "Total hits": v} for k, v in mem.items()]
+            st.dataframe(pd.DataFrame(mem_rows).set_index("Memory tier"), use_container_width=True)
+        else:
+            st.subheader("Cross-session memory analytics")
+            st.info("No memory tier hit data yet. Memory hits are emitted to step metadata "
+                    "when `AgentMemory` is used with `log_tier_hits=True`.")
 
 
 # ── Auto-refresh ──────────────────────────────────────────────────────────────
