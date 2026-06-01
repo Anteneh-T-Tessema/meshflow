@@ -131,6 +131,42 @@
 
   /* ── Loading ── */
   .loading { text-align: center; padding: 40px; color: var(--muted); }
+
+  /* ── Visual Debugger additions ── */
+  .debug-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 20px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); flex-wrap: wrap; }
+  .search-input { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 4px 10px; font-size: 12px; font-family: var(--mono); width: 200px; }
+  .search-input:focus { outline: none; border-color: var(--accent); }
+  .filter-badge { padding: 3px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; cursor: pointer; border: 1px solid transparent; }
+  .filter-badge.active-all { background: rgba(88,166,255,.2); border-color: var(--accent); color: var(--accent); }
+  .filter-badge.blocked-f { background: rgba(248,81,73,.1); color: var(--red); }
+  .filter-badge.blocked-f.active { border-color: var(--red); }
+  .filter-badge.commit-f { background: rgba(63,185,80,.1); color: var(--green); }
+  .filter-badge.commit-f.active { border-color: var(--green); }
+  .filter-badge.reject-f { background: rgba(248,81,73,.1); color: var(--red); }
+  .filter-badge.reject-f.active { border-color: var(--red); }
+  .debug-stat { font-size: 11px; color: var(--muted); margin-left: auto; }
+
+  /* Cost/confidence sparkline in step cards */
+  .step-sparkline { height: 24px; display: flex; align-items: flex-end; gap: 2px; padding: 0 14px 6px; }
+  .spark-bar { border-radius: 2px 2px 0 0; min-width: 4px; cursor: pointer; transition: opacity .15s; }
+  .spark-bar:hover { opacity: .7; }
+
+  /* Diff view between adjacent steps */
+  .diff-section { margin-top: 10px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .diff-header { display: flex; justify-content: space-between; padding: 6px 10px; background: rgba(255,255,255,0.03); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  .diff-body { display: grid; grid-template-columns: 1fr 1fr; }
+  .diff-col { padding: 8px 10px; font-family: var(--mono); font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto; border-right: 1px solid var(--border); }
+  .diff-col:last-child { border-right: none; }
+  .diff-col-label { font-size: 9px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; }
+
+  /* Step nav arrows */
+  .step-nav { display: flex; gap: 6px; margin-top: 10px; }
+  .step-nav-btn { padding: 3px 10px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; }
+  .step-nav-btn:hover { background: var(--border); color: var(--text); }
+
+  /* Confidence indicator */
+  .confidence-bar { height: 3px; border-radius: 2px; margin: 0 14px 4px; background: var(--border); overflow: hidden; }
+  .confidence-fill { height: 100%; border-radius: 2px; background: var(--purple); }
 </style>
 </head>
 <body>
@@ -178,6 +214,16 @@
       <div class="timeline-wrap">
         <div class="timeline-label">Execution timeline</div>
         <div class="timeline-track" id="timelineTrack"></div>
+      </div>
+
+      <!-- Debug toolbar -->
+      <div class="debug-toolbar" id="debugToolbar" style="display:none">
+        <input type="text" class="search-input" id="stepSearch" placeholder="Search steps…" oninput="filterSteps()">
+        <span class="filter-badge active-all" id="f-all" onclick="setFilter('all')">All</span>
+        <span class="filter-badge commit-f" id="f-commit" onclick="setFilter('commit')">commit</span>
+        <span class="filter-badge reject-f" id="f-reject" onclick="setFilter('reject')">reject</span>
+        <span class="filter-badge blocked-f" id="f-blocked" onclick="setFilter('blocked')">blocked</span>
+        <span class="debug-stat" id="filterStat"></span>
       </div>
 
       <!-- Step cards -->
@@ -350,6 +396,7 @@ function renderSteps(trace) {
         <div class="step-dur-bar">
           <div class="step-dur-fill" style="width:${durPct}%;background:${verdictColor(verdict)}"></div>
         </div>
+        <div class="confidence-bar"><div class="confidence-fill" style="width:${((1 - (s.uncertainty||0))*100).toFixed(1)}%" title="Confidence: ${((1-(s.uncertainty||0))*100).toFixed(1)}%"></div></div>
         <div class="step-body" id="body-${s.idx}">
           ${s.block_reason ? `<div class="step-section"><div class="step-section-label">Block reason</div><div class="step-pre red">${esc(s.block_reason)}</div></div>` : ''}
           <div class="step-section">
@@ -360,15 +407,60 @@ function renderSteps(trace) {
             <div class="step-section-label">Output</div>
             <div class="step-pre${outputCls}">${esc(s.output_preview || '(none)')}</div>
           </div>
+          ${s.idx > 0 ? `<div class="diff-section">
+            <div class="diff-header"><span>↕ Diff vs prev step</span></div>
+            <div class="diff-body">
+              <div class="diff-col"><div class="diff-col-label">Prev output</div>${esc((trace.steps[s.idx-1]?.output_preview||'').substring(0,300))}</div>
+              <div class="diff-col"><div class="diff-col-label">This output</div>${esc((s.output_preview||'').substring(0,300))}</div>
+            </div>
+          </div>` : ''}
           <div class="step-section">
             <div class="step-section-label">Metrics</div>
-            <div class="step-pre">tokens: ${s.tokens_used}  cost: $${s.cost_usd}  carbon: ${s.carbon_gco2}gCO₂  start: +${s.start_ms}ms</div>
+            <div class="step-pre">tokens: ${s.tokens_used}  cost: $${s.cost_usd}  carbon: ${s.carbon_gco2}gCO₂  confidence: ${((1-(s.uncertainty||0))*100).toFixed(1)}%  start: +${s.start_ms}ms</div>
           </div>
           <div class="hash-line">hash: ${s.entry_hash}</div>
-          <button class="btn btn-sm rewind-btn" onclick="openRewind(${s.idx}, event)">⏪ Rewind to here</button>
+          <div class="step-nav">
+            ${s.idx > 0 ? `<button class="step-nav-btn" onclick="event.stopPropagation();scrollToStep(${s.idx-1})">← prev</button>` : ''}
+            <button class="btn btn-sm rewind-btn" onclick="openRewind(${s.idx}, event)">⏪ Rewind to here</button>
+            ${s.idx < trace.steps.length-1 ? `<button class="step-nav-btn" onclick="event.stopPropagation();scrollToStep(${s.idx+1})">next →</button>` : ''}
+          </div>
         </div>
       </div>`;
   }).join('');
+  document.getElementById('debugToolbar').style.display = 'flex';
+  updateFilterStat();
+}
+
+let _activeFilter = 'all';
+
+function setFilter(f) {
+  _activeFilter = f;
+  ['all','commit','reject','blocked'].forEach(k => {
+    document.getElementById(`f-${k}`)?.classList.toggle('active', k === f);
+    document.getElementById(`f-${k}`)?.classList.toggle('active-all', k === f && k === 'all');
+  });
+  filterSteps();
+}
+
+function filterSteps() {
+  const q = (document.getElementById('stepSearch')?.value || '').toLowerCase();
+  const cards = document.querySelectorAll('.step-card');
+  let visible = 0;
+  cards.forEach(card => {
+    const verdict = [...card.classList].find(c => c.startsWith('verdict-'))?.replace('verdict-','') || '';
+    const text = card.textContent.toLowerCase();
+    const matchFilter = _activeFilter === 'all' || verdict === _activeFilter;
+    const matchSearch = !q || text.includes(q);
+    const show = matchFilter && matchSearch;
+    card.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  updateFilterStat(visible, cards.length);
+}
+
+function updateFilterStat(visible, total) {
+  const el = document.getElementById('filterStat');
+  if (el && total !== undefined) el.textContent = `${visible} / ${total} steps`;
 }
 
 function toggleStep(idx, event) {

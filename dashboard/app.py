@@ -654,7 +654,7 @@ elif page == "Pool":
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return json.loads(r.read()).get("pools", [])
-        except Exception as e:
+        except Exception:
             return []
 
     pools = _fetch_pool_status()

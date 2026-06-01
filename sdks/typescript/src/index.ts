@@ -703,3 +703,396 @@ export function createClient(overrides: {
 }
 
 export default MeshFlowClient;
+
+// ── Native Agent / Team (no MeshFlow server required) ─────────────────────────
+
+export interface AgentConfig {
+  name: string;
+  role?: "planner" | "researcher" | "executor" | "critic" | "guardian";
+  model?: string;
+  systemPrompt?: string;
+  /** Anthropic API key — falls back to ANTHROPIC_API_KEY env var */
+  apiKey?: string;
+  maxTokens?: number;
+}
+
+export interface AgentRunResult {
+  output: string;
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+  stopReason: string;
+}
+
+// ── Internal shapes for the Anthropic /v1/messages response ──────────────────
+
+interface AnthropicContentBlock {
+  type: string;
+  text?: string;
+}
+
+interface AnthropicUsage {
+  input_tokens: number;
+  output_tokens: number;
+}
+
+interface AnthropicMessagesResponse {
+  content: AnthropicContentBlock[];
+  usage: AnthropicUsage;
+  stop_reason: string;
+  model: string;
+}
+
+// SSE streaming shapes
+interface AnthropicSSEDelta {
+  type: string;
+  text?: string;
+}
+
+interface AnthropicSSEEvent {
+  type: string;
+  delta?: AnthropicSSEDelta;
+}
+
+const ANTHROPIC_API_BASE = "https://api.anthropic.com/v1";
+const ANTHROPIC_VERSION = "2023-06-01";
+const DEFAULT_MODEL = "claude-3-5-sonnet-20241022";
+const DEFAULT_MAX_TOKENS = 4096;
+
+/**
+ * MeshFlowAgent — A TypeScript-native agent that calls Claude directly via the
+ * Anthropic API.  No running MeshFlow server is required.
+ *
+ * Quick start:
+ *   const agent = new MeshFlowAgent({ name: "Analyst", role: "researcher" });
+ *   const result = await agent.run("Summarise the quarterly report");
+ *   console.log(result.output);
+ *
+ * The API key is resolved from (in order):
+ *   1. `config.apiKey`
+ *   2. `process.env.ANTHROPIC_API_KEY`
+ */
+export class MeshFlowAgent {
+  readonly name: string;
+  readonly role: string;
+  readonly model: string;
+  private readonly systemPrompt: string;
+  private readonly apiKey: string;
+  private readonly maxTokens: number;
+
+  constructor(config: AgentConfig) {
+    this.name = config.name;
+    this.role = config.role ?? "executor";
+    this.model = config.model ?? DEFAULT_MODEL;
+    this.maxTokens = config.maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.systemPrompt =
+      config.systemPrompt ??
+      `You are ${this.name}, a ${this.role} agent. Complete the given task accurately and concisely.`;
+
+    const key =
+      config.apiKey ??
+      (typeof process !== "undefined" ? process.env["ANTHROPIC_API_KEY"] ?? "" : "");
+
+    if (!key) {
+      throw new Error(
+        "MeshFlowAgent: no Anthropic API key supplied. " +
+          "Pass apiKey in AgentConfig or set ANTHROPIC_API_KEY env var.",
+      );
+    }
+    this.apiKey = key;
+  }
+
+  /** Build the user message content, optionally prepending serialised context. */
+  private buildUserContent(
+    task: string,
+    context?: Record<string, unknown>,
+  ): string {
+    if (!context || Object.keys(context).length === 0) return task;
+    return `Context:\n${JSON.stringify(context, null, 2)}\n\nTask:\n${task}`;
+  }
+
+  /** Execute a task and return the full result. */
+  async run(
+    task: string,
+    context?: Record<string, unknown>,
+  ): Promise<AgentRunResult> {
+    const response = await fetch(`${ANTHROPIC_API_BASE}/messages`, {
+      method: "POST",
+      headers: {
+        "x-api-key": this.apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: this.maxTokens,
+        system: this.systemPrompt,
+        messages: [{ role: "user", content: this.buildUserContent(task, context) }],
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new MeshFlowError(
+        response.status,
+        `Anthropic API error ${response.status} for agent "${this.name}": ${text}`,
+        text,
+      );
+    }
+
+    const data = (await response.json()) as AnthropicMessagesResponse;
+
+    const output = data.content
+      .filter((b) => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text as string)
+      .join("");
+
+    return {
+      output,
+      inputTokens: data.usage.input_tokens,
+      outputTokens: data.usage.output_tokens,
+      model: data.model,
+      stopReason: data.stop_reason,
+    };
+  }
+
+  /**
+   * Stream a task execution, yielding text deltas as they arrive.
+   *
+   *   for await (const chunk of agent.stream("Write a poem")) {
+   *     process.stdout.write(chunk);
+   *   }
+   */
+  async *stream(
+    task: string,
+    context?: Record<string, unknown>,
+  ): AsyncIterable<string> {
+    const response = await fetch(`${ANTHROPIC_API_BASE}/messages`, {
+      method: "POST",
+      headers: {
+        "x-api-key": this.apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: this.maxTokens,
+        system: this.systemPrompt,
+        stream: true,
+        messages: [{ role: "user", content: this.buildUserContent(task, context) }],
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      const text = await response.text();
+      throw new MeshFlowError(
+        response.status,
+        `Anthropic streaming error for agent "${this.name}": ${text}`,
+        text,
+      );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE frames are separated by "\n\n"
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() ?? "";
+
+      for (const frame of frames) {
+        // Each frame may contain multiple lines; find the "data:" line
+        const dataLine = frame
+          .split("\n")
+          .find((l) => l.startsWith("data:"));
+        if (!dataLine) continue;
+        const payload = dataLine.slice(5).trim();
+        if (payload === "[DONE]") return;
+        try {
+          const event = JSON.parse(payload) as AnthropicSSEEvent;
+          if (
+            event.type === "content_block_delta" &&
+            event.delta?.type === "text_delta" &&
+            typeof event.delta.text === "string"
+          ) {
+            yield event.delta.text;
+          }
+        } catch {
+          // Malformed SSE line — skip
+        }
+      }
+    }
+
+    // Flush any remaining buffer
+    if (buffer.trim() && !buffer.trim().startsWith("event:")) {
+      const dataLine = buffer
+        .split("\n")
+        .find((l) => l.startsWith("data:"));
+      if (dataLine) {
+        const payload = dataLine.slice(5).trim();
+        if (payload && payload !== "[DONE]") {
+          try {
+            const event = JSON.parse(payload) as AnthropicSSEEvent;
+            if (
+              event.type === "content_block_delta" &&
+              event.delta?.type === "text_delta" &&
+              typeof event.delta.text === "string"
+            ) {
+              yield event.delta.text;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+  }
+}
+
+// ── Team ──────────────────────────────────────────────────────────────────────
+
+export type TeamPattern = "sequential" | "parallel" | "supervised";
+
+export interface TeamConfig {
+  name: string;
+  agents: MeshFlowAgent[];
+  pattern?: TeamPattern;
+  /**
+   * 0.0–1.0.  In sequential mode, after each agent step the runner parses
+   * `"confidence": <number>` from the output.  If the value is >= this
+   * threshold the team exits early without running remaining agents.
+   */
+  stopOnConfidence?: number;
+}
+
+export interface TeamRunResult {
+  output: string;
+  agentResults: AgentRunResult[];
+  stoppedEarly: boolean;
+}
+
+const CONFIDENCE_RE = /"confidence"\s*:\s*([\d.]+)/;
+
+/**
+ * MeshFlowTeam — Runs multiple MeshFlowAgents together.
+ *
+ * Patterns:
+ *   - `sequential` (default) — agents run one after another; each agent
+ *     receives the previous agent's output as additional context.
+ *   - `parallel` — all agents run concurrently against the same task; the
+ *     final output is their results concatenated.
+ *   - `supervised` — sequential with the first agent acting as supervisor;
+ *     its output is used as final result without further processing.
+ *
+ * Quick start:
+ *   const team = new MeshFlowTeam({
+ *     name: "Research Team",
+ *     agents: [researcher, analyst, writer],
+ *     pattern: "sequential",
+ *     stopOnConfidence: 0.9,
+ *   });
+ *   const result = await team.run("Produce a market analysis");
+ */
+export class MeshFlowTeam {
+  private readonly name: string;
+  private readonly agents: MeshFlowAgent[];
+  private readonly pattern: TeamPattern;
+  private readonly stopOnConfidence: number | undefined;
+
+  constructor(config: TeamConfig) {
+    if (config.agents.length === 0) {
+      throw new Error("MeshFlowTeam: agents array must not be empty.");
+    }
+    this.name = config.name;
+    this.agents = config.agents;
+    this.pattern = config.pattern ?? "sequential";
+    this.stopOnConfidence = config.stopOnConfidence;
+  }
+
+  async run(task: string): Promise<TeamRunResult> {
+    switch (this.pattern) {
+      case "parallel":
+        return this._runParallel(task);
+      case "supervised":
+        return this._runSupervised(task);
+      default:
+        return this._runSequential(task);
+    }
+  }
+
+  private async _runSequential(task: string): Promise<TeamRunResult> {
+    const agentResults: AgentRunResult[] = [];
+    let currentTask = task;
+    let stoppedEarly = false;
+
+    for (const agent of this.agents) {
+      const result = await agent.run(currentTask);
+      agentResults.push(result);
+
+      // Check confidence-based early exit
+      if (this.stopOnConfidence !== undefined) {
+        const match = CONFIDENCE_RE.exec(result.output);
+        if (match) {
+          const confidence = parseFloat(match[1]);
+          if (confidence >= this.stopOnConfidence) {
+            stoppedEarly = true;
+            break;
+          }
+        }
+      }
+
+      // Pass this agent's output as context to the next agent
+      currentTask = result.output;
+    }
+
+    const lastResult = agentResults[agentResults.length - 1];
+    return {
+      output: lastResult?.output ?? "",
+      agentResults,
+      stoppedEarly,
+    };
+  }
+
+  private async _runParallel(task: string): Promise<TeamRunResult> {
+    const agentResults = await Promise.all(
+      this.agents.map((agent) => agent.run(task)),
+    );
+
+    const output = agentResults
+      .map((r, i) => `[${this.agents[i]?.name ?? `Agent ${i}`}]\n${r.output}`)
+      .join("\n\n---\n\n");
+
+    return { output, agentResults, stoppedEarly: false };
+  }
+
+  /** Supervised: only the first agent runs; remaining agents are skipped. */
+  private async _runSupervised(task: string): Promise<TeamRunResult> {
+    const supervisor = this.agents[0];
+    if (!supervisor) {
+      throw new Error("MeshFlowTeam (supervised): no supervisor agent defined.");
+    }
+    const result = await supervisor.run(task);
+    return {
+      output: result.output,
+      agentResults: [result],
+      stoppedEarly: false,
+    };
+  }
+}
+
+// ── Convenience factories ─────────────────────────────────────────────────────
+
+/** Create a MeshFlowAgent from a config object. */
+export function createAgent(config: AgentConfig): MeshFlowAgent {
+  return new MeshFlowAgent(config);
+}
+
+/** Create a MeshFlowTeam from a config object. */
+export function createTeam(config: TeamConfig): MeshFlowTeam {
+  return new MeshFlowTeam(config);
+}

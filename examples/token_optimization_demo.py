@@ -6,7 +6,7 @@
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from meshflow import Agent, AgentRole, token_budget
 from meshflow.optimization.planner import TokenBudgetPlanner, ModelSizingAdvisor
 from meshflow.optimization.tracker import OptimizationTracker
@@ -52,7 +52,7 @@ def run_design_time_planning_demo():
     rec_simple = advisor.recommend_model(task_simple)
     rec_complex = advisor.recommend_model(task_complex)
     
-    print(f"\nModel Recommendations:")
+    print("\nModel Recommendations:")
     print(f"  - Simple task ('{task_simple}'): -> Recommend {rec_simple}")
     print(f"  - Complex task ('{task_complex}'): -> Recommend {rec_complex}")
 

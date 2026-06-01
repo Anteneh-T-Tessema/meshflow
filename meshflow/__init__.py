@@ -91,6 +91,7 @@ from meshflow.agents.adversarial import AdversarialTeam, AdversarialResult
 from meshflow.agents.session import AgentSession, SessionResult, Turn
 from meshflow.core.compliance import ComplianceProfile, compliance_profile, list_profiles
 from meshflow.core.durable import DurableWorkflowExecutor
+from meshflow.core.worker_pool import WorkerPool, WorkerPoolConfig  # noqa: F401
 from meshflow.core.projections import (
     AuditTrailProjection,
     NodeLatencyProjection,
@@ -159,6 +160,7 @@ from meshflow.agents.health import (
 from meshflow.core.analytics import WorkflowAnalytics, RunSummary
 from meshflow.queue import TaskQueue, QueueWorker, TaskItem, TaskStatus
 from meshflow.tools.code_interpreter import CodeInterpreter, CodeResult
+from meshflow.tools.sandbox_providers import E2BSandboxProvider, ModalSandboxProvider, SandboxRouter
 from meshflow.a2a import AgentCard, A2AMessage, A2AResponse, A2AClient, A2AServer
 from meshflow.multimodal import (
     ImageInput,
@@ -605,9 +607,12 @@ __all__ = [
     "QueueWorker",
     "TaskItem",
     "TaskStatus",
-    # ── Code interpreter ─────────────────────────────────────────────────────
+    # ── Code interpreter + cloud sandbox providers ───────────────────────────
     "CodeInterpreter",
     "CodeResult",
+    "E2BSandboxProvider",
+    "ModalSandboxProvider",
+    "SandboxRouter",
     # ── A2A protocol ─────────────────────────────────────────────────────────
     "AgentCard",
     "A2AMessage",

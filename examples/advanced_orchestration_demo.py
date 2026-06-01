@@ -8,7 +8,7 @@
 import asyncio
 from unittest.mock import AsyncMock
 from meshflow import Agent, AgentRole
-from meshflow.agents.conversation import GroupChat, GroupChatManager
+from meshflow.agents.conversation import GroupChat
 from meshflow.core.durable import DurableWorkflowExecutor
 from meshflow.core.node import NodeOutput
 from meshflow.tools.code_interpreter import CodeInterpreter
@@ -39,7 +39,7 @@ async def run_transition_graphs_demo():
     )
     
     # Alice starts
-    print(f"Current Speaker: Alice")
+    print("Current Speaker: Alice")
     next1 = chat._pick_next(last_speaker=alice)
     print(f"Alice transitions to: {next1.name} (Expected: Bob)")
     
@@ -83,7 +83,7 @@ async def run_time_travel_demo():
     executor = DurableWorkflowExecutor(run_id="original-run", backend="memory")
     
     # Manually populate checkpoints into the executor's store to simulate a run
-    print(f"Saving historical checkpoints for 'original-run'...")
+    print("Saving historical checkpoints for 'original-run'...")
     executor._store.save("original-run", "fetch_data", NodeOutput(content="Fetched raw logs"))
     
     # Simulate a brief delay so timestamps are strictly sequential
@@ -112,7 +112,7 @@ async def run_docker_sandbox_demo():
     
     # If docker executable is found, it executes inside the container; otherwise runs locally
     python_code = "import sys; print(f'Running Python version {sys.version_info.major}.{sys.version_info.minor} inside container')"
-    print(f"Executing Python script via Docker-sandboxed interpreter...")
+    print("Executing Python script via Docker-sandboxed interpreter...")
     result = interpreter.run(python_code)
     print(f"Code execution result:\n{str(result).strip()}")
 
