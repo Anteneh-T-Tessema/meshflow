@@ -18,6 +18,16 @@ We built MeshFlow because we kept running into the same wall: every existing fra
 
 ---
 
+## Zero Trust Built In
+
+Anthropic just published their Zero Trust for AI Agents framework — the most rigorous public specification yet for what "secure agentic AI" actually means in practice. It defines three tiers (Foundation, Enterprise, Advanced) covering cryptographic agent identity, deny-by-default execution, JIT privilege escalation, continuous authorization, AI bills of materials, and spotlighting guardrails against prompt injection. It is, frankly, the right threat model. And as of today, MeshFlow v1.1.0 is the first agentic framework to implement it.
+
+We didn't bolt it on after the fact. The Zero Trust controls in MeshFlow map directly onto infrastructure that was already in the `StepRuntime` kernel — DID-based agent identity, hash-chained audit logging, input validation via the Guardian scanner, and config version pinning. What v1.1.0 adds is the formal tier structure, the `ZeroTrustOrchestrator`, the `SpotlightingGuardrail`, the `JITPrivilegeManager`, the `ContinuousAuthorizationEngine`, and the `AIBillOfMaterials` that ties every run to the exact policy and model versions that produced it. Foundation tier requires no configuration change whatsoever — it is on by default on every `Mesh.run()` and `Workflow.run()` call, starting today.
+
+If you are evaluating agentic frameworks for any environment where security posture matters — financial services, healthcare, government, anything that touches regulated data — the Anthropic ZT guide is now the baseline you should be measuring against. Run `meshflow zt-audit --tier enterprise` against your deployment and it will tell you exactly where you stand.
+
+---
+
 ## The 68-point gap
 
 Here's a number that should stop you cold: **79% of enterprises have adopted AI agents. Only 11% run them in production.**

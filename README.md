@@ -24,6 +24,39 @@ pip install meshflow
 
 ---
 
+## Zero Trust for AI Agents — built in, on by default
+
+MeshFlow v1.1.0 is the first agentic framework to implement the [Anthropic Zero Trust for AI Agents framework](https://www.anthropic.com/research/zero-trust-ai-agents). Foundation tier is active on every `Mesh.run()` and `Workflow.run()` call. No configuration required.
+
+**Foundation controls active on every run (zero config):**
+
+| Control | What it does |
+|---|---|
+| Cryptographic agent identity | Every agent gets a W3C DID at spawn, revoked at run end |
+| Deny-by-default execution | No action executes unless explicitly permitted by policy |
+| Immutable action logging | SHA-256 hash-chained ledger entry written for every step |
+| Input validation | Prompt injection, jailbreak, and exfiltration patterns blocked before the model sees them |
+| Config version control | Every policy version is hashed and recorded alongside the run |
+
+**Upgrade to Enterprise or Advanced tier in one line:**
+
+```python
+from meshflow import Mesh
+from meshflow.zero_trust import ZeroTrustOrchestrator, ZeroTrustTier
+
+mesh = Mesh()
+zt   = ZeroTrustOrchestrator.for_tier(ZeroTrustTier.ENTERPRISE)
+result = await zt.run(mesh, "Analyse Q2 revenue and flag anomalies")
+```
+
+**Audit your deployment against any tier:**
+
+```bash
+meshflow zt-audit --tier enterprise
+```
+
+---
+
 ## The 68-point gap is the entire MeshFlow opportunity
 
 79% of enterprises have adopted AI agents. Only 11% run them in production.

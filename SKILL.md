@@ -9,7 +9,9 @@ description: >
   'human in the loop', 'parallel agents', 'agent crew', 'compliance', 'HIPAA',
   'SOC2', 'GDPR', 'audit trail', 'rate limiting agents', 'ReAct agent',
   'LangGraph', 'CrewAI', 'AutoGen', 'governed', 'production agents',
-  'resumable workflow', 'agent governance', 'prompt caching', 'MCP server'.
+  'resumable workflow', 'agent governance', 'prompt caching', 'MCP server',
+  'zero trust', 'ZT', 'spotlighting', 'JIT privilege', 'AI-BOM',
+  'agent identity', 'prompt injection prevention'.
 slash_command: /meshflow
 context: fork
 ---
@@ -194,6 +196,53 @@ agent = Agent(
         ToxicityGuardrail(),
     ],
 )
+```
+
+### "zero trust" / "ZT" / "secure agents" / "spotlighting" / "JIT privilege" / "AI-BOM" / "agent identity" / "prompt injection prevention"
+
+Foundation Zero Trust tier is **on by default** on every `Mesh.run()` and `Workflow.run()` call — no configuration needed. Upgrade to Enterprise or Advanced in one line.
+
+**ZeroTrustOrchestrator — select a tier explicitly:**
+
+```python
+from meshflow import Mesh
+from meshflow.zero_trust import ZeroTrustOrchestrator, ZeroTrustTier
+
+mesh = Mesh()
+zt   = ZeroTrustOrchestrator.for_tier(ZeroTrustTier.ENTERPRISE)
+result = await zt.run(mesh, "Analyse Q2 revenue and flag anomalies")
+```
+
+**SpotlightingGuardrail — defend against prompt injection in untrusted content:**
+
+```python
+from meshflow import Agent
+from meshflow.zero_trust import SpotlightingGuardrail
+
+agent = Agent(
+    name="doc-processor",
+    role="executor",
+    input_guardrails=[SpotlightingGuardrail()],  # wraps external content in XML tags
+)                                                 # so injected instructions can't escape context
+```
+
+**JITPrivilegeManager — grant the minimum privilege needed, revoke immediately after:**
+
+```python
+from meshflow.zero_trust import JITPrivilegeManager
+
+jit = JITPrivilegeManager()
+
+async with jit.grant("agent-id-123", permissions=["db:read", "file:write"],
+                      reason="invoice reconciliation", ttl_seconds=30) as token:
+    result = await agent.run("Reconcile invoice 4821", auth_token=token)
+# permissions auto-revoked after the block exits or TTL expires
+```
+
+**Audit a deployment against a ZT tier:**
+
+```bash
+meshflow zt-audit --tier enterprise
 ```
 
 ### "streaming" / "stream tokens" / "real-time output"

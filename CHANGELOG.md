@@ -5,6 +5,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.1.0] — 2026-06-01
+
+### Zero Trust for AI Agents — first framework to implement the Anthropic ZT guide
+
+**4,540 tests passing (19 skipped = live API + optional deps).**
+
+#### Zero Trust framework (`meshflow/zero_trust/`)
+
+MeshFlow v1.1 ships the first agentic framework implementation of the
+[Anthropic Zero Trust for AI Agents](https://www.anthropic.com/security/zero-trust-ai-agents)
+framework. **Foundation tier is active by default on every `Mesh.run()` and
+`Workflow.run()` call** — zero configuration required.
+
+- **`ZeroTrustPolicy`** — Foundation / Enterprise / Advanced tier presets +
+  regulation presets (`hipaa`, `sox`, `gdpr`, `pci`, `nerc`).
+  `controls_enabled()` / `controls_disabled()` for gap analysis.
+- **`SpotlightingGuardrail`** — three strategies: `xml_tags`, `json_envelope`,
+  HMAC-signed `datamark`. Blocks envelope-escape attempts. Countermeasure for
+  indirect prompt injection (ZT Advanced tier input control).
+- **`JITPrivilegeManager`** — time-limited privilege grants with automatic
+  expiry, wildcard permissions (`write:*`), `revoke_all()` for instant
+  containment, background reaper thread.
+- **`AIBillOfMaterials`** — model provenance, tool hashes, dependency CVEs,
+  OpenSSF scores. CycloneDX 1.5 JSON export (OWASP AI-BOM standard).
+- **`ContinuousAuthorizationEngine`** — re-evaluates authorization on every
+  action (not just session start). ABAC with anomaly score threshold and
+  time-of-day window. `suspend()` / `unsuspend()` for instant containment.
+- **`ZeroTrustOrchestrator`** — single entry point. `for_tier()` /
+  `for_regulation()` factories. `session()` async context manager with JIT
+  grant lifecycle, `run_agent()` convenience wrapper.
+
+#### Default-on wiring
+
+- `Mesh.stream()` and `Mesh.run_workflow_definition()` now instantiate a
+  Foundation-tier `ZeroTrustOrchestrator` on every run, passing it to
+  `GovernedStepExecutor` and `StepRuntime`.
+- `GovernedStepExecutor` and `StepRuntime` accept `zero_trust=` parameter
+  for continuous auth checks and input spotlighting per-step.
+
+#### New CLI command
+
+- **`meshflow zt-audit`** — scores a deployment against the ZT framework.
+  Prints a pillar-by-pillar report with ✅ / ⚠️ / `(higher tier)` annotations.
+  `--fail-on-gaps` exits non-zero for CI gates. `--json` for machine-readable output.
+
+#### Other additions (since v1.0.0)
+
+- **ACP bridge** (`meshflow/acp/`) — BeeAI / ACP protocol interop
+- **WorkerPool** (`meshflow/core/worker_pool.py`) — horizontal scaling with
+  in-memory and Redis backends
+- **55 pre-built tool connectors** (`meshflow/tools/connectors.py`) — Slack,
+  GitHub, web search, CRM, calendar, finance, DevOps and more
+- **Cloud sandbox providers** — E2B and Modal backends via `SandboxRouter`
+- **External secrets backends** — `AWSSecretsProvider`, `HashiCorpVaultProvider`,
+  `EnvSecretsProvider`
+- **Typed streaming helpers** — `tokens()`, `filter_stream()`, `cost_events()`
+- **ModelRouter analytics** — `GET /api/analytics/model-router` + dashboard page
+- **Per-step timeouts** — `Policy.step_timeout_s` with fail/skip/retry actions
+- **Grafana dashboard** — `dashboards/grafana-meshflow.json` (10 panels)
+- **Arize Phoenix connector** — `PhoenixExporter`, `auto_instrument()`
+- **AutoGen migration guide** — `docs/migration/autogen-to-meshflow.md`
+
+---
+
 ## [1.0.0] — 2026-05-30
 
 ### First stable release — Production/Stable

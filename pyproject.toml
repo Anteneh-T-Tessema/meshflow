@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meshflow"
-version = "1.0.0"
-description = "The production-safe infrastructure layer for multi-agent systems — HIPAA/SOX/GDPR built in, SHA-256 audit chain, hard cost caps, 70-85% token savings. 7 lines to ship."
+version = "1.1.0"
+description = "The production-safe infrastructure layer for multi-agent systems — Zero Trust built in, HIPAA/SOX/GDPR compliance, SHA-256 audit chain, hard cost caps, 70-85% token savings. 7 lines to ship."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "MeshFlow Contributors" }]
-keywords = ["agents", "llm", "multi-agent", "orchestration", "ai", "governance", "hipaa", "compliance", "gdpr", "sox"]
+keywords = ["agents", "llm", "multi-agent", "orchestration", "ai", "governance", "zero-trust", "hipaa", "compliance", "gdpr", "sox", "security"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",

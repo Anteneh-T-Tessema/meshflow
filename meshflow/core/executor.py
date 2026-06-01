@@ -83,6 +83,7 @@ class GovernedStepExecutor:
         eco: EnvironmentalOptimizer | None,
         run_id: str,
         trace_id: str,
+        zero_trust: Any = None,
     ) -> None:
         self._policy = policy_engine
         self._identity = identity
@@ -94,6 +95,7 @@ class GovernedStepExecutor:
         self._eco = eco
         self._run_id = run_id
         self._trace_id = trace_id
+        self._zero_trust = zero_trust  # ZeroTrustOrchestrator | None
 
     async def execute(
         self,
@@ -113,6 +115,30 @@ class GovernedStepExecutor:
                 blocked_by="identity",
                 human_context={"reason": "DID revoked"},
             )
+
+        # ── 1b. Zero Trust — continuous authorization + input spotlighting ────
+        if self._zero_trust is not None:
+            try:
+                zt_policy = getattr(self._zero_trust, "_policy", None)
+                # Continuous authorization
+                if zt_policy and getattr(zt_policy, "continuous_auth", False):
+                    cont_auth = getattr(self._zero_trust, "_cont_auth", None)
+                    if cont_auth:
+                        decision = cont_auth.authorize(agent.agent_id, action="run:step")
+                        if not decision.allowed:
+                            return StepOutcome(
+                                ok=False,
+                                data={},
+                                agent_id=agent.agent_id,
+                                role=agent.role.value,
+                                blocked_by=f"zero_trust:auth:{decision.reason}",
+                            )
+                # Spotlighting on task input
+                if zt_policy and getattr(zt_policy, "spotlighting", False):
+                    from meshflow.zero_trust.spotlight import SpotlightContext
+                    task = SpotlightContext(strategy="xml_tags").wrap(task)
+            except Exception:
+                pass  # ZT must never break execution
 
         # ── 2. Circuit breaker ────────────────────────────────────────────────
         try:

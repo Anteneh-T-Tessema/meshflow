@@ -1218,6 +1218,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_diff.add_argument("yaml_b", help="Second workflow YAML")
     p_diff.add_argument("--json", dest="as_json", action="store_true")
 
+    p_zt = sub.add_parser("zt-audit", help="Score your deployment against the Zero Trust for AI Agents framework")
+    p_zt.add_argument("--tier", choices=["foundation", "enterprise", "advanced"],
+                      default="enterprise", help="Target tier to score against (default: enterprise)")
+    p_zt.add_argument("--regulation", default="", help="Regulation preset: hipaa, sox, gdpr, pci, nerc")
+    p_zt.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+    p_zt.add_argument("--fail-on-gaps", action="store_true",
+                      help="Exit non-zero if any controls are missing for the target tier")
+
     return parser
 
 
@@ -1290,6 +1298,7 @@ def main() -> None:
         "worker":        _cmd_worker,
         "templates":     _cmd_templates,
         "marketplace":   _cmd_marketplace,
+        "zt-audit":      _cmd_zt_audit,
     }
     dispatch[args.cmd](args)
 
@@ -5349,3 +5358,119 @@ def _cmd_diff(args: argparse.Namespace) -> None:
         print(json.dumps(result.to_dict(), indent=2))
     else:
         print(result.summary())
+
+
+# ── zt-audit ──────────────────────────────────────────────────────────────────
+
+_ZT_PILLAR_CONTROLS: dict[str, list[str]] = {
+    "Identity & Authentication": [
+        "crypto_identity", "short_lived_tokens", "require_mtls", "hardware_bound",
+    ],
+    "Privilege Management": [
+        "deny_by_default", "abac_context", "jit_privilege", "continuous_auth",
+    ],
+    "Resource Isolation": [
+        "identity_isolation", "sandboxed_execution", "hardware_isolation",
+    ],
+    "Observability & Audit": [
+        "action_logging", "immutable_logs", "otel_tracing", "siem_streaming", "full_provenance",
+    ],
+    "Behavioral Monitoring": [
+        "behavior_baseline", "anomaly_detection", "auto_containment", "ml_behavioral",
+    ],
+    "Input / Output Controls": [
+        "input_validation", "injection_detection", "spotlighting",
+        "output_pii_filter", "hitl_high_risk",
+    ],
+    "Supply Chain": [
+        "ai_bom", "dependency_audit", "supply_chain_verify",
+    ],
+    "Configuration Integrity": [
+        "config_version_control", "config_signing", "immutable_infra",
+    ],
+    "Governance": [
+        "policy_documentation", "formal_governance", "automated_compliance",
+    ],
+}
+
+
+def _cmd_zt_audit(args: argparse.Namespace) -> None:
+    """Score a MeshFlow deployment against the Zero Trust for AI Agents framework."""
+    from meshflow.zero_trust.policy import ZeroTrustPolicy, ZeroTrustTier
+
+    tier_map = {
+        "foundation": ZeroTrustTier.FOUNDATION,
+        "enterprise":  ZeroTrustTier.ENTERPRISE,
+        "advanced":    ZeroTrustTier.ADVANCED,
+    }
+
+    if args.regulation:
+        policy = ZeroTrustPolicy.for_regulation(args.regulation)
+    else:
+        policy = ZeroTrustPolicy.for_tier(tier_map[args.tier])
+
+    enabled  = set(policy.controls_enabled())
+    disabled = policy.controls_disabled()
+    total    = len(enabled) + len(disabled)
+    score    = int(100 * len(enabled) / max(total, 1))
+
+    if args.as_json:
+        print(json.dumps({
+            "tier":             policy.tier.value,
+            "regulation":       policy.regulation or None,
+            "score_pct":        score,
+            "controls_enabled": sorted(enabled),
+            "controls_gap":     sorted(disabled),
+            "pillars": {
+                pillar: {
+                    ctrl: ctrl in enabled
+                    for ctrl in controls
+                }
+                for pillar, controls in _ZT_PILLAR_CONTROLS.items()
+            },
+        }, indent=2))
+        if args.fail_on_gaps and disabled:
+            sys.exit(1)
+        return
+
+    # Human-readable output
+    tier_label = policy.tier.value.upper()
+    reg_label  = f"  ({policy.regulation.upper()} preset)" if policy.regulation else ""
+    bar        = "█" * (score // 5) + "░" * (20 - score // 5)
+    verdict    = "PASS" if not disabled else "GAP"
+    color_open  = "\033[92m" if verdict == "PASS" else "\033[93m"
+    color_close = "\033[0m"
+
+    print(f"\n  MeshFlow Zero Trust Audit — {tier_label}{reg_label}")
+    print(f"  Score: {color_open}{score:3d}%  [{bar}]  {verdict}{color_close}")
+    print(f"  {len(enabled)} / {total} controls active\n")
+
+    # Build a set of what the TARGET tier expects (to distinguish tier-gaps vs out-of-scope)
+    target_policy = ZeroTrustPolicy.for_tier(tier_map[args.tier]) if not args.regulation else policy
+    target_enabled = set(target_policy.controls_enabled())
+
+    for pillar, controls in _ZT_PILLAR_CONTROLS.items():
+        active      = [c for c in controls if c in enabled]
+        tier_gaps   = [c for c in controls if c not in enabled and c in target_enabled]
+        out_of_scope = [c for c in controls if c not in enabled and c not in target_enabled]
+        in_scope    = len(active) + len(tier_gaps)
+        pillar_pct  = int(100 * len(active) / max(in_scope, 1)) if in_scope else 100
+        status = "✅" if not tier_gaps else "⚠️ "
+        print(f"  {status} {pillar}  ({pillar_pct}%)")
+        for ctrl in active:
+            print(f"      ✓  {ctrl.replace('_', ' ')}")
+        for ctrl in tier_gaps:
+            print(f"      ✗  {ctrl.replace('_', ' ')}  ← gap for {tier_label}")
+        for ctrl in out_of_scope:
+            print(f"      ·  {ctrl.replace('_', ' ')}  (higher tier)")
+
+    if disabled:
+        print(f"\n  {len(disabled)} control(s) not yet active for {tier_label} target:")
+        for ctrl in sorted(disabled):
+            print(f"    • {ctrl.replace('_', ' ')}")
+        print(f"\n  Enable with: ZeroTrustPolicy.for_tier(ZeroTrustTier.{tier_label})")
+    else:
+        print(f"\n  All {tier_label} controls active — deployment meets {tier_label} Zero Trust standard.")
+
+    if args.fail_on_gaps and disabled:
+        sys.exit(1)

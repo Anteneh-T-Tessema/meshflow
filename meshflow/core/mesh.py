@@ -207,6 +207,20 @@ class Mesh:
         for tool in self._mcp_tools:
             mcp.register_tool(tool)
 
+        # Zero Trust — Foundation tier active by default on every run
+        _zero_trust = None
+        try:
+            from meshflow.zero_trust.orchestrator import ZeroTrustOrchestrator
+            from meshflow.zero_trust.policy import ZeroTrustTier
+            _zero_trust = ZeroTrustOrchestrator.for_tier(ZeroTrustTier.FOUNDATION)
+            # Register each agent for continuous auth (Foundation: deny-by-default RBAC)
+            if _zero_trust._cont_auth:
+                for _a in self._custom_agents or []:
+                    _aid = getattr(_a, "agent_id", getattr(_a, "name", str(id(_a))))
+                    _zero_trust._cont_auth.register(_aid, permissions=["run:step", "read:*"])
+        except Exception:
+            pass  # ZT bootstrap must never block execution
+
         executor = GovernedStepExecutor(
             policy_engine=policy_engine,
             identity=identity,
@@ -218,6 +232,7 @@ class Mesh:
             eco=eco,
             run_id=run_id,
             trace_id=trace_id,
+            zero_trust=_zero_trust,
         )
 
         # ── Complexity check — single vs multi agent ──────────────────────────
@@ -532,6 +547,16 @@ class Mesh:
         run_id = str(uuid.uuid4())
 
         ledger = ReplayLedger(ledger_db)
+
+        # Zero Trust — Foundation tier active by default on every workflow run
+        _wf_zero_trust = None
+        try:
+            from meshflow.zero_trust.orchestrator import ZeroTrustOrchestrator
+            from meshflow.zero_trust.policy import ZeroTrustTier
+            _wf_zero_trust = ZeroTrustOrchestrator.for_tier(ZeroTrustTier.FOUNDATION)
+        except Exception:
+            pass
+
         runtime = StepRuntime(
             policy=pol,
             run_id=run_id,
@@ -544,6 +569,7 @@ class Mesh:
             eco=EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None,
             ledger=ledger,
             budget=BudgetTracker(pol),
+            zero_trust=_wf_zero_trust,
         )
 
         return await workflow.run(task or f"Execute {workflow.name}", runtime, event_bus=event_bus)

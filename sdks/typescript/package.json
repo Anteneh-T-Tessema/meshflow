@@ -1,7 +1,7 @@
 {
   "name": "meshflow-sdk",
-  "version": "1.0.0",
-  "description": "TypeScript client SDK for MeshFlow governed multi-agent orchestration",
+  "version": "1.1.0",
+  "description": "TypeScript client SDK for MeshFlow — Zero Trust AI agents, HIPAA/SOX/GDPR compliance, tamper-evident audit chain",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
@@ -32,6 +32,7 @@
     "llm",
     "ai",
     "governed-ai",
+    "zero-trust",
     "compliance",
     "hipaa",
     "agent-framework",
