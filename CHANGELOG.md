@@ -5,6 +5,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.2.0] — 2026-06-01
+
+### Zero Trust ops layer — env-driven tier, GitHub Actions gate, Cloud GA
+
+**4,540 tests passing.**
+
+#### `MESHFLOW_ZT_TIER` / `MESHFLOW_ZT_REGULATION` env vars
+- Set ZT tier from the environment with zero code changes:
+  `MESHFLOW_ZT_TIER=enterprise` or `MESHFLOW_ZT_REGULATION=hipaa`
+- Both `Mesh.stream()` and `Mesh.run_workflow_definition()` now resolve tier
+  via `_zt_from_env()` — regulation takes precedence over tier
+
+#### GitHub Actions ZT gate (`.github/actions/zt-audit/`)
+- Reusable composite action: `uses: ./.github/actions/zt-audit`
+- Inputs: `tier`, `regulation`, `fail-on-gaps`, `meshflow-version`
+- Outputs: `score`, `tier`, `gaps`, `passed` — posted to PR step summary
+- `.github/workflows/zt-gate.yml` — example matrix (Foundation blocks, Enterprise reports)
+
+#### MeshFlow Cloud GA
+- `report_run()` now includes `zero_trust` payload — tier, score, controls active/gap
+- `GET /api/zt-status` on TraceServer — live ZT posture snapshot
+- Dashboard **Cloud** page — ZT posture KPIs, token optimization savings, cost
+  regression baseline status, GitHub Actions ZT gate snippet
+
+---
+
 ## [1.1.0] — 2026-06-01
 
 ### Zero Trust for AI Agents — first framework to implement the Anthropic ZT guide

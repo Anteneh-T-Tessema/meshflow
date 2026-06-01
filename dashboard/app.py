@@ -263,6 +263,20 @@ def fetch_analytics(n: int = 20) -> dict[str, Any]:
         return {"error": str(e)}
 
 
+def fetch_zt_status() -> dict[str, Any]:
+    import urllib.request
+    ts_port = int(os.environ.get("MESHFLOW_STUDIO_PORT", "7788"))
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{ts_port}/api/zt-status", timeout=5) as r:
+            return json.loads(r.read())
+    except Exception:
+        try:
+            from meshflow.cloud.reporter import _zt_status_payload
+            return _zt_status_payload()
+        except Exception as e:
+            return {"error": str(e)}
+
+
 def fetch_router_analytics(n: int = 50) -> dict[str, Any]:
     import urllib.request
     # Hits the TraceServer's /api/analytics/model-router endpoint
@@ -321,7 +335,7 @@ with st.sidebar:
         "Navigate",
         ["Overview", "Runs", "HITL Queue", "Metrics", "Submit Task", "Live", "Pool",
          "Evals", "Plugins", "Graph", "Audit", "SLA", "OTEL",
-         "Compliance", "Alerts", "API Keys", "Analytics", "Model Router", "Zero Trust"],
+         "Compliance", "Alerts", "API Keys", "Analytics", "Model Router", "Zero Trust", "Cloud"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -1586,6 +1600,103 @@ elif page == "Zero Trust":
     except Exception as e:
         st.error(f"Zero Trust module unavailable: {e}")
         st.code("pip install meshflow[full]", language="bash")
+
+
+# ── Cloud ─────────────────────────────────────────────────────────────────────
+
+elif page == "Cloud":
+    st.header("MeshFlow Cloud")
+    st.caption("Cross-deployment status — Zero Trust posture, token optimization, and cost regression.")
+
+    cloud_key = os.environ.get("MESHFLOW_CLOUD_KEY", "")
+    if not cloud_key:
+        st.info("Set `MESHFLOW_CLOUD_KEY` to enable cloud telemetry. "
+                "All data below reflects local deployment state.")
+
+    # ── Zero Trust posture ────────────────────────────────────────────────────
+    st.subheader("Zero Trust Posture")
+    zt = fetch_zt_status()
+    if "error" in zt:
+        st.warning(f"ZT status unavailable: {zt['error']}")
+    else:
+        tier    = zt.get("tier", "foundation").upper()
+        score   = zt.get("score_pct", 0)
+        enabled = zt.get("controls_enabled", 0)
+        gap     = zt.get("controls_gap", 0)
+        reg     = zt.get("regulation") or "—"
+        env_tier = zt.get("env_tier") or "(default)"
+
+        z1, z2, z3, z4, z5 = st.columns(5)
+        z1.metric("Active tier",       tier)
+        z2.metric("ZT score",          f"{score}%")
+        z3.metric("Controls active",   enabled)
+        z4.metric("Controls gap",      gap,   delta=f"-{gap}" if gap else None,
+                  delta_color="inverse" if gap else "off")
+        z5.metric("Regulation",        reg)
+
+        if gap == 0:
+            st.success(f"All {tier} controls active — deployment meets {tier} Zero Trust standard.", icon="✅")
+        else:
+            st.warning(f"{gap} control(s) missing for {tier} target. "
+                       "Run `meshflow zt-audit` for details.", icon="⚠️")
+
+        with st.expander("Configure via environment"):
+            st.code(f"""# Set in your .env or deployment config
+MESHFLOW_ZT_TIER=enterprise          # foundation | enterprise | advanced
+MESHFLOW_ZT_REGULATION=hipaa         # overrides tier for regulated workloads
+
+# Current: MESHFLOW_ZT_TIER={env_tier}""", language="bash")
+
+    st.divider()
+
+    # ── Token optimization summary ────────────────────────────────────────────
+    st.subheader("Token Optimization")
+    router_data = fetch_router_analytics(50)
+    if "error" not in router_data:
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("Runs analysed",  router_data.get("runs_analysed", 0))
+        t2.metric("Actual cost",    f"${router_data.get('actual_cost_usd', 0):.4f}")
+        t3.metric("Always-large est.", f"${router_data.get('always_large_cost_usd', 0):.4f}")
+        savings_pct = router_data.get("savings_pct", 0)
+        t4.metric("Savings",        f"{savings_pct*100:.0f}%",
+                  delta=f"-{savings_pct*100:.0f}%", delta_color="inverse")
+    else:
+        st.info("Token optimization data unavailable — start `meshflow studio` to enable.")
+
+    st.divider()
+
+    # ── Cost regression gate status ───────────────────────────────────────────
+    st.subheader("Cost Regression Gate")
+    import pathlib
+    baseline_path = pathlib.Path("eval_baseline.json")
+    if baseline_path.exists():
+        try:
+            import json as _json
+            baseline = _json.loads(baseline_path.read_text())
+            b1, b2, b3 = st.columns(3)
+            b1.metric("Baseline tokens",   f"{baseline.get('total_tokens', 0):,}")
+            b2.metric("Baseline cost",     f"${baseline.get('total_cost_usd', 0):.5f}")
+            b3.metric("Baseline pass rate", f"{baseline.get('pass_rate', 1)*100:.1f}%")
+            st.caption("Baseline: `eval_baseline.json` — used by `.github/workflows/cost-regression.yml`")
+        except Exception as e:
+            st.warning(f"Could not read baseline: {e}")
+    else:
+        st.info("No `eval_baseline.json` found. Run `meshflow eval run evals.yaml --save-baseline` to create one.")
+        st.code("meshflow eval run evals.yaml --save-baseline eval_baseline.json", language="bash")
+
+    st.divider()
+
+    # ── GitHub Actions ZT gate ────────────────────────────────────────────────
+    st.subheader("GitHub Actions ZT Gate")
+    st.markdown("Add to any repo using MeshFlow:")
+    st.code("""# .github/workflows/zt-gate.yml
+- name: Zero Trust Audit
+  uses: Anteneh-T-Tessema/meshflow/.github/actions/zt-audit@v1.2.0
+  with:
+    tier: enterprise
+    fail-on-gaps: "true"
+""", language="yaml")
+    st.caption("Outputs: `score`, `tier`, `gaps`, `passed` — posted to PR step summary automatically.")
 
 
 # ── Auto-refresh ──────────────────────────────────────────────────────────────

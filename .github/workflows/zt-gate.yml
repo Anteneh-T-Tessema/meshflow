@@ -1,0 +1,52 @@
+name: Zero Trust Gate
+
+on:
+  push:
+    branches: [main, "release/*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  zt-audit:
+    name: Zero Trust Audit (${{ matrix.tier }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tier: foundation
+            fail-on-gaps: "true"    # PRs must pass Foundation
+          - tier: enterprise
+            fail-on-gaps: "false"   # Enterprise gaps reported but don't block
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Zero Trust Audit — ${{ matrix.tier }}
+        id: zt
+        uses: ./.github/actions/zt-audit
+        with:
+          tier: ${{ matrix.tier }}
+          fail-on-gaps: ${{ matrix.fail-on-gaps }}
+
+      - name: Print results
+        run: |
+          echo "Tier:   ${{ steps.zt.outputs.tier }}"
+          echo "Score:  ${{ steps.zt.outputs.score }}%"
+          echo "Passed: ${{ steps.zt.outputs.passed }}"
+          echo "Gaps:   ${{ steps.zt.outputs.gaps || 'none' }}"
+
+  zt-hipaa:
+    name: Zero Trust Audit (HIPAA)
+    runs-on: ubuntu-latest
+    # Only run on main — HIPAA gate for release branches
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Zero Trust Audit — HIPAA
+        uses: ./.github/actions/zt-audit
+        with:
+          regulation: hipaa
+          fail-on-gaps: "false"

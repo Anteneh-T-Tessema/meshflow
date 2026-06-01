@@ -1,0 +1,111 @@
+name: MeshFlow Zero Trust Audit
+description: >
+  Score a deployment against the Anthropic Zero Trust for AI Agents framework.
+  Checks Foundation / Enterprise / Advanced tier controls and optionally fails
+  the build when gaps are detected.
+
+inputs:
+  tier:
+    description: Target Zero Trust tier (foundation | enterprise | advanced)
+    required: false
+    default: enterprise
+  regulation:
+    description: Regulation preset that overrides tier (hipaa | sox | gdpr | pci | nerc)
+    required: false
+    default: ""
+  fail-on-gaps:
+    description: Exit non-zero if any controls are missing for the target tier
+    required: false
+    default: "true"
+  python-version:
+    description: Python version to use when installing meshflow
+    required: false
+    default: "3.11"
+  meshflow-version:
+    description: meshflow version to install (e.g. ">=1.1.0" or "==1.1.0")
+    required: false
+    default: ">=1.1.0"
+
+outputs:
+  score:
+    description: Zero Trust score as a percentage (0-100)
+    value: ${{ steps.audit.outputs.score }}
+  tier:
+    description: Resolved tier that was audited
+    value: ${{ steps.audit.outputs.tier }}
+  gaps:
+    description: Comma-separated list of missing controls (empty = PASS)
+    value: ${{ steps.audit.outputs.gaps }}
+  passed:
+    description: "true" if no gaps detected, "false" otherwise
+    value: ${{ steps.audit.outputs.passed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install meshflow
+      shell: bash
+      run: pip install --quiet "meshflow${{ inputs.meshflow-version }}"
+
+    - name: Run Zero Trust audit
+      id: audit
+      shell: bash
+      env:
+        MESHFLOW_ZT_TIER: ${{ inputs.tier }}
+        MESHFLOW_ZT_REGULATION: ${{ inputs.regulation }}
+      run: |
+        # Run audit and capture JSON output
+        AUDIT_ARGS="--tier ${{ inputs.tier }} --json"
+        if [ -n "${{ inputs.regulation }}" ]; then
+          AUDIT_ARGS="--regulation ${{ inputs.regulation }} --json"
+        fi
+
+        REPORT=$(meshflow zt-audit $AUDIT_ARGS 2>&1)
+        echo "$REPORT" > zt_audit_report.json
+
+        # Parse outputs
+        SCORE=$(echo "$REPORT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('score_pct',0))")
+        TIER=$(echo "$REPORT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tier',''))")
+        GAPS=$(echo "$REPORT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(','.join(d.get('controls_gap',[])))")
+
+        echo "score=$SCORE"   >> "$GITHUB_OUTPUT"
+        echo "tier=$TIER"     >> "$GITHUB_OUTPUT"
+        echo "gaps=$GAPS"     >> "$GITHUB_OUTPUT"
+        echo "passed=$([ -z \"$GAPS\" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+        # Human-readable summary to step summary
+        echo "## MeshFlow Zero Trust Audit" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+        echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+        echo "| Tier | \`$TIER\` |" >> "$GITHUB_STEP_SUMMARY"
+        echo "| Score | **${SCORE}%** |" >> "$GITHUB_STEP_SUMMARY"
+        if [ -z "$GAPS" ]; then
+          echo "| Status | ✅ PASS — all controls active |" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "| Status | ⚠️ GAP — missing controls |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Missing controls:**" >> "$GITHUB_STEP_SUMMARY"
+          echo "$GAPS" | tr ',' '\n' | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Upload audit report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: zt-audit-report
+        path: zt_audit_report.json
+        retention-days: 30
+
+    - name: Fail on gaps
+      if: inputs.fail-on-gaps == 'true' && steps.audit.outputs.passed == 'false'
+      shell: bash
+      run: |
+        echo "::error::Zero Trust audit failed — ${{ steps.audit.outputs.gaps }}"
+        echo "Run 'meshflow zt-audit --tier ${{ inputs.tier }}' locally for details."
+        exit 1

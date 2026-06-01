@@ -101,6 +101,11 @@ class _TraceHandler(http.server.BaseHTTPRequestHandler):
             self._json(data)
             return
 
+        if path == "/api/zt-status":
+            data = self.server_instance.get_zt_status()
+            self._json(data)
+            return
+
         if path == "/api/analytics/model-router":
             qs = parse_qs(parsed.query)
             n = int(qs.get("n", ["50"])[0])
@@ -235,6 +240,14 @@ class TraceServer:
         return f"http://127.0.0.1:{self._port}"
 
     # ── Data methods (called from request handlers) ────────────────────────────
+
+    def get_zt_status(self) -> dict[str, Any]:
+        """Return current Zero Trust posture — tier, score, controls active/gap."""
+        try:
+            from meshflow.cloud.reporter import _zt_status_payload
+            return _zt_status_payload()
+        except Exception as exc:
+            return {"error": str(exc)}
 
     async def get_router_analytics(self, n_runs: int = 50) -> dict[str, Any]:
         """Return ModelRouter tier distribution and cost-savings summary."""

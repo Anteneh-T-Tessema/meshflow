@@ -44,6 +44,29 @@ if TYPE_CHECKING:
 _DEFAULT_ENDPOINT = "https://meshflow.dev/api/ingest/run"
 
 
+def _zt_status_payload() -> dict[str, Any]:
+    """Snapshot the current Zero Trust posture for telemetry."""
+    try:
+        import os
+        from meshflow.core.mesh import _zt_from_env
+        zt = _zt_from_env()
+        p = zt._policy
+        enabled = p.controls_enabled()
+        disabled = p.controls_disabled()
+        total = len(enabled) + len(disabled)
+        return {
+            "tier":             p.tier.value,
+            "regulation":       p.regulation or None,
+            "score_pct":        int(100 * len(enabled) / max(total, 1)),
+            "controls_enabled": len(enabled),
+            "controls_gap":     len(disabled),
+            "env_tier":         os.environ.get("MESHFLOW_ZT_TIER", ""),
+            "env_regulation":   os.environ.get("MESHFLOW_ZT_REGULATION", ""),
+        }
+    except Exception:
+        return {}
+
+
 def report_run(
     result: RunResult,
     *,
@@ -101,6 +124,7 @@ def report_run(
         "human_approvals_required": result.human_approvals_required,
         "ledger_entries":           result.ledger_entries,
         "total_carbon_g":           round(result.total_carbon_g, 4),
+        "zero_trust":               _zt_status_payload(),
     }
 
     def _fire() -> None:

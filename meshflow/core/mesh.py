@@ -77,6 +77,31 @@ from meshflow.security.guardian import Guardian
 from meshflow.security.identity import AgentIdentityProvider
 
 
+def _zt_from_env() -> Any:
+    """Instantiate a ZeroTrustOrchestrator from env vars.
+
+    MESHFLOW_ZT_REGULATION=hipaa  → regulation-based policy (takes precedence)
+    MESHFLOW_ZT_TIER=enterprise   → explicit tier (foundation | enterprise | advanced)
+    (unset)                       → Foundation tier (default)
+    """
+    import os
+    from meshflow.zero_trust.orchestrator import ZeroTrustOrchestrator
+    from meshflow.zero_trust.policy import ZeroTrustTier
+
+    regulation = os.environ.get("MESHFLOW_ZT_REGULATION", "").strip().lower()
+    if regulation:
+        return ZeroTrustOrchestrator.for_regulation(regulation)
+
+    tier_name = os.environ.get("MESHFLOW_ZT_TIER", "foundation").strip().lower()
+    tier_map = {
+        "foundation": ZeroTrustTier.FOUNDATION,
+        "enterprise":  ZeroTrustTier.ENTERPRISE,
+        "advanced":    ZeroTrustTier.ADVANCED,
+    }
+    tier = tier_map.get(tier_name, ZeroTrustTier.FOUNDATION)
+    return ZeroTrustOrchestrator.for_tier(tier)
+
+
 @dataclass
 class MeshEvent:
     """Streaming event emitted as each governed step completes."""
@@ -207,13 +232,12 @@ class Mesh:
         for tool in self._mcp_tools:
             mcp.register_tool(tool)
 
-        # Zero Trust — Foundation tier active by default on every run
+        # Zero Trust — tier resolved from MESHFLOW_ZT_TIER / MESHFLOW_ZT_REGULATION env vars
+        # (defaults to Foundation when neither is set)
         _zero_trust = None
         try:
-            from meshflow.zero_trust.orchestrator import ZeroTrustOrchestrator
-            from meshflow.zero_trust.policy import ZeroTrustTier
-            _zero_trust = ZeroTrustOrchestrator.for_tier(ZeroTrustTier.FOUNDATION)
-            # Register each agent for continuous auth (Foundation: deny-by-default RBAC)
+            _zero_trust = _zt_from_env()
+            # Register each agent for continuous auth
             if _zero_trust._cont_auth:
                 for _a in self._custom_agents or []:
                     _aid = getattr(_a, "agent_id", getattr(_a, "name", str(id(_a))))
@@ -548,12 +572,10 @@ class Mesh:
 
         ledger = ReplayLedger(ledger_db)
 
-        # Zero Trust — Foundation tier active by default on every workflow run
+        # Zero Trust — tier resolved from env vars (MESHFLOW_ZT_TIER / MESHFLOW_ZT_REGULATION)
         _wf_zero_trust = None
         try:
-            from meshflow.zero_trust.orchestrator import ZeroTrustOrchestrator
-            from meshflow.zero_trust.policy import ZeroTrustTier
-            _wf_zero_trust = ZeroTrustOrchestrator.for_tier(ZeroTrustTier.FOUNDATION)
+            _wf_zero_trust = _zt_from_env()
         except Exception:
             pass
 
