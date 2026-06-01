@@ -162,6 +162,28 @@ from meshflow.queue import TaskQueue, QueueWorker, TaskItem, TaskStatus
 from meshflow.tools.code_interpreter import CodeInterpreter, CodeResult
 from meshflow.tools.sandbox_providers import E2BSandboxProvider, ModalSandboxProvider, SandboxRouter
 from meshflow.a2a import AgentCard, A2AMessage, A2AResponse, A2AClient, A2AServer
+# ── SIEM streaming ────────────────────────────────────────────────────────────
+from meshflow.observability.siem import (
+    SIEMStreamer,
+    SplunkHECBackend,
+    DatadogLogsBackend,
+    GenericHTTPBackend,
+    get_siem_streamer,
+)
+# ── Red-team testing ──────────────────────────────────────────────────────────
+from meshflow.security.red_team import (
+    RedTeamSuite,
+    RedTeamReport,
+    ProbeResult as RedTeamProbeResult,
+    Probe as RedTeamProbe,
+)
+# ── Blue/green deployments ────────────────────────────────────────────────────
+from meshflow.deploy.blue_green import (
+    BlueGreenRouter,
+    AgentDeployment,
+    PromotionResult,
+    DeploymentStore,
+)
 # ── Zero Trust framework ──────────────────────────────────────────────────────
 from meshflow.zero_trust import (
     ZeroTrustPolicy,
@@ -977,6 +999,22 @@ __all__ = [
     "ParetoAnalyzer",
     "ModelBenchmark",
     "BenchmarkRun",
+    # ── SIEM streaming ────────────────────────────────────────────────────────
+    "SIEMStreamer",
+    "SplunkHECBackend",
+    "DatadogLogsBackend",
+    "GenericHTTPBackend",
+    "get_siem_streamer",
+    # ── Red-team testing ──────────────────────────────────────────────────────
+    "RedTeamSuite",
+    "RedTeamReport",
+    "RedTeamProbeResult",
+    "RedTeamProbe",
+    # ── Blue/green deployments ────────────────────────────────────────────────
+    "BlueGreenRouter",
+    "AgentDeployment",
+    "PromotionResult",
+    "DeploymentStore",
     # ── Zero Trust framework ──────────────────────────────────────────────────
     "ZeroTrustPolicy",
     "ZeroTrustTier",

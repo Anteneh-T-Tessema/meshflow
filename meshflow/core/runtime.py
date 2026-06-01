@@ -184,6 +184,16 @@ class StepRuntime:
         self._compliance_guard = compliance_guard
         self._zero_trust = zero_trust  # ZeroTrustOrchestrator | None
         self._prev_hash = ""  # grows with each committed record
+        # SIEM streamer — lazy-loaded when ZT Advanced siem_streaming is active
+        self._siem: Any = None
+        if zero_trust is not None:
+            try:
+                zt_policy = getattr(zero_trust, "_policy", None)
+                if zt_policy and getattr(zt_policy, "siem_streaming", False):
+                    from meshflow.observability.siem import get_siem_streamer
+                    self._siem = get_siem_streamer()
+            except Exception:
+                pass
 
     async def run(
         self,
@@ -593,6 +603,30 @@ class StepRuntime:
                     _asyncio.create_task(_wh.deliver("hitl_pending", {**_wp, "human_context": human_ctx}))
         except Exception:
             pass
+
+        # SIEM streaming — emit to all configured backends
+        if self._siem:
+            try:
+                _siem_event = "step_blocked" if blocked else ("hitl_pending" if paused else "step_complete")
+                self._siem.emit(_siem_event, {
+                    "node_id":      node.id,
+                    "node_kind":    node.kind.value,
+                    "verdict":      verdict,
+                    "blocked":      blocked,
+                    "block_reason": block_reason,
+                    "cost_usd":     getattr(output, "cost_usd", 0.0),
+                    "tokens_used":  getattr(output, "tokens_used", 0),
+                    "duration_ms":  round((time.monotonic() - start) * 1000, 1),
+                    "run_id":       self._run_id,
+                }, run_id=self._run_id)
+                if blocked and block_reason:
+                    self._siem.emit("policy_violation", {
+                        "node_id":      node.id,
+                        "block_reason": block_reason,
+                        "run_id":       self._run_id,
+                    }, run_id=self._run_id)
+            except Exception:
+                pass
 
         return RuntimeOutcome(
             ok=not blocked,

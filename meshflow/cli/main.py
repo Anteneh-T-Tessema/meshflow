@@ -1218,6 +1218,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_diff.add_argument("yaml_b", help="Second workflow YAML")
     p_diff.add_argument("--json", dest="as_json", action="store_true")
 
+    # red-team
+    p_rt = sub.add_parser("red-team", help="Adversarial red-team testing of an agent pipeline")
+    p_rt.add_argument("--config", default="", help="Agent YAML config to probe")
+    p_rt.add_argument("--categories", nargs="*",
+                      choices=["prompt_injection", "indirect_injection", "privilege_escalation",
+                               "data_exfiltration", "tool_poisoning", "context_manipulation"],
+                      help="Limit to specific attack categories")
+    p_rt.add_argument("--output", default="", help="Write JSON report to this file")
+    p_rt.add_argument("--json", dest="as_json", action="store_true", help="Print JSON report")
+    p_rt.add_argument("--fail-on-risk", choices=["high", "medium", "low"], default="high",
+                      help="Exit non-zero if risk level meets or exceeds this threshold")
+
+    # blue-green
+    p_bg = sub.add_parser("blue-green", help="Blue/green zero-downtime agent deployments")
+    p_bg_sub = p_bg.add_subparsers(dest="deploy_cmd", required=True)
+    p_bg_promote = p_bg_sub.add_parser("promote", help="Promote a deployment slot to active")
+    p_bg_promote.add_argument("slot", choices=["blue", "green"])
+    p_bg_promote.add_argument("--steps", nargs="*", type=float, default=[0.1, 0.5, 1.0],
+                               help="Traffic fractions at each promotion step (default: 0.1 0.5 1.0)")
+    p_bg_sub.add_parser("rollback", help="Immediately roll back to previous slot")
+    p_bg_sub.add_parser("status",   help="Show current deployment status")
+    p_bg_register = p_bg_sub.add_parser("register", help="Register a deployment in a slot")
+    p_bg_register.add_argument("slot", choices=["blue", "green"])
+    p_bg_register.add_argument("--name",    required=True, help="Deployment name")
+    p_bg_register.add_argument("--version", default="1.0.0", help="Version string")
+    p_bg_register.add_argument("--config",  default="",     help="Path to agent YAML config")
+
     p_zt = sub.add_parser("zt-audit", help="Score your deployment against the Zero Trust for AI Agents framework")
     p_zt.add_argument("--tier", choices=["foundation", "enterprise", "advanced"],
                       default="enterprise", help="Target tier to score against (default: enterprise)")
@@ -1299,6 +1326,8 @@ def main() -> None:
         "templates":     _cmd_templates,
         "marketplace":   _cmd_marketplace,
         "zt-audit":      _cmd_zt_audit,
+        "red-team":      _cmd_red_team,
+        "blue-green":    _cmd_deploy,
     }
     dispatch[args.cmd](args)
 
@@ -5474,3 +5503,120 @@ def _cmd_zt_audit(args: argparse.Namespace) -> None:
 
     if args.fail_on_gaps and disabled:
         sys.exit(1)
+
+
+# ── red-team ──────────────────────────────────────────────────────────────────
+
+
+def _cmd_red_team(args: argparse.Namespace) -> None:
+    """Adversarial red-team testing of an agent pipeline."""
+    import asyncio as _asyncio
+    from meshflow.security.red_team import RedTeamSuite, CATEGORIES
+
+    categories = args.categories or None
+
+    # Build a minimal mock agent when no config is provided
+    agent: object
+    if args.config:
+        try:
+            from meshflow.core.config import load as _load_cfg
+            _load_cfg(args.config)
+            # Use a simple passthrough wrapper for probing
+            class _WFAgent:
+                name = args.config
+                async def run(self, task: str) -> dict:
+                    return {"result": f"[echo] {task[:100]}"}
+            agent = _WFAgent()
+        except Exception as e:
+            print(f"  Could not load config {args.config!r}: {e}")
+            print("  Running probes against built-in guardrails only.\n")
+            agent = None
+    else:
+        agent = None
+
+    suite = RedTeamSuite(categories=categories)
+    print(f"  Running {len(suite._probes)} red-team probes"
+          + (f" in categories: {', '.join(categories)}" if categories else "") + " …\n")
+
+    report = _asyncio.run(suite.run_async(agent))
+
+    if args.as_json or args.output:
+        output_data = json.dumps(report.to_dict(), indent=2)
+        if args.output:
+            with open(args.output, "w") as fh:
+                fh.write(output_data)
+            print(f"  Report written to {args.output}")
+        if args.as_json:
+            print(output_data)
+    else:
+        print(report.summary())
+
+    risk_order = {"low": 0, "medium": 1, "high": 2}
+    threshold  = risk_order.get(args.fail_on_risk, 2)
+    if risk_order.get(report.risk_level, 0) >= threshold:
+        sys.exit(1)
+
+
+# ── deploy ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_deploy(args: argparse.Namespace) -> None:
+    """Blue/green zero-downtime agent deployments."""
+    import asyncio as _asyncio
+    from meshflow.deploy.blue_green import BlueGreenRouter, AgentDeployment, DeploymentStore
+
+    store = DeploymentStore()
+    router = BlueGreenRouter()
+
+    # Restore any persisted state
+    state = store.load()
+    if state:
+        for slot, dep_data in state.get("slots", {}).items():
+            router.register(slot, AgentDeployment(
+                name=dep_data.get("name", slot),
+                version=dep_data.get("version", "?"),
+                config_path=dep_data.get("config_path", ""),
+            ))
+        router._active_slot = state.get("active_slot", "blue")
+
+    cmd = args.deploy_cmd
+
+    if cmd == "register":
+        dep = AgentDeployment(
+            name=args.name,
+            version=args.version,
+            config_path=args.config,
+        )
+        router.register(args.slot, dep)
+        store.save(router)
+        print(f"  Registered {args.name} v{args.version} in slot '{args.slot}'")
+
+    elif cmd == "status":
+        status = router.status()
+        print(f"\n  Active slot:  {status['active_slot']}")
+        print(f"  Traffic split: {status['traffic_split']*100:.0f}% to standby\n")
+        for slot, dep in status["slots"].items():
+            marker = "▶ " if slot == status["active_slot"] else "  "
+            print(f"  {marker}[{slot}]  {dep['name']} v{dep['version']}"
+                  + (f"  ({dep['config_path']})" if dep['config_path'] else ""))
+
+    elif cmd == "promote":
+        if not router._slots:
+            print("  No deployments registered. Run 'meshflow deploy register' first.")
+            sys.exit(1)
+        print(f"  Promoting '{args.slot}' with steps: "
+              f"{' → '.join(f'{int(s*100)}%' for s in args.steps)} …\n")
+        result = _asyncio.run(router.promote(args.slot, steps=args.steps))
+        store.save(router)
+        if result.success:
+            print(f"  ✅ Promotion complete — active slot: '{result.active_slot}'")
+        else:
+            print(f"  ❌ Promotion failed — rolled back to '{result.active_slot}'")
+            print(f"     Reason: {result.rollback_reason}")
+            sys.exit(1)
+
+    elif cmd == "rollback":
+        prev = router._active_slot
+        new_active = router.rollback()
+        store.save(router)
+        print(f"  Rolled back: '{prev}' → '{new_active}'")

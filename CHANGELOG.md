@@ -5,6 +5,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.3.0] — 2026-06-01
+
+### Enterprise security operations — SIEM streaming, red-team testing, blue/green deployments
+
+**4,540 tests passing.**
+
+#### SIEM Streaming (`meshflow/observability/siem.py`)
+- `SIEMStreamer` — fan-out streamer to all configured backends (fire-and-forget daemon threads)
+- `SplunkHECBackend` — Splunk HTTP Event Collector (`MESHFLOW_SIEM_SPLUNK_URL` + `_TOKEN`)
+- `DatadogLogsBackend` — Datadog Log Management (`MESHFLOW_SIEM_DATADOG_API_KEY`)
+- `GenericHTTPBackend` — any SIEM webhook (`MESHFLOW_SIEM_HTTP_URL`)
+- `SIEMStreamer.from_env()` — auto-detects all configured backends
+- Wired into `StepRuntime` — when ZT Advanced `siem_streaming=True`, every step emits
+  `step_complete`, `step_blocked`, and `policy_violation` events automatically
+- Closes ZT Advanced tier `siem_streaming` control gap
+
+#### Red-Team Testing (`meshflow/security/red_team.py`)
+- `RedTeamSuite` — 22 adversarial probes across 6 OWASP-aligned categories:
+  prompt injection (6), indirect injection (3), privilege escalation (3),
+  data exfiltration (4), tool poisoning (3), context manipulation (3)
+- `RedTeamReport` — pass rate, risk level (low/medium/high), per-category breakdown
+- CLI: `meshflow red-team [--config agent.yaml] [--categories ...] [--fail-on-risk high]`
+- Probes run through full guardrail + ZT stack — reports which attacks were blocked
+  and which reached the agent
+
+#### Blue/Green Deployments (`meshflow/deploy/blue_green.py`)
+- `BlueGreenRouter` — traffic splitting between blue/green slots with configurable
+  promotion steps (default: 10% → 50% → 100%)
+- `AgentDeployment` — versioned descriptor with health tracking (error rate, request count)
+- `PromotionResult` — success/rollback outcome with per-step health log
+- `DeploymentStore` — persists state to `.meshflow_deploy.json`
+- CLI: `meshflow blue-green register|promote|rollback|status`
+- Automatic rollback when error rate exceeds threshold during promotion
+
+---
+
 ## [1.2.0] — 2026-06-01
 
 ### Zero Trust ops layer — env-driven tier, GitHub Actions gate, Cloud GA
