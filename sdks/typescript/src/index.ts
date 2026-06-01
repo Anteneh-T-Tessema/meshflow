@@ -6,7 +6,7 @@
  * Node ≥ 18 (native fetch).  Browser-compatible via the Fetch API.
  *
  * Quick start:
- *   import { MeshFlowClient } from "@meshflow/client";
+ *   import { MeshFlowClient } from "meshflow-sdk";
  *
  *   const client = new MeshFlowClient("http://localhost:8000", "my-api-key");
  *
@@ -24,7 +24,7 @@
  *   }
  *
  *   // Verify an incoming webhook signature
- *   import { verifyWebhookSignature } from "@meshflow/client";
+ *   import { verifyWebhookSignature } from "meshflow-sdk";
  *   const ok = await verifyWebhookSignature(rawBody, signature, secret);
  */
 
@@ -631,20 +631,31 @@ export class MeshFlowClient {
  * secret.  The signature is sent in the X-MeshFlow-Signature header.
  *
  * Usage (Node.js):
- *   import { verifyWebhookSignature } from "@meshflow/client";
+ *   import { verifyWebhookSignature } from "meshflow-sdk";
  *   const rawBody = await request.text();
  *   const sig = request.headers.get("X-MeshFlow-Signature") ?? "";
  *   const valid = await verifyWebhookSignature(rawBody, sig, process.env.WEBHOOK_SECRET!);
  *   if (!valid) return new Response("Forbidden", { status: 403 });
  */
 export async function verifyWebhookSignature(
-  rawBody: string | Uint8Array,
+  rawBody: string | Uint8Array | ArrayBuffer,
   signature: string,
   secret: string,
 ): Promise<boolean> {
   const enc = new TextEncoder();
-  const keyData = typeof secret === "string" ? enc.encode(secret) : secret;
-  const bodyData = typeof rawBody === "string" ? enc.encode(rawBody) : rawBody;
+
+  // Normalise to ArrayBuffer — required by crypto.subtle in strict TS 5.x
+  const toArrayBuffer = (v: string | Uint8Array | ArrayBuffer): ArrayBuffer => {
+    if (typeof v === "string") {
+      const u = enc.encode(v);
+      return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength) as ArrayBuffer;
+    }
+    if (v instanceof ArrayBuffer) return v;
+    return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) as ArrayBuffer;
+  };
+
+  const keyData = toArrayBuffer(enc.encode(secret));
+  const bodyData = toArrayBuffer(rawBody);
 
   const key = await crypto.subtle.importKey(
     "raw",

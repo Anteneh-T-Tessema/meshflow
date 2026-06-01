@@ -78,6 +78,7 @@
       font-weight: 600;
       background: linear-gradient(to right, #ffffff, #9ca3af);
       -webkit-background-clip: text;
+      background-clip: text;
       -webkit-text-fill-color: transparent;
     }
 
@@ -286,6 +287,70 @@
     .node-badge-type.subgraph {
       background: rgba(16, 185, 129, 0.15);
       color: #34d399;
+    }
+
+    .node-badge-type.human {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+    }
+
+    .node-template-card.kind-human::before {
+      background: #f59e0b;
+    }
+
+    .canvas-node.kind-human {
+      border-color: rgba(245, 158, 11, 0.3);
+    }
+
+    .canvas-node.kind-human:hover,
+    .canvas-node.kind-human.selected {
+      border-color: #f59e0b;
+      box-shadow: 0 0 16px rgba(245, 158, 11, 0.3);
+    }
+
+    .toast-notification {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      background: var(--bg-surface-solid);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 0.75rem 1.5rem;
+      box-shadow: var(--shadow-glow), 0 0 10px var(--accent-glow);
+      z-index: 10000;
+      font-size: 0.9rem;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: all 0.25s ease;
+      pointer-events: none;
+    }
+
+    .toast-notification.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .modal-footer {
+      padding: 1rem 1.5rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+    }
+
+    .python-preview {
+      background: #06070a;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      color: #a5f3fc;
+      font-family: 'Space Grotesk', monospace;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-x: auto;
+      max-height: 65vh;
+      overflow-y: auto;
     }
 
     .node-id-label {
@@ -555,6 +620,7 @@
       <button class="tab-btn" id="tab-btn-marketplace" onclick="switchTab('marketplace')">Agent Marketplace</button>
     </div>
     <div class="header-actions">
+      <button class="btn" onclick="exportPython()">Export Python</button>
       <button class="btn btn-primary" onclick="exportYAML()">Export YAML</button>
       <button class="btn btn-success" onclick="runWorkflow()" style="background:#10b981;color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:0.85rem;cursor:pointer;margin-left:8px;">▶ Run</button>
     </div>
@@ -589,6 +655,10 @@
               <div class="node-template-title">Subgraph Node</div>
               <div class="node-template-desc">Wraps an entire child workflow as a single node.</div>
             </div>
+            <div class="node-template-card kind-human" onclick="addNode('human')">
+              <div class="node-template-title">Human Approval Node</div>
+              <div class="node-template-desc">Pause execution for human review and sign-off (HITL checkpoint).</div>
+            </div>
           </div>
         </div>
       </div>
@@ -616,6 +686,25 @@
             <input type="text" class="form-control" id="wf-name" value="my-orchestration-flow">
           </div>
           <div class="form-group">
+            <label class="form-label">Governance Policy</label>
+            <select class="form-control" id="wf-policy">
+              <option value="dev">dev — fast, minimal gates</option>
+              <option value="standard" selected>standard — audit + policy basics</option>
+              <option value="regulated">regulated — HITL + immutable audit</option>
+              <option value="legal-critical">legal-critical — evidence + citations</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Compliance Framework</label>
+            <select class="form-control" id="wf-compliance">
+              <option value="none">None</option>
+              <option value="hipaa">HIPAA</option>
+              <option value="sox">SOX</option>
+              <option value="gdpr">GDPR</option>
+              <option value="pci">PCI DSS</option>
+            </select>
+          </div>
+          <div class="form-group">
             <label class="form-label">Max Cost (USD)</label>
             <input type="number" step="0.01" class="form-control" id="wf-max-cost" value="1.50">
           </div>
@@ -631,15 +720,21 @@
           <div class="form-group" id="group-role">
             <label class="form-label">Agent Role</label>
             <select class="form-control" id="node-role" onchange="updateActiveNode()">
-              <option value="executor">Executor</option>
+              <option value="planner">Planner</option>
               <option value="researcher">Researcher</option>
+              <option value="executor">Executor</option>
               <option value="critic">Critic</option>
               <option value="checker">Checker</option>
+              <option value="orchestrator">Orchestrator</option>
             </select>
           </div>
           <div class="form-group" id="group-model">
             <label class="form-label">LLM Model</label>
-            <input type="text" class="form-control" id="node-model" value="claude-sonnet-4-6" oninput="updateActiveNode()">
+            <select class="form-control" id="node-model" onchange="updateActiveNode()">
+              <option value="claude-sonnet-4-6">claude-sonnet-4-6 (recommended)</option>
+              <option value="claude-opus-4-8">claude-opus-4-8 (best quality)</option>
+              <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (fast)</option>
+            </select>
           </div>
           <div class="form-group" id="group-url" style="display: none;">
             <label class="form-label">HTTP URL</label>
@@ -649,6 +744,11 @@
             <label class="form-label">Workflow Ref</label>
             <input type="text" class="form-control" id="node-workflow" value="child_workflow" oninput="updateActiveNode()">
           </div>
+          <div class="form-group" id="group-hitl-prompt" style="display: none;">
+            <label class="form-label">Approval Prompt</label>
+            <textarea class="form-control" id="node-hitl-prompt" rows="2" placeholder="Describe what the approver should review..." oninput="updateActiveNode()"></textarea>
+          </div>
+          <button class="btn btn-danger" style="width: 100%; margin-top: 0.25rem;" onclick="deleteSelectedNode()">Delete Node</button>
         </div>
 
         <!-- Edges / Transitions -->
@@ -661,6 +761,10 @@
           <div class="form-group">
             <label class="form-label">Target Node</label>
             <select class="form-control" id="edge-target"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Edge Condition (optional)</label>
+            <input type="text" class="form-control" id="edge-condition" placeholder="e.g. result.confidence > 0.7">
           </div>
           <button class="btn btn-primary" style="width: 100%;" onclick="addEdge()">Add Link</button>
           <div class="edge-list" id="edge-list-container" style="margin-top: 1rem;"></div>
@@ -715,6 +819,27 @@
       </div>
     </div>
   </div>
+
+  <!-- Python Export Modal -->
+  <div class="modal-overlay" id="python-modal">
+    <div class="modal-card" style="width: 700px;">
+      <div class="modal-header">
+        <h2 style="font-family: 'Space Grotesk', sans-serif;">Generated Python Code</h2>
+        <button onclick="closePythonModal()" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.5rem;">&times;</button>
+      </div>
+      <div class="modal-body">
+        <pre class="python-preview" id="python-preview-code"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="closePythonModal()">Close</button>
+        <button class="btn btn-primary" onclick="copyPython()">Copy</button>
+        <button class="btn btn-primary" onclick="downloadPython()">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notification -->
+  <div class="toast-notification" id="toast-notification"></div>
 
   <!-- Modal for Publishing Template -->
   <div class="modal-overlay" id="publish-modal">
@@ -858,12 +983,7 @@
 
     function addNode(kind) {
       const id = kind + '_' + Math.random().toString(36).substr(2, 5);
-      const node = {
-        id: id,
-        kind: kind,
-        x: 100 + Math.random() * 100,
-        y: 100 + Math.random() * 150
-      };
+      const node = { id, kind, x: 100 + Math.random() * 100, y: 100 + Math.random() * 150 };
       if (kind === 'native') {
         node.role = 'executor';
         node.model = 'claude-sonnet-4-6';
@@ -871,10 +991,21 @@
         node.url = 'https://api.example.com/agent';
       } else if (kind === 'subgraph') {
         node.workflow = 'child_workflow';
+      } else if (kind === 'human') {
+        node.hitl_prompt = 'Review and approve before proceeding.';
       }
       nodes.push(node);
       render();
       selectNode(id);
+    }
+
+    function deleteSelectedNode() {
+      if (!selectedNodeId) return;
+      nodes = nodes.filter(n => n.id !== selectedNodeId);
+      edges = edges.filter(e => e.from !== selectedNodeId && e.to !== selectedNodeId);
+      selectedNodeId = null;
+      document.getElementById('node-config-section').style.display = 'none';
+      render();
     }
 
     function selectNode(id) {
@@ -888,25 +1019,22 @@
       document.getElementById('node-id').value = node.id;
       
       // Toggle inputs based on node kind
+      const showEl = (id, show) => document.getElementById(id).style.display = show ? 'flex' : 'none';
+      showEl('group-role', node.kind === 'native');
+      showEl('group-model', node.kind === 'native');
+      showEl('group-url', node.kind === 'http');
+      showEl('group-workflow', node.kind === 'subgraph');
+      showEl('group-hitl-prompt', node.kind === 'human');
+
       if (node.kind === 'native') {
-        document.getElementById('group-role').style.display = 'flex';
-        document.getElementById('group-model').style.display = 'flex';
-        document.getElementById('group-url').style.display = 'none';
-        document.getElementById('group-workflow').style.display = 'none';
-        document.getElementById('node-role').value = node.role;
-        document.getElementById('node-model').value = node.model;
+        document.getElementById('node-role').value = node.role || 'executor';
+        document.getElementById('node-model').value = node.model || 'claude-sonnet-4-6';
       } else if (node.kind === 'http') {
-        document.getElementById('group-role').style.display = 'none';
-        document.getElementById('group-model').style.display = 'none';
-        document.getElementById('group-url').style.display = 'flex';
-        document.getElementById('group-workflow').style.display = 'none';
         document.getElementById('node-url').value = node.url || '';
       } else if (node.kind === 'subgraph') {
-        document.getElementById('group-role').style.display = 'none';
-        document.getElementById('group-model').style.display = 'none';
-        document.getElementById('group-url').style.display = 'none';
-        document.getElementById('group-workflow').style.display = 'flex';
         document.getElementById('node-workflow').value = node.workflow || '';
+      } else if (node.kind === 'human') {
+        document.getElementById('node-hitl-prompt').value = node.hitl_prompt || '';
       }
     }
 
@@ -933,6 +1061,8 @@
         node.url = document.getElementById('node-url').value;
       } else if (node.kind === 'subgraph') {
         node.workflow = document.getElementById('node-workflow').value;
+      } else if (node.kind === 'human') {
+        node.hitl_prompt = document.getElementById('node-hitl-prompt').value;
       }
 
       render();
@@ -961,12 +1091,13 @@
     function addEdge() {
       const from = document.getElementById('edge-source').value;
       const to = document.getElementById('edge-target').value;
+      const condition = document.getElementById('edge-condition').value.trim();
       if (from === to) return;
-      
-      // Avoid duplicates
       if (edges.some(e => e.from === from && e.to === to)) return;
-      
-      edges.push({ from, to });
+      const edge = { from, to };
+      if (condition) edge.condition = condition;
+      edges.push(edge);
+      document.getElementById('edge-condition').value = '';
       render();
     }
 
@@ -981,43 +1112,119 @@
       edges.forEach((edge, idx) => {
         const div = document.createElement('div');
         div.className = 'edge-card';
+        const condHtml = edge.condition
+          ? `<span style="font-size:0.75rem;color:var(--accent);margin-left:0.4rem;">[if: ${edge.condition}]</span>`
+          : '';
         div.innerHTML = `
-          <span>${edge.from} &rarr; ${edge.to}</span>
+          <span>${edge.from} &rarr; ${edge.to}${condHtml}</span>
           <button class="btn-danger" onclick="removeEdge(${idx})">Delete</button>
         `;
         container.appendChild(div);
       });
     }
 
+    function showToast(msg) {
+      const t = document.getElementById('toast-notification');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2500);
+    }
+
     function buildYAML() {
-      const wfName = document.getElementById('wf-name').value;
+      const wfName = document.getElementById('wf-name').value || 'my-workflow';
       const maxCost = document.getElementById('wf-max-cost').value;
-      
-      let yaml = `name: ${wfName}\n\n`;
-      yaml += `policy:\n  max_cost_usd: ${maxCost}\n\n`;
-      
-      yaml += `nodes:\n`;
+      const policy = document.getElementById('wf-policy').value;
+      const compliance = document.getElementById('wf-compliance').value;
+
+      let yaml = `kind: workflow\nname: ${wfName}\npolicy: ${policy}\n`;
+      if (compliance && compliance !== 'none') {
+        yaml += `\ncompliance:\n  frameworks: [${compliance}]\n`;
+      }
+      yaml += `\nbudget:\n  cost_usd: ${maxCost}\n`;
+
+      yaml += `\nnodes:\n`;
       nodes.forEach(n => {
         yaml += `  - id: ${n.id}\n`;
-        yaml += `    kind: ${n.kind}\n`;
+        yaml += `    type: ${n.kind === 'native' ? 'native' : n.kind === 'http' ? 'http' : n.kind === 'human' ? 'human' : 'subgraph'}\n`;
         if (n.kind === 'native') {
-          yaml += `    agent:\n`;
-          yaml += `      role: ${n.role}\n`;
-          yaml += `      model: ${n.model}\n`;
+          yaml += `    role: ${n.role}\n`;
+          yaml += `    model: ${n.model}\n`;
         } else if (n.kind === 'http') {
           yaml += `    url: ${n.url || ''}\n`;
         } else if (n.kind === 'subgraph') {
           yaml += `    workflow: ${n.workflow || ''}\n`;
+        } else if (n.kind === 'human') {
+          yaml += `    prompt: "${(n.hitl_prompt || 'Review and approve.').replace(/"/g, "'")}"\n`;
         }
       });
-      
+
       yaml += `\nedges:\n`;
       edges.forEach(e => {
-        yaml += `  - from: ${e.from}\n`;
-        yaml += `    to: ${e.to}\n`;
+        yaml += `  - from: ${e.from}\n    to: ${e.to}\n`;
+        if (e.condition) yaml += `    condition: "${e.condition}"\n`;
       });
 
       return yaml;
+    }
+
+    function buildPython() {
+      const wfName = document.getElementById('wf-name').value || 'my_workflow';
+      const safeWfName = wfName.replace(/-/g, '_');
+      const maxCost = document.getElementById('wf-max-cost').value;
+      const policy = document.getElementById('wf-policy').value;
+      const compliance = document.getElementById('wf-compliance').value;
+
+      const lines = [
+        '"""' + wfName + ' — generated by MeshFlow Studio."""',
+        'import asyncio',
+        'from meshflow import Agent, Team, CostCap',
+        '',
+      ];
+
+      // Agent declarations
+      nodes.filter(n => n.kind === 'native').forEach(n => {
+        lines.push(`${n.id.replace(/-/g,'_')} = Agent(`);
+        lines.push(`    name="${n.id}",`);
+        lines.push(`    role="${n.role}",`);
+        lines.push(`    model="${n.model}",`);
+        lines.push(`    memory=True,`);
+        lines.push(`)`);
+        lines.push('');
+      });
+
+      // HITL nodes as comments
+      nodes.filter(n => n.kind === 'human').forEach(n => {
+        lines.push(`# Human approval checkpoint: ${n.id}`);
+        lines.push(`# prompt: "${n.hitl_prompt || 'Review and approve.'}"`);
+        lines.push('');
+      });
+
+      // Determine agent list (native nodes in edge order)
+      const nativeIds = nodes.filter(n => n.kind === 'native').map(n => n.id.replace(/-/g,'_'));
+      const agentsList = nativeIds.join(', ');
+
+      lines.push('team = Team(');
+      lines.push(`    name="${wfName}",`);
+      lines.push(`    agents=[${agentsList}],`);
+      lines.push(`    pattern="supervised",`);
+      lines.push(`    policy="${policy}",`);
+      lines.push(`    cost_cap=CostCap(usd=${maxCost}),`);
+      if (compliance && compliance !== 'none') {
+        lines.push(`    compliance="${compliance}",`);
+      }
+      lines.push(')');
+      lines.push('');
+      lines.push('');
+      lines.push('async def main() -> None:');
+      lines.push('    result = await team.run("Your task here")');
+      lines.push('    print(result.output)');
+      lines.push(`    print(f"run_id={result.run_id}  cost=${'{'}result.total_cost_usd:.4f{'}'}")`);
+      lines.push('');
+      lines.push('');
+      lines.push('if __name__ == "__main__":');
+      lines.push('    asyncio.run(main())');
+
+      return lines.join('\n');
     }
 
     function exportYAML() {
@@ -1036,7 +1243,33 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'meshflow.yaml';
+      a.download = (document.getElementById('wf-name').value || 'meshflow') + '.yaml';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function exportPython() {
+      const code = buildPython();
+      document.getElementById('python-preview-code').textContent = code;
+      document.getElementById('python-modal').style.display = 'flex';
+    }
+
+    function closePythonModal() {
+      document.getElementById('python-modal').style.display = 'none';
+    }
+
+    function copyPython() {
+      navigator.clipboard.writeText(buildPython()).then(() => showToast('Python code copied!'));
+      closePythonModal();
+    }
+
+    function downloadPython() {
+      const code = buildPython();
+      const blob = new Blob([code], { type: 'text/x-python' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (document.getElementById('wf-name').value || 'meshflow').replace(/-/g,'_') + '.py';
       a.click();
       URL.revokeObjectURL(url);
     }
@@ -1044,8 +1277,8 @@
     // ── Run Workflow (one-click deploy) ──────────────────────────────────────
     async function runWorkflow() {
       const yaml = buildYAML();
-      if (!yaml || yaml.includes('No nodes')) {
-        alert('Add at least one node before running.');
+      if (nodes.length === 0) {
+        showToast('Add at least one node before running.');
         return;
       }
 
@@ -1244,7 +1477,7 @@
       const target = document.getElementById('pub-target').value;
 
       if (!name) {
-        alert("Template name is required.");
+        showToast('Template name is required.');
         return;
       }
 
@@ -1282,35 +1515,31 @@
           await loadTemplates();
         } else {
           const err = await response.json();
-          alert("Error publishing template: " + (err.error || "unknown error"));
+          showToast('Error publishing: ' + (err.error || 'unknown error'));
         }
       } catch (e) {
-        alert("Network error: " + e.message);
+        showToast('Network error: ' + e.message);
       }
     }
 
     async function shareLocalToCommunity(name) {
       const tmpl = localTemplates.find(t => t.name === name);
       if (!tmpl) return;
-
       try {
         const response = await fetch('/api/shared-templates', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(tmpl)
         });
-
         if (response.ok) {
-          alert(`Successfully shared template "${name}" to Community Marketplace!`);
+          showToast(`Shared "${name}" to Community Marketplace!`);
           await loadTemplates();
         } else {
           const err = await response.json();
-          alert("Error sharing template: " + (err.error || "unknown error"));
+          showToast('Error sharing: ' + (err.error || 'unknown error'));
         }
       } catch (e) {
-        alert("Network error: " + e.message);
+        showToast('Network error: ' + e.message);
       }
     }
 

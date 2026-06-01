@@ -122,7 +122,9 @@ class Mesh:
         telemetry_otlp_endpoint: str = "",
         telemetry_otlp_protocol: str = "",
         compliance: str = "",
+        name: str = "",
     ) -> None:
+        self.name = name
         self._custom_agents = agents or []
         self._compliance_profile = None
         if compliance:
@@ -152,11 +154,27 @@ class Mesh:
 
         # Reconstruct RunResult from the terminal run_complete event
         terminal = next((e for e in reversed(events) if e.event_type == "run_complete"), None)
-        if terminal:
-            return cast(
-                RunResult, terminal.data.get("_run_result", self._empty_result(task, events))
+        result = cast(
+            RunResult,
+            terminal.data.get("_run_result", self._empty_result(task, events))
+            if terminal else self._empty_result(task, events),
+        )
+
+        # Fire-and-forget cloud telemetry (no-op when MESHFLOW_CLOUD_KEY is unset)
+        try:
+            from meshflow.cloud.reporter import report_run
+            _pol = policy or self._policy
+            report_run(
+                result,
+                workflow_name=self.name or "mesh",
+                agent_count=len(result.agent_states),
+                policy_mode=_pol.mode.value if hasattr(_pol.mode, "value") else str(_pol.mode),
+                compliance=self._compliance_profile.name if self._compliance_profile else None,
             )
-        return self._empty_result(task, events)
+        except Exception:
+            pass  # telemetry must never raise
+
+        return result
 
     async def stream(
         self,

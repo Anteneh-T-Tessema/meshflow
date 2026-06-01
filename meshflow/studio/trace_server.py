@@ -32,6 +32,9 @@ from urllib.parse import urlparse, parse_qs
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "studio", "templates")
 
+# In-memory fork count overrides (seeded from curated templates, incremented by POST /api/templates/fork/<name>)
+_fork_counts: dict[str, int] = {}
+
 
 class _TraceHandler(http.server.BaseHTTPRequestHandler):
     """HTTP request handler for the trace server."""
@@ -84,7 +87,11 @@ class _TraceHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/curated-templates":
             from meshflow.registry.curated_templates import CURATED_TEMPLATES
-            curated_data = [t.to_dict() for t in CURATED_TEMPLATES]
+            curated_data = []
+            for t in CURATED_TEMPLATES:
+                d = t.to_dict()
+                d["fork_count"] = _fork_counts.get(t.name, t.fork_count)
+                curated_data.append(d)
             self._json(curated_data)
             return
 
@@ -125,6 +132,14 @@ class _TraceHandler(http.server.BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length)) if length else {}
             result = asyncio.run(self.server_instance.do_rewind(body))
             self._json(result)
+            return
+
+        if path.startswith("/api/templates/fork/"):
+            name = path[len("/api/templates/fork/"):]
+            from meshflow.registry.curated_templates import CURATED_TEMPLATES
+            base = next((t.fork_count for t in CURATED_TEMPLATES if t.name == name), 0)
+            _fork_counts[name] = _fork_counts.get(name, base) + 1
+            self._json({"name": name, "fork_count": _fork_counts[name]})
             return
 
         self.send_error(404)

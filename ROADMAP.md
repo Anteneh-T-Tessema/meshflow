@@ -6,7 +6,7 @@ This is the public roadmap. It is a living document — priorities shift based o
 
 ## Now — v1.0 (shipped May 2026)
 
-- ✅ 4,379 passing tests, Production/Stable classifier
+- ✅ 4,405 passing tests, Production/Stable classifier
 - ✅ Full LangGraph/CrewAI/AutoGen feature parity
 - ✅ SHA-256 tamper-evident audit chain
 - ✅ HIPAA/SOX/GDPR/PCI/NERC compliance profiles
@@ -24,11 +24,11 @@ This is the public roadmap. It is a living document — priorities shift based o
 
 **Theme: Community flywheel**
 
-- [ ] Public agent template gallery (20 curated templates, fork counts, deploy buttons)
-- [ ] `meshflow init` CLI scaffolder — production-ready project in 60 seconds
-- [ ] Agent Teams config for Claude Code (pre-built `.claude/agents/` folder)
+- ✅ Public agent template gallery (20 curated templates, fork counts, deploy buttons)
+- ✅ `meshflow init` CLI scaffolder — production-ready project in 60 seconds
+- ✅ Agent Teams config for Claude Code (pre-built `.claude/agents/` folder)
+- ✅ Flowise migration guide published (CVE-2025-59528 competitive window)
 - [ ] SKILL.md submissions to anthropics/skills and openai/skills official catalogs
-- [ ] Flowise migration guide published (CVE-2025-59528 competitive window)
 - [ ] Discord community launch
 
 ---
@@ -37,12 +37,12 @@ This is the public roadmap. It is a living document — priorities shift based o
 
 **Theme: Enterprise readiness**
 
-- [ ] Visual workflow builder — no-code DAG editor for non-technical stakeholders
-- [ ] No-code RAG pipeline configurator
+- ✅ Visual workflow builder — no-code DAG editor for non-technical stakeholders
+- ✅ No-code RAG pipeline configurator
 - [ ] SOC 2 Type II audit track begins (6-month program)
 - [ ] AWS Marketplace listing (`pip install meshflow` from Marketplace)
 - [ ] Anthropic "Built with Claude" partnership application
-- [ ] `meshflow Cloud` beta — managed token optimization dashboard
+- ✅ `meshflow Cloud` beta — managed token optimization dashboard (deployed to Vercel)
 
 ---
 
@@ -56,8 +56,8 @@ This is the public roadmap. It is a living document — priorities shift based o
 - [ ] Gartner / Forrester analyst briefings
 - [ ] Fundraising process (if required)
 - [ ] deepset (Haystack) co-marketing partnership
-- [ ] Confidence threshold early exit (`stop_on_confidence` on Team and Crew)
-- [ ] Parallel context dedup across crew agents
+- ✅ Confidence threshold early exit (`stop_on_confidence` on Team and Crew)
+- ✅ Parallel context dedup across crew agents
 
 ---
 

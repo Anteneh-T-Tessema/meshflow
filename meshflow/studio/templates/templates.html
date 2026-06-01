@@ -283,6 +283,12 @@
       color: var(--text-muted);
     }
 
+    .card-footer-left {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
     .model-badge {
       font-family: var(--mono);
       font-size: 0.75rem;
@@ -290,6 +296,125 @@
       background: rgba(99, 102, 241, 0.08);
       padding: 0.15rem 0.4rem;
       border-radius: 4px;
+    }
+
+    .fork-count {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .fork-count svg {
+      width: 13px;
+      height: 13px;
+      opacity: 0.6;
+    }
+
+    .deploy-btn {
+      background: linear-gradient(135deg, var(--accent-green), #059669);
+      border: none;
+      color: #fff;
+      padding: 0.35rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      letter-spacing: 0.3px;
+    }
+
+    .deploy-btn:hover {
+      background: linear-gradient(135deg, #34d399, var(--accent-green));
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+      transform: translateY(-1px);
+    }
+
+    .deploy-btn svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .deploy-modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.8);
+      z-index: 2000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(6px);
+    }
+
+    .deploy-modal-overlay.open {
+      display: flex;
+    }
+
+    .deploy-modal-card {
+      background: var(--bg-surface-solid);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      border-radius: 14px;
+      width: 520px;
+      max-width: 95vw;
+      padding: 2rem;
+      box-shadow: 0 0 40px rgba(16, 185, 129, 0.15), var(--shadow-glow);
+      animation: modalSlide 0.2s ease-out;
+    }
+
+    .deploy-modal-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--accent-green);
+      margin-bottom: 0.5rem;
+    }
+
+    .deploy-modal-sub {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      margin-bottom: 1.5rem;
+      line-height: 1.5;
+    }
+
+    .deploy-cmd-block {
+      background: #06070a;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      color: #34d399;
+      position: relative;
+      margin-bottom: 1.5rem;
+      line-height: 1.6;
+    }
+
+    .deploy-cmd-block .copy-deploy-btn {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      border-radius: 4px;
+      color: var(--accent-green);
+      font-size: 0.72rem;
+      padding: 0.2rem 0.5rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .deploy-cmd-block .copy-deploy-btn:hover {
+      background: rgba(16, 185, 129, 0.2);
+    }
+
+    .deploy-modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
     }
 
     /* Modal / Details Popup */
@@ -582,6 +707,24 @@
     </div>
   </div>
 
+  <!-- Deploy Command Modal -->
+  <div class="deploy-modal-overlay" id="deploy-modal" onclick="closeDeployModal(event)">
+    <div class="deploy-modal-card" onclick="event.stopPropagation()">
+      <div class="deploy-modal-title">Deploy Agent</div>
+      <div class="deploy-modal-sub">
+        Run this command to scaffold the agent into your project. It loads the curated library and pulls the template into a local file you can customise.
+      </div>
+      <div class="deploy-cmd-block" id="deploy-cmd-block">
+        <span id="deploy-cmd-text"></span>
+        <button class="copy-deploy-btn" onclick="copyDeployCmd()">Copy</button>
+      </div>
+      <div class="deploy-modal-footer">
+        <button class="btn" onclick="closeDeployModal()">Close</button>
+        <button class="btn btn-primary" onclick="copyDeployCmd()">Copy Command</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast">Copied to clipboard!</div>
 
   <script>
@@ -620,22 +763,39 @@
       templates.forEach(t => {
         const card = document.createElement('div');
         card.className = `template-card role-${t.role}`;
-        card.onclick = () => openDetails(t);
 
         const tagsHtml = t.tags && t.tags.length > 0
           ? `<div class="tag-container">` + t.tags.map(tag => `<span class="tag-badge">${tag}</span>`).join('') + `</div>`
           : '';
 
+        const forkCount = t.fork_count || 0;
+        const forkDisplay = forkCount >= 1000
+          ? (forkCount / 1000).toFixed(1) + 'k'
+          : String(forkCount);
+
         card.innerHTML = `
-          <div class="card-header">
+          <div class="card-header" style="cursor:pointer" onclick="openDetails(${JSON.stringify(t).replace(/"/g, '&quot;')})">
             <h3 class="card-title">${t.name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}</h3>
-            <span class="role-badge">${t.role.replace('_', ' ')}</span>
+            <span class="role-badge">${t.role.replace(/_/g, ' ')}</span>
           </div>
-          <p class="card-desc">${t.description || 'No description provided.'}</p>
+          <p class="card-desc" style="cursor:pointer" onclick="openDetails(${JSON.stringify(t).replace(/"/g, '&quot;')})">${t.description || 'No description provided.'}</p>
           ${tagsHtml}
           <div class="card-footer">
-            <span class="model-badge">${t.model || 'claude-sonnet-4-6'}</span>
-            <span>v${t.version || '1.0.0'}</span>
+            <div class="card-footer-left">
+              <span class="model-badge">${t.model || 'claude-sonnet-4-6'}</span>
+              <span class="fork-count">
+                <svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0zm0 2.122a2.25 2.25 0 1 0-1.5 0v.878A2.25 2.25 0 0 0 5.75 8.5h1.5v2.128a2.251 2.251 0 1 0 1.5 0V8.5h1.5a2.25 2.25 0 0 0 2.25-2.25v-.878a2.25 2.25 0 1 0-1.5 0v.878a.75.75 0 0 1-.75.75h-4.5A.75.75 0 0 1 5 6.25v-.878zm3.75 7.378a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0zm3-8.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0z"/>
+                </svg>
+                ${forkDisplay}
+              </span>
+            </div>
+            <button class="deploy-btn" onclick="event.stopPropagation(); openDeploy('${t.name}')">
+              <svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0zm4.879-2.773 4.264 2.559a.25.25 0 0 1 0 .428l-4.264 2.559A.25.25 0 0 1 6 10.559V5.442a.25.25 0 0 1 .379-.215z"/>
+              </svg>
+              Deploy
+            </button>
           </div>
         `;
         grid.appendChild(card);
@@ -727,6 +887,27 @@
       const code = document.getElementById('modal-yaml').textContent;
       navigator.clipboard.writeText(code).then(() => {
         showToast('YAML snippet copied!');
+      });
+    }
+
+    function openDeploy(name) {
+      const cmd = `meshflow templates load-curated\nmeshflow templates pull ${name}`;
+      document.getElementById('deploy-cmd-text').textContent = cmd;
+      document.getElementById('deploy-modal').classList.add('open');
+      // Fire fork increment in background
+      fetch(`/api/templates/fork/${name}`, { method: 'POST' }).catch(() => {});
+    }
+
+    function closeDeployModal(e) {
+      if (!e || e.target.classList.contains('deploy-modal-overlay')) {
+        document.getElementById('deploy-modal').classList.remove('open');
+      }
+    }
+
+    function copyDeployCmd() {
+      const cmd = document.getElementById('deploy-cmd-text').textContent;
+      navigator.clipboard.writeText(cmd).then(() => {
+        showToast('Command copied!');
       });
     }
 

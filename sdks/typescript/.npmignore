@@ -1,0 +1,44 @@
+# Source — not needed at runtime, dist/ has the compiled output
+src/
+
+# TypeScript config — not needed by consumers
+tsconfig.json
+tsconfig.*.json
+
+# Dev tooling
+.eslintrc*
+.eslintignore
+.prettierrc*
+.editorconfig
+*.config.ts
+*.config.js
+
+# Tests
+__tests__/
+*.test.ts
+*.spec.ts
+vitest.config.*
+jest.config.*
+
+# Build artifacts that are NOT the published output
+*.tsbuildinfo
+
+# Local environment
+.env
+.env.*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.gitignore
+.github/
+
+# CI
+.circleci/
+.travis.yml

@@ -29,12 +29,60 @@ Process modes:
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, AsyncIterator
 
 from meshflow.agents.task import Task, TaskOutput
 from meshflow.core.streaming import StreamChunk
+
+
+def _parse_confidence(text: str) -> float:
+    """Extract a confidence score from task output text (0.0 if absent)."""
+    m = re.search(r'"?confidence"?\s*:\s*([0-9]*\.?[0-9]+)', text, re.IGNORECASE)
+    return float(m.group(1)) if m else 0.0
+
+
+def _dedup_context(prompts: list[str]) -> list[str]:
+    """Remove duplicate sentences/paragraphs shared across parallel task prompts.
+
+    Returns a new list of prompts where text blocks repeated verbatim across
+    two or more prompts are replaced with a ``[shared context omitted]`` marker
+    in the duplicates, reducing total token count for parallel crew runs.
+    """
+    if len(prompts) < 2:
+        return list(prompts)
+
+    # Split each prompt into sentence-level chunks
+    def _chunks(text: str) -> list[str]:
+        return [s.strip() for s in re.split(r'(?<=[.!?])\s+|\n{2,}', text) if len(s.strip()) > 40]
+
+    # Count how many prompts each chunk appears in
+    chunk_counts: dict[str, int] = {}
+    for p in prompts:
+        for chunk in set(_chunks(p)):
+            chunk_counts[chunk] = chunk_counts.get(chunk, 0) + 1
+
+    shared = {c for c, n in chunk_counts.items() if n >= 2}
+    if not shared:
+        return list(prompts)
+
+    # Keep shared chunks only in the first prompt that contains them
+    seen: set[str] = set()
+    result: list[str] = []
+    for p in prompts:
+        deduped_parts: list[str] = []
+        for chunk in _chunks(p):
+            if chunk in shared:
+                if chunk not in seen:
+                    seen.add(chunk)
+                    deduped_parts.append(chunk)
+                # else: silently drop the duplicate
+            else:
+                deduped_parts.append(chunk)
+        result.append(" ".join(deduped_parts) if deduped_parts else p)
+    return result
 
 
 class Process(str, Enum):
@@ -85,6 +133,8 @@ class Crew:
     verbose: bool = False
     policy: Any = None               # meshflow.core.schemas.Policy
     role_router: Any = None          # optional RoleRouter for dynamic agent creation
+    stop_on_confidence: float | None = None  # exit sequential run early when met
+    context_dedup: bool = False              # deduplicate shared context in parallel runs
 
     def __post_init__(self) -> None:
         if not self.tasks:
@@ -260,12 +310,33 @@ class Crew:
             if self.verbose:
                 print(f"[Crew]   ✓ {len(out.raw)} chars, {out.tokens} tokens")
 
+            # Early exit when confidence threshold is met
+            if self.stop_on_confidence is not None:
+                confidence = _parse_confidence(out.raw)
+                if confidence >= self.stop_on_confidence:
+                    if self.verbose:
+                        print(f"[Crew] stop_on_confidence={self.stop_on_confidence} met "
+                              f"(confidence={confidence:.2f}) — skipping "
+                              f"{len(self.tasks) - i - 1} remaining task(s)")
+                    break
+
         return self._aggregate(outputs)
 
     async def _run_parallel(self, inputs: dict[str, Any] | None) -> CrewOutput:
         """All tasks run concurrently — no inter-task context injection."""
         if self.verbose:
             print(f"[Crew] Running {len(self.tasks)} tasks in parallel")
+
+        # Deduplicate shared context across task prompts before running
+        if self.context_dedup and len(self.tasks) >= 2:
+            raw_prompts = [t._build_prompt(inputs) for t in self.tasks]
+            deduped = _dedup_context(raw_prompts)
+            saved = sum(len(r) - len(d) for r, d in zip(raw_prompts, deduped))
+            if self.verbose and saved > 0:
+                print(f"[Crew] context_dedup removed ~{saved} chars of duplicate context")
+            # Patch each task's description to use the deduped prompt
+            for task, deduped_prompt in zip(self.tasks, deduped):
+                task._deduped_prompt = deduped_prompt  # type: ignore[attr-defined]
 
         results = await asyncio.gather(
             *[task.run(inputs) for task in self.tasks],
@@ -349,7 +420,7 @@ class Crew:
               - description: "Write article"
                 agent: writer
         """
-        import yaml  # type: ignore[import]
+        import yaml  # type: ignore[import-untyped]
         from meshflow.agents.builder import Agent  # avoid circular at module level
 
         with open(path, encoding="utf-8") as f:

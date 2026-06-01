@@ -3,392 +3,788 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MeshFlow — RAG Pipeline Builder</title>
+  <title>MeshFlow Studio — RAG Pipeline Builder</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;600&family=Fira+Code:wght@400;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0a0b10; --surface: #141623; --surface2: #1e2035;
-      --accent: #6366f1; --green: #10b981; --orange: #f97316;
-      --text: #f3f4f6; --muted: #9ca3af; --border: rgba(255,255,255,0.08);
+      --bg-base: #0a0b10;
+      --bg-surface: rgba(20, 22, 35, 0.65);
+      --bg-surface-solid: #141623;
+      --bg-surface2: #1e2035;
+      --accent: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.3);
+      --accent-green: #10b981;
+      --accent-pink: #ec4899;
+      --accent-orange: #f97316;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-focus: rgba(99, 102, 241, 0.5);
+      --shadow-glow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+      --mono: 'Fira Code', 'SF Mono', monospace;
     }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg);
-           color: var(--text); min-height: 100vh; }
-    header { padding: 14px 24px; background: var(--surface);
-             border-bottom: 1px solid var(--border);
-             display: flex; align-items: center; gap: 12px; }
-    header h1 { font-size: 1rem; font-weight: 700; color: var(--accent); }
-    header span { color: var(--muted); font-size: 0.85rem; }
-    .layout { display: grid; grid-template-columns: 280px 1fr 300px; gap: 0;
-              height: calc(100vh - 49px); }
-    .panel { padding: 20px; overflow-y: auto; }
-    .panel-left  { background: var(--surface); border-right: 1px solid var(--border); }
-    .panel-mid   { background: var(--bg); }
-    .panel-right { background: var(--surface); border-left: 1px solid var(--border); }
-    h2 { font-size: 0.78rem; color: var(--muted); text-transform: uppercase;
-         letter-spacing: 0.06em; margin-bottom: 14px; }
-    .stage-card { background: var(--surface2); border: 1px solid var(--border);
-                  border-radius: 10px; padding: 14px; margin-bottom: 10px;
-                  cursor: pointer; transition: border-color 0.15s; }
-    .stage-card:hover { border-color: var(--accent); }
-    .stage-card.active { border-color: var(--accent);
-                         box-shadow: 0 0 0 2px rgba(99,102,241,0.2); }
-    .stage-title { font-weight: 600; font-size: 0.88rem; margin-bottom: 4px; }
-    .stage-sub   { color: var(--muted); font-size: 0.77rem; line-height: 1.5; }
-    .pipeline { display: flex; flex-direction: column; align-items: center;
-                padding: 30px 40px; gap: 0; }
-    .pipe-step { background: var(--surface); border: 1.5px solid var(--border);
-                 border-radius: 10px; width: 100%; max-width: 500px;
-                 padding: 14px 18px; position: relative; }
-    .pipe-step.configured { border-color: var(--green); }
-    .pipe-step-title { font-weight: 600; font-size: 0.88rem; color: var(--text); }
-    .pipe-step-value { font-size: 0.78rem; color: var(--muted); margin-top: 3px; }
-    .pipe-arrow { text-align: center; font-size: 1.2rem; color: var(--muted);
-                  padding: 4px 0; line-height: 1; }
-    .config-tag { display: inline-block; background: rgba(99,102,241,0.15);
-                  color: var(--accent); border-radius: 4px; padding: 2px 7px;
-                  font-size: 0.72rem; margin: 3px 2px 0; }
-    label { font-size: 0.82rem; color: var(--muted); display: block;
-            margin-bottom: 5px; margin-top: 12px; }
-    label:first-child { margin-top: 0; }
-    input, select, textarea {
-      width: 100%; background: var(--bg); color: var(--text);
-      border: 1px solid var(--border); padding: 7px 10px;
-      border-radius: 6px; font-size: 0.82rem;
+
+    body {
+      background-color: var(--bg-base);
+      background-image:
+        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.08) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.05) 0px, transparent 50%);
+      color: var(--text-main);
+      font-family: 'Outfit', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
-    input:focus, select:focus, textarea:focus {
-      outline: none; border-color: var(--accent);
+
+    /* ── Nav ─────────────────────────────────────────────────────────────── */
+    nav {
+      background: rgba(10, 11, 16, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0.85rem 2rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      position: sticky;
+      top: 0;
+      z-index: 100;
     }
-    textarea { resize: vertical; min-height: 60px; }
-    .btn { display: inline-block; padding: 8px 16px; border-radius: 7px;
-           font-size: 0.84rem; cursor: pointer; border: none; transition: opacity 0.15s; }
-    .btn:hover { opacity: 0.85; }
-    .btn-primary   { background: var(--accent); color: #fff; }
-    .btn-secondary { background: var(--surface2); color: var(--text);
-                     border: 1px solid var(--border); }
-    .btn-green     { background: var(--green); color: #fff; }
-    .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
-    #yaml-output { background: var(--bg); color: #a5f3fc;
-                   border: 1px solid var(--border); border-radius: 8px;
-                   padding: 14px; font-family: monospace; font-size: 0.78rem;
-                   white-space: pre-wrap; min-height: 120px; margin-top: 12px;
-                   display: none; }
-    .step-edit-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-    .step-edit-row input { flex: 1; }
-    .step-icon { width: 28px; height: 28px; border-radius: 6px; display: flex;
-                 align-items: center; justify-content: center; font-size: 0.9rem;
-                 position: absolute; right: 12px; top: 50%; transform: translateY(-50%); }
-    .ok-icon   { background: rgba(16,185,129,0.15); color: var(--green); }
-    .warn-icon { background: rgba(249,115,22,0.15); color: var(--orange); }
-    .tip { background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2);
-           border-radius: 8px; padding: 10px 12px; font-size: 0.78rem;
-           color: var(--muted); margin-top: 14px; line-height: 1.6; }
+
+    .nav-logo {
+      background: linear-gradient(135deg, var(--accent), var(--accent-pink));
+      color: white;
+      padding: 0.3rem 0.65rem;
+      border-radius: 7px;
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 600;
+      font-size: 0.85rem;
+      letter-spacing: 0.5px;
+      box-shadow: 0 0 12px var(--accent-glow);
+      margin-right: 0.5rem;
+    }
+
+    .nav-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 0.4rem 0.9rem;
+      font-weight: 500;
+      font-size: 0.88rem;
+      border-radius: 6px;
+      transition: all 0.2s ease;
+      border: 1px solid transparent;
+    }
+
+    .nav-link:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .nav-link.active {
+      color: var(--text-main);
+      background: rgba(99, 102, 241, 0.12);
+      border-color: rgba(99, 102, 241, 0.3);
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────── */
+    .layout {
+      display: grid;
+      grid-template-columns: 270px 1fr 320px;
+      flex: 1;
+      height: calc(100vh - 52px);
+      overflow: hidden;
+    }
+
+    .panel {
+      padding: 1.5rem;
+      overflow-y: auto;
+    }
+
+    .panel-left {
+      background: rgba(10, 11, 16, 0.5);
+      border-right: 1px solid var(--border);
+    }
+
+    .panel-mid {
+      background: var(--bg-base);
+    }
+
+    .panel-right {
+      background: rgba(10, 11, 16, 0.5);
+      border-left: 1px solid var(--border);
+    }
+
+    /* ── Section headings ────────────────────────────────────────────────── */
+    .section-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+    }
+
+    /* ── Stage cards (left panel) ────────────────────────────────────────── */
+    .stage-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 0.6rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stage-card::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; height: 100%; width: 3px;
+      background: var(--accent);
+      opacity: 0.5;
+      transition: opacity 0.2s;
+    }
+
+    .stage-card:hover {
+      border-color: rgba(255,255,255,0.15);
+      background: rgba(255,255,255,0.04);
+    }
+
+    .stage-card.active {
+      border-color: var(--border-focus);
+      background: rgba(99, 102, 241, 0.06);
+      box-shadow: 0 0 0 1px rgba(99,102,241,0.15);
+    }
+
+    .stage-card.active::before { opacity: 1; }
+    .stage-card.configured::before { background: var(--accent-green); opacity: 1; }
+
+    .stage-title {
+      font-weight: 600;
+      font-size: 0.9rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .stage-sub {
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      line-height: 1.4;
+    }
+
+    .stage-check {
+      position: absolute;
+      right: 0.9rem;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.75rem;
+      color: var(--accent-green);
+      font-weight: 700;
+    }
+
+    /* ── Pipeline preview (centre) ───────────────────────────────────────── */
+    .pipeline-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+    }
+
+    .pipeline-header h2 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .output-tabs {
+      display: flex;
+      gap: 0.35rem;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.25rem;
+    }
+
+    .output-tab {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 0.3rem 0.75rem;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .output-tab.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .pipeline {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    .pipe-step {
+      background: var(--bg-surface-solid);
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      width: 100%;
+      max-width: 520px;
+      padding: 1rem 1.25rem;
+      position: relative;
+      transition: border-color 0.2s;
+    }
+
+    .pipe-step.configured {
+      border-color: rgba(16,185,129,0.4);
+    }
+
+    .pipe-step-title {
+      font-weight: 600;
+      font-size: 0.88rem;
+      color: var(--text-main);
+    }
+
+    .pipe-step-value {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 0.25rem;
+      font-family: var(--mono);
+    }
+
+    .pipe-arrow {
+      text-align: center;
+      color: var(--text-muted);
+      padding: 0.4rem 0;
+      font-size: 1rem;
+      line-height: 1;
+    }
+
+    .step-status {
+      position: absolute;
+      right: 1rem;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 700;
+    }
+
+    .step-status.ok   { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+    .step-status.warn { background: rgba(249,115,22,0.15);  color: var(--accent-orange); }
+
+    /* ── Export block ─────────────────────────────────────────────────────── */
+    .export-row {
+      display: flex;
+      justify-content: center;
+      gap: 0.75rem;
+      margin-top: 1.5rem;
+    }
+
+    .code-block {
+      background: #06070a;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      color: #a5f3fc;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      margin-top: 1.25rem;
+      display: none;
+      position: relative;
+      max-height: 50vh;
+      overflow-y: auto;
+    }
+
+    .code-block.yaml-color { color: #34d399; }
+
+    .copy-code-btn {
+      position: absolute;
+      top: 0.6rem;
+      right: 0.75rem;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text-muted);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      padding: 0.2rem 0.55rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .copy-code-btn:hover { color: #fff; background: rgba(255,255,255,0.12); }
+
+    /* ── Right panel forms ────────────────────────────────────────────────── */
+    .config-panel-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 1.25rem;
+      color: var(--text-main);
+    }
+
+    .config-panel-title span {
+      color: var(--accent);
+    }
+
+    .form-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      display: block;
+      margin-bottom: 0.35rem;
+      margin-top: 1rem;
+    }
+
+    .form-label:first-child { margin-top: 0; }
+
+    .form-control {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 0.6rem 0.85rem;
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 0.85rem;
+      transition: all 0.2s ease;
+    }
+
+    .form-control:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 8px var(--accent-glow);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    textarea.form-control { resize: vertical; min-height: 64px; }
+
+    .btn {
+      background: var(--bg-surface-solid);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 0.55rem 1.1rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 0.88rem;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .btn:hover { border-color: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #4f46e5);
+      border: none;
+      box-shadow: 0 4px 12px var(--accent-glow);
+    }
+
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #7c3aed, var(--accent));
+      box-shadow: 0 6px 18px rgba(99, 102, 241, 0.5);
+    }
+
+    .btn-green {
+      background: linear-gradient(135deg, var(--accent-green), #059669);
+      border: none;
+      color: #fff;
+      box-shadow: 0 4px 12px rgba(16,185,129,0.3);
+    }
+
+    .btn-green:hover {
+      background: linear-gradient(135deg, #34d399, var(--accent-green));
+      box-shadow: 0 6px 18px rgba(16,185,129,0.4);
+    }
+
+    .apply-btn { margin-top: 1.25rem; width: 100%; justify-content: center; }
+
+    /* ── Tip box ──────────────────────────────────────────────────────────── */
+    .tip {
+      background: rgba(99, 102, 241, 0.06);
+      border: 1px solid rgba(99, 102, 241, 0.18);
+      border-radius: 8px;
+      padding: 0.9rem 1rem;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 1.25rem;
+      line-height: 1.6;
+    }
+
     .tip strong { color: var(--accent); }
+
+    /* ── Toast ────────────────────────────────────────────────────────────── */
+    .toast-notification {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      background: var(--bg-surface-solid);
+      border: 1px solid var(--accent-green);
+      border-radius: 8px;
+      padding: 0.7rem 1.4rem;
+      box-shadow: var(--shadow-glow), 0 0 10px rgba(16,185,129,0.25);
+      z-index: 10000;
+      font-size: 0.88rem;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: all 0.25s ease;
+      pointer-events: none;
+    }
+
+    .toast-notification.show { opacity: 1; transform: translateY(0); }
+
+    /* ── Scrollbars ───────────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   </style>
 </head>
 <body>
-<nav style="background:#141623;border-bottom:1px solid rgba(255,255,255,0.08);padding:8px 20px;display:flex;align-items:center;gap:16px;font-size:0.82rem;">
-  <span style="font-weight:700;color:#6366f1;margin-right:8px;">MeshFlow Studio</span>
-  <a href="/"      style="color:#9ca3af;text-decoration:none;padding:4px 10px;border-radius:5px;" onmouseover="this.style.color='#f3f4f6'" onmouseout="this.style.color='#9ca3af'">⚡ Workflow</a>
-  <a href="/templates" style="color:#9ca3af;text-decoration:none;padding:4px 10px;border-radius:5px;" onmouseover="this.style.color='#f3f4f6'" onmouseout="this.style.color='#9ca3af'">🗂 Templates</a>
-  <a href="/trace" style="color:#9ca3af;text-decoration:none;padding:4px 10px;border-radius:5px;" onmouseover="this.style.color='#f3f4f6'" onmouseout="this.style.color='#9ca3af'">🔍 Trace</a>
-  <a href="/graph" style="color:#9ca3af;text-decoration:none;padding:4px 10px;border-radius:5px;" onmouseover="this.style.color='#f3f4f6'" onmouseout="this.style.color='#9ca3af'">🗺 Graph</a>
-  <a href="/rag"   style="color:#f3f4f6;text-decoration:none;padding:4px 10px;border-radius:5px;background:rgba(99,102,241,0.15);">📚 RAG Builder</a>
+
+<nav>
+  <span class="nav-logo">STUDIO</span>
+  <a href="/"          class="nav-link">Workflow</a>
+  <a href="/templates" class="nav-link">Templates</a>
+  <a href="/trace"     class="nav-link">Trace</a>
+  <a href="/graph"     class="nav-link">Graph</a>
+  <a href="/rag"       class="nav-link active">RAG Builder</a>
 </nav>
-<header>
-  <h1>RAG Pipeline Builder</h1>
-  <span>Configure, preview, and export no-code RAG pipelines — Dify-style but code-first</span>
-</header>
+
 <div class="layout">
 
   <!-- Left: stage selector -->
   <div class="panel panel-left">
-    <h2>Pipeline Stages</h2>
+    <div class="section-title">Pipeline Stages</div>
 
-    <div class="stage-card active" onclick="selectStage('data')">
+    <div class="stage-card configured active" id="scard-data" onclick="selectStage('data')">
       <div class="stage-title">📄 Data Source</div>
       <div class="stage-sub">Files, URLs, or inline text to index</div>
+      <span class="stage-check" id="scheck-data">✓</span>
     </div>
 
-    <div class="stage-card" onclick="selectStage('chunk')">
+    <div class="stage-card configured" id="scard-chunk" onclick="selectStage('chunk')">
       <div class="stage-title">✂️ Chunking</div>
       <div class="stage-sub">Split documents into retrievable chunks</div>
+      <span class="stage-check" id="scheck-chunk">✓</span>
     </div>
 
-    <div class="stage-card" onclick="selectStage('embed')">
+    <div class="stage-card configured" id="scard-embed" onclick="selectStage('embed')">
       <div class="stage-title">🔢 Embedding</div>
       <div class="stage-sub">Convert chunks to vectors</div>
+      <span class="stage-check" id="scheck-embed">✓</span>
     </div>
 
-    <div class="stage-card" onclick="selectStage('retrieve')">
+    <div class="stage-card" id="scard-retrieve" onclick="selectStage('retrieve')">
       <div class="stage-title">🔍 Retrieval</div>
       <div class="stage-sub">Dense, sparse, or hybrid search</div>
+      <span class="stage-check" id="scheck-retrieve" style="display:none">✓</span>
     </div>
 
-    <div class="stage-card" onclick="selectStage('rank')">
+    <div class="stage-card" id="scard-rank" onclick="selectStage('rank')">
       <div class="stage-title">🏆 Ranking</div>
       <div class="stage-sub">LLM or cross-encoder re-ranking</div>
+      <span class="stage-check" id="scheck-rank" style="display:none">✓</span>
     </div>
 
-    <div class="stage-card" onclick="selectStage('generate')">
+    <div class="stage-card" id="scard-generate" onclick="selectStage('generate')">
       <div class="stage-title">✨ Generation</div>
       <div class="stage-sub">Model, prompt, and self-correction config</div>
+      <span class="stage-check" id="scheck-generate" style="display:none">✓</span>
     </div>
 
-    <div class="stage-card" onclick="selectStage('guard')">
+    <div class="stage-card" id="scard-guard" onclick="selectStage('guard')">
       <div class="stage-title">🛡️ Guardrails</div>
       <div class="stage-sub">PII detection, cost cap, content filters</div>
+      <span class="stage-check" id="scheck-guard" style="display:none">✓</span>
     </div>
 
     <div class="tip">
-      <strong>MeshFlow RAG</strong> supports HybridRetriever (BM25 + dense),
-      LLMRanker, SelfCorrectingRAG with grade-threshold refinement, and
-      full cache_control prompt caching.
+      <strong>MeshFlow RAG</strong> supports HybridRetriever (BM25 + dense), LLMRanker,
+      SelfCorrectingRAG, and <strong>cache_control</strong> prompt caching — up to 90% cost reduction.
     </div>
   </div>
 
-  <!-- Centre: visual pipeline -->
+  <!-- Centre: visual pipeline + output -->
   <div class="panel panel-mid">
-    <h2 style="margin-left:40px">Pipeline Preview</h2>
-    <div class="pipeline" id="pipeline">
+    <div class="pipeline-header">
+      <h2>Pipeline Preview</h2>
+      <div class="output-tabs">
+        <button class="output-tab active" id="tab-yaml" onclick="switchOutputTab('yaml')">YAML</button>
+        <button class="output-tab" id="tab-python" onclick="switchOutputTab('python')">Python</button>
+      </div>
+    </div>
 
+    <div class="pipeline">
       <div class="pipe-step configured" id="step-data">
         <div class="pipe-step-title">📄 Data Source</div>
-        <div class="pipe-step-value" id="val-data">files: [], urls: [], inline: ""</div>
-        <div class="step-icon ok-icon">✓</div>
+        <div class="pipe-step-value" id="val-data">files: [] · urls: [] · inline: —</div>
+        <div class="step-status ok">✓</div>
       </div>
       <div class="pipe-arrow">↓</div>
 
       <div class="pipe-step configured" id="step-chunk">
         <div class="pipe-step-title">✂️ Chunking</div>
-        <div class="pipe-step-value" id="val-chunk">chunk_size: 500 · overlap: 50</div>
-        <div class="step-icon ok-icon">✓</div>
+        <div class="pipe-step-value" id="val-chunk">chunk_size: 500 · overlap: 50 · character</div>
+        <div class="step-status ok">✓</div>
       </div>
       <div class="pipe-arrow">↓</div>
 
       <div class="pipe-step configured" id="step-embed">
         <div class="pipe-step-title">🔢 Embedding</div>
-        <div class="pipe-step-value" id="val-embed">provider: built-in (char n-gram → numpy BoW → sentence-transformers)</div>
-        <div class="step-icon ok-icon">✓</div>
+        <div class="pipe-step-value" id="val-embed">provider: builtin · dims: 384</div>
+        <div class="step-status ok">✓</div>
       </div>
       <div class="pipe-arrow">↓</div>
 
       <div class="pipe-step" id="step-retrieve">
         <div class="pipe-step-title">🔍 Retrieval</div>
-        <div class="pipe-step-value" id="val-retrieve">strategy: dense · top_k: 5</div>
-        <div class="step-icon warn-icon">!</div>
+        <div class="pipe-step-value" id="val-retrieve">strategy: dense · top_k: 5 · max_chars: 4000</div>
+        <div class="step-status warn">!</div>
       </div>
       <div class="pipe-arrow">↓</div>
 
       <div class="pipe-step" id="step-rank">
         <div class="pipe-step-title">🏆 Ranking</div>
         <div class="pipe-step-value" id="val-rank">ranker: none (skip)</div>
-        <div class="step-icon warn-icon">!</div>
+        <div class="step-status warn">!</div>
       </div>
       <div class="pipe-arrow">↓</div>
 
       <div class="pipe-step" id="step-generate">
         <div class="pipe-step-title">✨ Generation</div>
-        <div class="pipe-step-value" id="val-generate">model: claude-sonnet-4-6 · self-correct: off</div>
-        <div class="step-icon warn-icon">!</div>
+        <div class="pipe-step-value" id="val-generate">model: claude-sonnet-4-6 · self-correct: off · cache: on</div>
+        <div class="step-status warn">!</div>
       </div>
       <div class="pipe-arrow">↓</div>
 
       <div class="pipe-step" id="step-guard">
         <div class="pipe-step-title">🛡️ Guardrails</div>
-        <div class="pipe-step-value" id="val-guard">pii_block: off · cost_cap: none</div>
-        <div class="step-icon warn-icon">!</div>
+        <div class="pipe-step-value" id="val-guard">none configured</div>
+        <div class="step-status warn">!</div>
       </div>
-
     </div>
 
-    <div style="text-align:center; margin-top: 20px;" id="export-row">
-      <button class="btn btn-green" onclick="exportYAML()">Export Pipeline YAML</button>
-      <button class="btn btn-secondary" style="margin-left:8px" onclick="copyYAML()">Copy</button>
+    <div class="export-row">
+      <button class="btn btn-green" onclick="generateOutput()">Generate</button>
+      <button class="btn" onclick="copyOutput()">Copy</button>
+      <button class="btn btn-primary" onclick="downloadOutput()">Download</button>
     </div>
-    <pre id="yaml-output"></pre>
+
+    <!-- id="yaml-output" kept for test compatibility -->
+    <div class="code-block yaml-color" id="output-block">
+      <button class="copy-code-btn" onclick="copyOutput()">Copy</button>
+      <span id="output-text"></span>
+    </div>
   </div>
 
   <!-- Right: config panel -->
-  <div class="panel panel-right" id="config-panel">
-    <h2>Configure: <span id="stage-label">Data Source</span></h2>
-    <div id="stage-form">
+  <div class="panel panel-right">
+    <div class="config-panel-title">Configure: <span id="stage-label">Data Source</span></div>
 
-      <!-- data source form (default) -->
-      <div id="form-data">
-        <label>File paths (comma-separated)</label>
-        <input type="text" id="data-files" placeholder="docs/policy.pdf, README.md">
-        <label>URLs (comma-separated)</label>
-        <input type="text" id="data-urls" placeholder="https://…">
-        <label>Inline text</label>
-        <textarea id="data-inline" placeholder="Paste text directly…"></textarea>
-        <div class="actions">
-          <button class="btn btn-primary" onclick="applyStage('data')">Apply</button>
-        </div>
-      </div>
-
-      <!-- chunk form -->
-      <div id="form-chunk" style="display:none">
-        <label>Chunk size (characters)</label>
-        <input type="number" id="chunk-size" value="500" min="100" max="4000">
-        <label>Overlap (characters)</label>
-        <input type="number" id="chunk-overlap" value="50" min="0" max="500">
-        <label>Split strategy</label>
-        <select id="chunk-strategy">
-          <option value="character">Character</option>
-          <option value="sentence">Sentence</option>
-          <option value="token">Token (approximate)</option>
-        </select>
-        <div class="actions">
-          <button class="btn btn-primary" onclick="applyStage('chunk')">Apply</button>
-        </div>
-      </div>
-
-      <!-- embed form -->
-      <div id="form-embed" style="display:none">
-        <label>Embedding provider</label>
-        <select id="embed-provider">
-          <option value="builtin">Built-in (char n-gram → sentence-transformers)</option>
-          <option value="openai">OpenAI text-embedding-3-small</option>
-          <option value="cohere">Cohere embed-v3</option>
-          <option value="custom">Custom function</option>
-        </select>
-        <label>Dimensions</label>
-        <input type="number" id="embed-dims" value="384" min="64" max="3072">
-        <div class="actions">
-          <button class="btn btn-primary" onclick="applyStage('embed')">Apply</button>
-        </div>
-      </div>
-
-      <!-- retrieve form -->
-      <div id="form-retrieve" style="display:none">
-        <label>Retrieval strategy</label>
-        <select id="retrieve-strategy">
-          <option value="dense">Dense (vector similarity)</option>
-          <option value="sparse">Sparse (BM25)</option>
-          <option value="hybrid">Hybrid (BM25 + dense via RRF)</option>
-        </select>
-        <label>Top-K results</label>
-        <input type="number" id="retrieve-k" value="5" min="1" max="50">
-        <label>Dense weight (hybrid only, 0–1)</label>
-        <input type="number" id="retrieve-dense-w" value="0.5" min="0" max="1" step="0.1">
-        <label>Max chars per chunk (RAG token budget)</label>
-        <input type="number" id="retrieve-max-chars" value="4000" min="500" max="32000">
-        <div class="actions">
-          <button class="btn btn-primary" onclick="applyStage('retrieve')">Apply</button>
-        </div>
-      </div>
-
-      <!-- rank form -->
-      <div id="form-rank" style="display:none">
-        <label>Ranker type</label>
-        <select id="rank-type">
-          <option value="none">None (skip ranking)</option>
-          <option value="llm">LLMRanker (MeshFlow built-in)</option>
-          <option value="heuristic">Heuristic (keyword overlap)</option>
-        </select>
-        <label>Score threshold (drop below this)</label>
-        <input type="number" id="rank-threshold" value="0.3" min="0" max="1" step="0.05">
-        <label>Ranking model (LLMRanker)</label>
-        <select id="rank-model">
-          <option value="claude-haiku-4-5-20251001">claude-haiku (fast, cheap)</option>
-          <option value="claude-sonnet-4-6">claude-sonnet (accurate)</option>
-        </select>
-        <div class="actions">
-          <button class="btn btn-primary" onclick="applyStage('rank')">Apply</button>
-        </div>
-      </div>
-
-      <!-- generate form -->
-      <div id="form-generate" style="display:none">
-        <label>Generation model</label>
-        <select id="gen-model">
-          <option value="claude-sonnet-4-6">claude-sonnet-4-6 (recommended)</option>
-          <option value="claude-haiku-4-5-20251001">claude-haiku (fast)</option>
-          <option value="claude-opus-4-8">claude-opus (best quality)</option>
-        </select>
-        <label>Self-correction</label>
-        <select id="gen-self-correct">
-          <option value="off">Off</option>
-          <option value="on">On (grade + refine)</option>
-        </select>
-        <label>Grade threshold (self-correction trigger)</label>
-        <input type="number" id="gen-grade" value="0.7" min="0" max="1" step="0.05">
-        <label>Max correction rounds</label>
-        <input type="number" id="gen-rounds" value="2" min="1" max="5">
-        <label>Prompt caching</label>
-        <select id="gen-cache">
-          <option value="on">On (cache_control — 90% cost reduction)</option>
-          <option value="off">Off</option>
-        </select>
-        <div class="actions">
-          <button class="btn btn-primary" onclick="applyStage('generate')">Apply</button>
-        </div>
-      </div>
-
-      <!-- guard form -->
-      <div id="form-guard" style="display:none">
-        <label>PII / PHI blocking</label>
-        <select id="guard-pii">
-          <option value="off">Off</option>
-          <option value="on">On (SensitiveDataDetector — 28 patterns)</option>
-        </select>
-        <label>Cost cap (USD, 0 = disabled)</label>
-        <input type="number" id="guard-cost" value="0" min="0" step="0.01">
-        <label>Output length guardrail (max tokens, 0 = disabled)</label>
-        <input type="number" id="guard-length" value="0" min="0" step="100">
-        <label>Compliance profile</label>
-        <select id="guard-compliance">
-          <option value="none">None</option>
-          <option value="hipaa">HIPAA</option>
-          <option value="soc2">SOC 2</option>
-          <option value="gdpr">GDPR</option>
-          <option value="pci">PCI DSS</option>
-        </select>
-        <div class="actions">
-          <button class="btn btn-primary" onclick="applyStage('guard')">Apply</button>
-        </div>
-      </div>
-
+    <!-- data source -->
+    <div id="form-data">
+      <label class="form-label">File paths (comma-separated)</label>
+      <input type="text" class="form-control" id="data-files" placeholder="docs/policy.pdf, README.md">
+      <label class="form-label">URLs (comma-separated)</label>
+      <input type="text" class="form-control" id="data-urls" placeholder="https://…">
+      <label class="form-label">Inline text</label>
+      <textarea class="form-control" id="data-inline" placeholder="Paste text directly…"></textarea>
+      <button class="btn btn-primary apply-btn" onclick="applyStage('data')">Apply</button>
     </div>
-  </div>
 
+    <!-- chunking -->
+    <div id="form-chunk" style="display:none">
+      <label class="form-label">Chunk size (characters)</label>
+      <input type="number" class="form-control" id="chunk-size" value="500" min="100" max="4000">
+      <label class="form-label">Overlap (characters)</label>
+      <input type="number" class="form-control" id="chunk-overlap" value="50" min="0" max="500">
+      <label class="form-label">Split strategy</label>
+      <select class="form-control" id="chunk-strategy">
+        <option value="character">Character</option>
+        <option value="sentence">Sentence</option>
+        <option value="token">Token (approximate)</option>
+      </select>
+      <button class="btn btn-primary apply-btn" onclick="applyStage('chunk')">Apply</button>
+    </div>
+
+    <!-- embedding -->
+    <div id="form-embed" style="display:none">
+      <label class="form-label">Embedding provider</label>
+      <select class="form-control" id="embed-provider">
+        <option value="builtin">Built-in (char n-gram → sentence-transformers)</option>
+        <option value="openai">OpenAI text-embedding-3-small</option>
+        <option value="cohere">Cohere embed-v3</option>
+        <option value="custom">Custom function</option>
+      </select>
+      <label class="form-label">Dimensions</label>
+      <input type="number" class="form-control" id="embed-dims" value="384" min="64" max="3072">
+      <button class="btn btn-primary apply-btn" onclick="applyStage('embed')">Apply</button>
+    </div>
+
+    <!-- retrieval -->
+    <div id="form-retrieve" style="display:none">
+      <label class="form-label">Retrieval strategy</label>
+      <select class="form-control" id="retrieve-strategy">
+        <option value="dense">Dense (vector similarity)</option>
+        <option value="sparse">Sparse (BM25)</option>
+        <option value="hybrid">Hybrid (BM25 + dense via RRF)</option>
+      </select>
+      <label class="form-label">Top-K results</label>
+      <input type="number" class="form-control" id="retrieve-k" value="5" min="1" max="50">
+      <label class="form-label">Dense weight (hybrid only, 0–1)</label>
+      <input type="number" class="form-control" id="retrieve-dense-w" value="0.5" min="0" max="1" step="0.1">
+      <label class="form-label">Max chars per chunk (token budget)</label>
+      <input type="number" class="form-control" id="retrieve-max-chars" value="4000" min="500" max="32000">
+      <button class="btn btn-primary apply-btn" onclick="applyStage('retrieve')">Apply</button>
+    </div>
+
+    <!-- ranking -->
+    <div id="form-rank" style="display:none">
+      <label class="form-label">Ranker type</label>
+      <select class="form-control" id="rank-type">
+        <option value="none">None (skip ranking)</option>
+        <option value="llm">LLMRanker (MeshFlow built-in)</option>
+        <option value="heuristic">Heuristic (keyword overlap)</option>
+      </select>
+      <label class="form-label">Score threshold (drop below this)</label>
+      <input type="number" class="form-control" id="rank-threshold" value="0.3" min="0" max="1" step="0.05">
+      <label class="form-label">Ranking model (LLMRanker)</label>
+      <select class="form-control" id="rank-model">
+        <option value="claude-haiku-4-5-20251001">claude-haiku (fast, cheap)</option>
+        <option value="claude-sonnet-4-6">claude-sonnet (accurate)</option>
+      </select>
+      <button class="btn btn-primary apply-btn" onclick="applyStage('rank')">Apply</button>
+    </div>
+
+    <!-- generation -->
+    <div id="form-generate" style="display:none">
+      <label class="form-label">Generation model</label>
+      <select class="form-control" id="gen-model">
+        <option value="claude-sonnet-4-6">claude-sonnet-4-6 (recommended)</option>
+        <option value="claude-haiku-4-5-20251001">claude-haiku (fast)</option>
+        <option value="claude-opus-4-8">claude-opus (best quality)</option>
+      </select>
+      <label class="form-label">Self-correction</label>
+      <select class="form-control" id="gen-self-correct">
+        <option value="off">Off</option>
+        <option value="on">On (grade + refine)</option>
+      </select>
+      <label class="form-label">Grade threshold (self-correction trigger)</label>
+      <input type="number" class="form-control" id="gen-grade" value="0.7" min="0" max="1" step="0.05">
+      <label class="form-label">Max correction rounds</label>
+      <input type="number" class="form-control" id="gen-rounds" value="2" min="1" max="5">
+      <label class="form-label">Prompt caching</label>
+      <select class="form-control" id="gen-cache">
+        <option value="on">On (cache_control — 90% cost reduction)</option>
+        <option value="off">Off</option>
+      </select>
+      <button class="btn btn-primary apply-btn" onclick="applyStage('generate')">Apply</button>
+    </div>
+
+    <!-- guardrails -->
+    <div id="form-guard" style="display:none">
+      <label class="form-label">PII / PHI blocking</label>
+      <select class="form-control" id="guard-pii">
+        <option value="off">Off</option>
+        <option value="on">On (SensitiveDataDetector — 28 patterns)</option>
+      </select>
+      <label class="form-label">Cost cap (USD, 0 = disabled)</label>
+      <input type="number" class="form-control" id="guard-cost" value="0" min="0" step="0.01">
+      <label class="form-label">Output length guardrail (max tokens, 0 = disabled)</label>
+      <input type="number" class="form-control" id="guard-length" value="0" min="0" step="100">
+      <label class="form-label">Compliance profile</label>
+      <select class="form-control" id="guard-compliance">
+        <option value="none">None</option>
+        <option value="hipaa">HIPAA</option>
+        <option value="soc2">SOC 2</option>
+        <option value="gdpr">GDPR</option>
+        <option value="pci">PCI DSS</option>
+      </select>
+      <button class="btn btn-primary apply-btn" onclick="applyStage('guard')">Apply</button>
+    </div>
+
+  </div>
 </div>
+
+<div class="toast-notification" id="toast-notification"></div>
 
 <script>
   const stages = ['data','chunk','embed','retrieve','rank','generate','guard'];
+  const stageLabels = {
+    data: 'Data Source', chunk: 'Chunking', embed: 'Embedding',
+    retrieve: 'Retrieval', rank: 'Ranking', generate: 'Generation', guard: 'Guardrails'
+  };
+  let activeOutputTab = 'yaml';
+
   let config = {
     data:     { files: [], urls: [], inline: '' },
     chunk:    { chunk_size: 500, overlap: 50, strategy: 'character' },
     embed:    { provider: 'builtin', dimensions: 384 },
     retrieve: { strategy: 'dense', top_k: 5, dense_weight: 0.5, max_chars: 4000 },
     rank:     { type: 'none', threshold: 0.3, model: 'claude-haiku-4-5-20251001' },
-    generate: { model: 'claude-sonnet-4-6', self_correct: 'off',
-                grade_threshold: 0.7, max_rounds: 2, prompt_cache: 'on' },
+    generate: { model: 'claude-sonnet-4-6', self_correct: 'off', grade_threshold: 0.7, max_rounds: 2, prompt_cache: 'on' },
     guard:    { pii_block: 'off', cost_cap: 0, max_tokens: 0, compliance: 'none' },
   };
 
+  function showToast(msg) {
+    const t = document.getElementById('toast-notification');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2500);
+  }
+
   function selectStage(stage) {
     stages.forEach(s => {
-      document.querySelector(`[onclick="selectStage('${s}')"]`).classList.toggle('active', s === stage);
+      document.getElementById(`scard-${s}`).classList.toggle('active', s === stage);
       document.getElementById(`form-${s}`).style.display = s === stage ? '' : 'none';
     });
-    document.getElementById('stage-label').textContent = {
-      data: 'Data Source', chunk: 'Chunking', embed: 'Embedding',
-      retrieve: 'Retrieval', rank: 'Ranking', generate: 'Generation',
-      guard: 'Guardrails'
-    }[stage] || stage;
+    document.getElementById('stage-label').textContent = stageLabels[stage] || stage;
+  }
+
+  function markConfigured(stage) {
+    const card = document.getElementById(`scard-${stage}`);
+    const check = document.getElementById(`scheck-${stage}`);
+    const step = document.getElementById(`step-${stage}`);
+    card.classList.add('configured');
+    if (check) check.style.display = '';
+    if (step) {
+      step.classList.add('configured');
+      const status = step.querySelector('.step-status');
+      if (status) { status.className = 'step-status ok'; status.textContent = '✓'; }
+    }
   }
 
   function applyStage(stage) {
     if (stage === 'data') {
-      config.data.files = document.getElementById('data-files').value.split(',').map(s=>s.trim()).filter(Boolean);
-      config.data.urls  = document.getElementById('data-urls').value.split(',').map(s=>s.trim()).filter(Boolean);
+      config.data.files  = document.getElementById('data-files').value.split(',').map(s=>s.trim()).filter(Boolean);
+      config.data.urls   = document.getElementById('data-urls').value.split(',').map(s=>s.trim()).filter(Boolean);
       config.data.inline = document.getElementById('data-inline').value;
       const parts = [];
-      if (config.data.files.length) parts.push(`files: [${config.data.files.join(', ')}]`);
-      if (config.data.urls.length)  parts.push(`urls: ${config.data.urls.length}`);
-      if (config.data.inline)       parts.push('inline: set');
-      document.getElementById('val-data').textContent = parts.join(' · ') || 'not configured';
+      if (config.data.files.length)  parts.push(`files: [${config.data.files.join(', ')}]`);
+      if (config.data.urls.length)   parts.push(`urls: ${config.data.urls.length}`);
+      if (config.data.inline)        parts.push('inline: set');
+      document.getElementById('val-data').textContent = parts.join(' · ') || 'files: [] · urls: [] · inline: —';
     }
     if (stage === 'chunk') {
       config.chunk.chunk_size = +document.getElementById('chunk-size').value;
@@ -404,10 +800,10 @@
         `provider: ${config.embed.provider} · dims: ${config.embed.dimensions}`;
     }
     if (stage === 'retrieve') {
-      config.retrieve.strategy    = document.getElementById('retrieve-strategy').value;
-      config.retrieve.top_k       = +document.getElementById('retrieve-k').value;
-      config.retrieve.dense_weight= +document.getElementById('retrieve-dense-w').value;
-      config.retrieve.max_chars   = +document.getElementById('retrieve-max-chars').value;
+      config.retrieve.strategy     = document.getElementById('retrieve-strategy').value;
+      config.retrieve.top_k        = +document.getElementById('retrieve-k').value;
+      config.retrieve.dense_weight = +document.getElementById('retrieve-dense-w').value;
+      config.retrieve.max_chars    = +document.getElementById('retrieve-max-chars').value;
       document.getElementById('val-retrieve').textContent =
         `strategy: ${config.retrieve.strategy} · top_k: ${config.retrieve.top_k} · max_chars: ${config.retrieve.max_chars}`;
     }
@@ -420,11 +816,11 @@
           : `ranker: ${config.rank.type} · threshold: ${config.rank.threshold}`;
     }
     if (stage === 'generate') {
-      config.generate.model          = document.getElementById('gen-model').value;
-      config.generate.self_correct   = document.getElementById('gen-self-correct').value;
-      config.generate.grade_threshold= +document.getElementById('gen-grade').value;
-      config.generate.max_rounds     = +document.getElementById('gen-rounds').value;
-      config.generate.prompt_cache   = document.getElementById('gen-cache').value;
+      config.generate.model           = document.getElementById('gen-model').value;
+      config.generate.self_correct    = document.getElementById('gen-self-correct').value;
+      config.generate.grade_threshold = +document.getElementById('gen-grade').value;
+      config.generate.max_rounds      = +document.getElementById('gen-rounds').value;
+      config.generate.prompt_cache    = document.getElementById('gen-cache').value;
       document.getElementById('val-generate').textContent =
         `model: ${config.generate.model} · self-correct: ${config.generate.self_correct} · cache: ${config.generate.prompt_cache}`;
     }
@@ -434,30 +830,31 @@
       config.guard.max_tokens = +document.getElementById('guard-length').value;
       config.guard.compliance = document.getElementById('guard-compliance').value;
       const parts = [];
-      if (config.guard.pii_block !== 'off') parts.push('pii:on');
-      if (config.guard.cost_cap > 0)        parts.push(`cost_cap:$${config.guard.cost_cap}`);
-      if (config.guard.compliance !== 'none') parts.push(config.guard.compliance.toUpperCase());
+      if (config.guard.pii_block !== 'off')     parts.push('pii: on');
+      if (config.guard.cost_cap > 0)            parts.push(`cost_cap: $${config.guard.cost_cap}`);
+      if (config.guard.compliance !== 'none')   parts.push(config.guard.compliance.toUpperCase());
       document.getElementById('val-guard').textContent = parts.join(' · ') || 'none configured';
     }
+    markConfigured(stage);
+    showToast(`${stageLabels[stage]} applied ✓`);
+  }
 
-    // Mark step as configured
-    const step = document.getElementById(`step-${stage}`);
-    if (step) {
-      step.classList.add('configured');
-      const icon = step.querySelector('.step-icon');
-      if (icon) { icon.className = 'step-icon ok-icon'; icon.textContent = '✓'; }
+  function switchOutputTab(tab) {
+    activeOutputTab = tab;
+    document.getElementById('tab-yaml').classList.toggle('active', tab === 'yaml');
+    document.getElementById('tab-python').classList.toggle('active', tab === 'python');
+    const block = document.getElementById('output-block');
+    if (block.style.display !== 'none') {
+      generateOutput();
     }
   }
 
   function buildYAML() {
     const c = config;
-    const lines = [
-      'rag_pipeline:',
-      '  # Generated by MeshFlow RAG Pipeline Builder',
-      '',
-      '  data_source:',
-    ];
+    const lines = ['rag_pipeline:', '  # Generated by MeshFlow Studio — RAG Pipeline Builder', ''];
+    lines.push('  data_source:');
     if (c.data.files.length)  lines.push(`    files: [${c.data.files.map(f=>`"${f}"`).join(', ')}]`);
+    else                      lines.push('    files: []');
     if (c.data.urls.length)   lines.push(`    urls: [${c.data.urls.map(u=>`"${u}"`).join(', ')}]`);
     if (c.data.inline)        lines.push(`    inline: "${c.data.inline.slice(0,80).replace(/"/g,"'")}"`);
     lines.push('', '  chunking:');
@@ -494,16 +891,138 @@
     return lines.join('\n');
   }
 
-  function exportYAML() {
-    const yaml = buildYAML();
-    const out = document.getElementById('yaml-output');
-    out.textContent = yaml;
-    out.style.display = 'block';
+  function buildPython() {
+    const c = config;
+    const lines = [
+      '"""RAG pipeline — generated by MeshFlow Studio."""',
+      'from meshflow.intelligence.rag import (',
+      '    KnowledgeSource, VectorStore, HybridRetriever, LLMRanker,',
+      '    SelfCorrectingRAG, RAGPipeline,',
+      ')',
+    ];
+
+    if (c.guard.pii_block === 'on') {
+      lines.push('from meshflow.guardrails import PIIBlockGuardrail');
+    }
+    if (c.guard.cost_cap > 0) {
+      lines.push('from meshflow import CostCap');
+    }
+
+    lines.push('', '', '# ── Data sources ─────────────────────────────────────────────');
+    lines.push('sources = [');
+    if (c.data.files.length) {
+      c.data.files.forEach(f => lines.push(`    KnowledgeSource.from_file("${f}"),`));
+    }
+    if (c.data.urls.length) {
+      c.data.urls.forEach(u => lines.push(`    KnowledgeSource.from_url("${u}"),`));
+    }
+    if (c.data.inline) {
+      lines.push(`    KnowledgeSource.from_text("${c.data.inline.slice(0,60).replace(/"/g,"'")}…"),`);
+    }
+    if (!c.data.files.length && !c.data.urls.length && !c.data.inline) {
+      lines.push('    # KnowledgeSource.from_file("your-doc.pdf"),');
+    }
+    lines.push(']', '');
+
+    lines.push('# ── Vector store ─────────────────────────────────────────────');
+    lines.push(`store = VectorStore(`);
+    lines.push(`    embedding_provider="${c.embed.provider}",`);
+    lines.push(`    dimensions=${c.embed.dimensions},`);
+    lines.push(`)`, '');
+
+    lines.push('# ── Retriever ────────────────────────────────────────────────');
+    if (c.retrieve.strategy === 'hybrid') {
+      lines.push('retriever = HybridRetriever(');
+      lines.push(`    vector_store=store,`);
+      lines.push(`    top_k=${c.retrieve.top_k},`);
+      lines.push(`    dense_weight=${c.retrieve.dense_weight},`);
+      lines.push(`    max_chars=${c.retrieve.max_chars},`);
+      lines.push(')', '');
+    } else {
+      lines.push(`store.configure_retrieval(`);
+      lines.push(`    strategy="${c.retrieve.strategy}",`);
+      lines.push(`    top_k=${c.retrieve.top_k},`);
+      lines.push(`    max_chars=${c.retrieve.max_chars},`);
+      lines.push(')', '');
+    }
+
+    if (c.rank.type !== 'none') {
+      lines.push('# ── Ranker ───────────────────────────────────────────────────');
+      lines.push('ranker = LLMRanker(');
+      lines.push(`    model="${c.rank.model}",`);
+      lines.push(`    score_threshold=${c.rank.threshold},`);
+      lines.push(')', '');
+    }
+
+    lines.push('# ── Generation pipeline ──────────────────────────────────────');
+    if (c.generate.self_correct === 'on') {
+      lines.push('pipeline = SelfCorrectingRAG(');
+    } else {
+      lines.push('pipeline = RAGPipeline(');
+    }
+    lines.push(`    sources=sources,`);
+    lines.push(`    store=store,`);
+    if (c.retrieve.strategy === 'hybrid') lines.push('    retriever=retriever,');
+    if (c.rank.type !== 'none') lines.push('    ranker=ranker,');
+    lines.push(`    model="${c.generate.model}",`);
+    lines.push(`    prompt_caching=${c.generate.prompt_cache === 'on'},`);
+    if (c.generate.self_correct === 'on') {
+      lines.push(`    grade_threshold=${c.generate.grade_threshold},`);
+      lines.push(`    max_rounds=${c.generate.max_rounds},`);
+    }
+    if (c.guard.pii_block === 'on') {
+      lines.push('    output_guardrails=[PIIBlockGuardrail()],');
+    }
+    if (c.guard.cost_cap > 0) {
+      lines.push(`    cost_cap=CostCap(usd=${c.guard.cost_cap}),`);
+    }
+    if (c.guard.compliance !== 'none') {
+      lines.push(`    compliance="${c.guard.compliance}",`);
+    }
+    lines.push(')', '');
+
+    lines.push('# ── Run ──────────────────────────────────────────────────────');
+    lines.push('if __name__ == "__main__":');
+    lines.push('    pipeline.index()  # index all sources');
+    lines.push('    result = pipeline.query("Your question here")');
+    lines.push('    print(result.answer)');
+    lines.push(`    print(f"sources_used={'{'}len(result.sources){'}'}")`);
+
+    return lines.join('\n');
   }
 
-  function copyYAML() {
-    const yaml = buildYAML();
-    navigator.clipboard.writeText(yaml).then(() => alert('YAML copied to clipboard!'));
+  function currentOutput() {
+    return activeOutputTab === 'yaml' ? buildYAML() : buildPython();
+  }
+
+  function exportYAML() { generateOutput(); }  // kept for backward-compat
+
+  function generateOutput() {
+    const block = document.getElementById('output-block');
+    const text = document.getElementById('output-text');
+    text.textContent = currentOutput();
+    block.className = 'code-block ' + (activeOutputTab === 'yaml' ? 'yaml-color' : '');
+    block.style.display = 'block';
+  }
+
+  function copyOutput() {
+    navigator.clipboard.writeText(currentOutput()).then(() => {
+      showToast(activeOutputTab === 'yaml' ? 'YAML copied!' : 'Python copied!');
+    });
+  }
+
+  function downloadOutput() {
+    const content = currentOutput();
+    const ext = activeOutputTab === 'yaml' ? '.yaml' : '.py';
+    const mime = activeOutputTab === 'yaml' ? 'text/yaml' : 'text/x-python';
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'rag_pipeline' + ext;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Downloaded rag_pipeline' + ext);
   }
 </script>
 </body>

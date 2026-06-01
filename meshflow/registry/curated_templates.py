@@ -57,6 +57,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Analyse workflows and documents for HIPAA compliance gaps and PHI exposure risks.",
         tags=["compliance", "hipaa", "healthcare", "phi"],
         skills=["document_analysis", "regulatory_compliance"],
+        fork_count=847,
     ),
 
     # 2. SOC 2 Auditor
@@ -73,6 +74,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Evaluate system controls against SOC 2 Type II Trust Service Criteria.",
         tags=["compliance", "soc2", "audit", "security"],
         skills=["audit", "regulatory_compliance"],
+        fork_count=612,
     ),
 
     # 3. GDPR Data Protection Officer
@@ -89,6 +91,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="GDPR Article 30 record review, consent analysis, and data subject rights assessment.",
         tags=["compliance", "gdpr", "privacy", "eu"],
         skills=["regulatory_compliance", "privacy"],
+        fork_count=734,
     ),
 
     # 4. Security Vulnerability Researcher
@@ -105,6 +108,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="CVE analysis, vulnerability assessment, and security remediation guidance.",
         tags=["security", "cve", "vulnerability", "pentest"],
         skills=["security_research", "code_analysis"],
+        fork_count=1203,
     ),
 
     # 5. Contract Legal Analyst
@@ -121,6 +125,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Contract clause analysis, liability review, and legal risk identification.",
         tags=["legal", "contract", "risk", "compliance"],
         skills=["document_analysis", "legal_review"],
+        fork_count=528,
     ),
 
     # 6. Financial Risk Analyst
@@ -137,6 +142,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Financial modelling, risk analysis, and investment research with Python computation.",
         tags=["finance", "risk", "investment", "quantitative"],
         skills=["financial_analysis", "python"],
+        fork_count=691,
     ),
 
     # 7. Market Research Analyst
@@ -153,6 +159,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Competitive intelligence, market sizing, and strategic landscape analysis.",
         tags=["research", "market", "competitive-intelligence", "strategy"],
         skills=["web_research", "analysis"],
+        fork_count=1547,
     ),
 
     # 8. Python Code Reviewer
@@ -169,6 +176,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Python code quality review with security, performance, and style analysis.",
         tags=["code-review", "python", "security", "quality"],
         skills=["code_analysis", "security"],
+        fork_count=2184,
     ),
 
     # 9. Data Pipeline Analyst
@@ -185,6 +193,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Data pipeline quality analysis, schema validation, and performance optimisation.",
         tags=["data", "pipeline", "etl", "quality"],
         skills=["data_analysis", "python"],
+        fork_count=873,
     ),
 
     # 10. Clinical Literature Reviewer
@@ -202,6 +211,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Evidence-based medical literature review and clinical study quality assessment.",
         tags=["medical", "clinical", "research", "evidence"],
         skills=["literature_review", "medical"],
+        fork_count=441,
     ),
 
     # 11. API Integration Planner
@@ -218,6 +228,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="API integration design, authentication strategy, and implementation planning.",
         tags=["api", "integration", "architecture", "planning"],
         skills=["system_design", "api"],
+        fork_count=1092,
     ),
 
     # 12. Incident Response Coordinator
@@ -234,6 +245,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Security incident triage, severity classification, and response coordination.",
         tags=["security", "incident-response", "operations"],
         skills=["incident_management", "security"],
+        fork_count=763,
     ),
 
     # 13. Prompt Engineer
@@ -250,6 +262,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Analyse and improve LLM system prompts for clarity, safety, and performance.",
         tags=["prompts", "llm", "optimisation", "quality"],
         skills=["prompt_engineering"],
+        fork_count=1876,
     ),
 
     # 14. PCI DSS Compliance Checker
@@ -266,6 +279,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="PCI DSS v4.0 gap analysis for payment card data environments.",
         tags=["compliance", "pci", "payments", "security"],
         skills=["regulatory_compliance", "security"],
+        fork_count=389,
     ),
 
     # 15. Technical Writer
@@ -282,6 +296,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Developer documentation, API reference writing, and technical content creation.",
         tags=["documentation", "writing", "developer", "api"],
         skills=["technical_writing"],
+        fork_count=1134,
     ),
 
     # 16. A/B Test Analyst
@@ -298,6 +313,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Experiment design, statistical significance testing, and A/B result interpretation.",
         tags=["analytics", "experimentation", "statistics", "ab-testing"],
         skills=["statistics", "python"],
+        fork_count=658,
     ),
 
     # 17. Cloud Cost Optimiser
@@ -314,6 +330,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Cloud cost analysis, right-sizing recommendations, and FinOps optimisation.",
         tags=["cloud", "cost", "finops", "aws", "gcp"],
         skills=["cloud", "financial_analysis"],
+        fork_count=917,
     ),
 
     # 18. Accessibility Auditor
@@ -330,6 +347,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="WCAG 2.2 accessibility review with remediation guidance for Level AA compliance.",
         tags=["accessibility", "wcag", "ux", "compliance"],
         skills=["accessibility", "ux_review"],
+        fork_count=302,
     ),
 
     # 19. Agent Workflow Designer
@@ -347,6 +365,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Design MeshFlow multi-agent workflows as production-ready YAML topology definitions.",
         tags=["meshflow", "workflow", "architecture", "yaml"],
         skills=["workflow_design", "meshflow"],
+        fork_count=2391,
     ),
 
     # 20. Competitive Intelligence Analyst
@@ -363,6 +382,7 @@ CURATED_TEMPLATES: list[AgentTemplate] = [
         description="Competitive research, battlecard creation, and market positioning analysis.",
         tags=["competitive-intelligence", "strategy", "research", "battlecard"],
         skills=["web_research", "competitive_analysis"],
+        fork_count=1428,
     ),
 ]
 

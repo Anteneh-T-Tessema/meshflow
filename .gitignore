@@ -59,3 +59,4 @@ competitive_analysis*.docx
 *.pem
 *.key
 vault.db
+.gstack/

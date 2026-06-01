@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Literal
 
@@ -29,6 +30,16 @@ from meshflow.core.workflow import WorkflowDefinition, WorkflowResult
 
 
 TeamPattern = Literal["sequential", "parallel", "hierarchical", "supervised", "reflective"]
+
+
+def _parse_confidence(text: str) -> float:
+    """Extract a confidence score from agent output text.
+
+    Looks for patterns like ``confidence: 0.92`` or ``"confidence": 0.92``
+    anywhere in the output. Returns 0.0 if no score is found.
+    """
+    m = re.search(r'"?confidence"?\s*:\s*([0-9]*\.?[0-9]+)', text, re.IGNORECASE)
+    return float(m.group(1)) if m else 0.0
 
 
 @dataclass
@@ -41,6 +52,13 @@ class Team:
     parallel     All agents run concurrently; results are merged.
     hierarchical First agent is the planner/orchestrator; it drives the rest sequentially.
     supervised   Like sequential but the last agent is always a Critic that can veto.
+
+    Parameters
+    ----------
+    stop_on_confidence:
+        When set (0.0–1.0), sequential/hierarchical/supervised runs exit early
+        as soon as any agent's output confidence meets or exceeds this threshold.
+        Skipped agents are not billed. Set to ``None`` (default) to run all agents.
     """
 
     name: str
@@ -48,6 +66,7 @@ class Team:
     pattern: TeamPattern = "sequential"
     policy: Policy | str | None = None
     budget_usd: float = 5.0
+    stop_on_confidence: float | None = None
 
     def __post_init__(self) -> None:
         if not self.agents:
@@ -63,11 +82,60 @@ class Team:
         return self.policy
 
     async def run(self, task: str, context: dict[str, Any] | None = None) -> WorkflowResult:
-        """Run the team on a task and return a WorkflowResult."""
-        from meshflow.core.mesh import Mesh
+        """Run the team on a task and return a WorkflowResult.
 
+        When ``stop_on_confidence`` is set and the pattern is sequential/
+        hierarchical/supervised, agents are run directly (bypassing the graph
+        engine) so the early-exit can fire before later agents are invoked.
+        """
+        if self.stop_on_confidence is not None and self.pattern in (
+            "sequential", "hierarchical", "supervised", "reflective"
+        ):
+            return await self._run_with_confidence_check(task, context)
+
+        from meshflow.core.mesh import Mesh
         workflow = self._build_workflow()
         return await Mesh(policy=self._policy).run_workflow(workflow, task=task, **(context or {}))
+
+    async def _run_with_confidence_check(
+        self,
+        task: str,
+        context: dict[str, Any] | None,
+    ) -> WorkflowResult:
+        """Sequential execution with early exit when confidence threshold is met."""
+        from meshflow.core.workflow import WorkflowResult
+
+        accumulated = ""
+        stopped_at: int | None = None
+
+        for i, agent in enumerate(self.agents):
+            agent_task = task if i == 0 else f"{task}\n\nPrior output:\n{accumulated}"
+            result = await agent.run(agent_task, context or {})
+            output = result.get("output", "") if isinstance(result, dict) else str(result)
+            accumulated = output
+
+            confidence = _parse_confidence(output)
+            if self.stop_on_confidence is not None and confidence >= self.stop_on_confidence:
+                stopped_at = i
+                break
+
+        agents_run = stopped_at + 1 if stopped_at is not None else len(self.agents)
+        skipped = [a.name for a in self.agents[agents_run:]]
+        return WorkflowResult(
+            run_id="",
+            workflow_name=self.name,
+            completed=True,
+            output=accumulated,
+            steps=[],
+            total_cost_usd=0.0,
+            total_tokens=0,
+            total_carbon_gco2=0.0,
+            duration_s=0.0,
+            blocked_nodes=[],
+            paused_nodes=[],
+            skipped_nodes=skipped,
+            ledger_db="",
+        )
 
     async def stream(
         self,
@@ -108,6 +176,12 @@ class Team:
                     tokens.append(token)
                 accumulated = "".join(tokens)
                 yield StreamChunk(kind="node_end", node_name=agent.name, content=accumulated)
+
+                # Early exit if confidence threshold is met
+                if self.stop_on_confidence is not None:
+                    confidence = _parse_confidence(accumulated)
+                    if confidence >= self.stop_on_confidence:
+                        break
 
         yield StreamChunk(kind="done")
 

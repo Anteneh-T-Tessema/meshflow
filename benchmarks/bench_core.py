@@ -19,7 +19,6 @@ import asyncio
 import gc
 import json
 import os
-import statistics
 import sys
 import time
 import tracemalloc
@@ -202,12 +201,12 @@ async def bench_provider_complete(n: int = 500) -> dict[str, float]:
 
 async def bench_ledger_write(n: int = 1000) -> dict[str, float]:
     from meshflow.core.ledger import ReplayLedger, StepRecord
-    import hashlib, datetime, uuid
+    import datetime
+    import uuid
 
     ledger = ReplayLedger(":memory:")
     run_id = str(uuid.uuid4())
 
-    import datetime
 
     def _record(i: int) -> StepRecord:
         return StepRecord(

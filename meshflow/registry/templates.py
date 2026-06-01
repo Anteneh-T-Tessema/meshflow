@@ -79,6 +79,7 @@ class AgentTemplate:
     tags: list[str] = field(default_factory=list)
     version: str = "1.0.0"
     author: str = ""
+    fork_count: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # ── Serialisation ──────────────────────────────────────────────────────────
@@ -97,6 +98,7 @@ class AgentTemplate:
             "tags": self.tags,
             "version": self.version,
             "author": self.author,
+            "fork_count": self.fork_count,
             "metadata": self.metadata,
         }
         return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
@@ -125,6 +127,7 @@ class AgentTemplate:
             tags=list(data.get("tags", [])),
             version=str(data.get("version", "1.0.0")),
             author=data.get("author", ""),
+            fork_count=int(data.get("fork_count", 0)),
             metadata=dict(data.get("metadata", {})),
         )
 
