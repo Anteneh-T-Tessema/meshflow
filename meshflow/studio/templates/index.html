@@ -776,7 +776,7 @@
     <div id="marketplace-view" style="display: none; flex-direction: column; padding: 2rem; gap: 1.5rem; flex: 1; min-height: 0; overflow-y: auto;">
       <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1.5rem;">
         <div>
-          <h1 style="font-family: 'Space Grotesk', sans-serif; font-size: 1.8rem; font-weight: 600; background: linear-gradient(to right, #fff, #9ca3af); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Agent Marketplace & Registry</h1>
+          <h1 style="font-family: 'Space Grotesk', sans-serif; font-size: 1.8rem; font-weight: 600; background: linear-gradient(to right, #fff, #9ca3af); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;">Agent Marketplace & Registry</h1>
           <p style="color: var(--text-muted); font-size: 0.95rem; margin-top: 0.25rem;">Browse, share, and import pre-built agent templates into your workflow canvas.</p>
         </div>
         <div>
@@ -908,7 +908,7 @@
   <script>
     let nodes = [
       { id: 'researcher', kind: 'native', role: 'researcher', model: 'claude-sonnet-4-6', x: 50, y: 150 },
-      { id: 'verifier', kind: 'native', role: 'checker', model: 'claude-haiku-3-5', x: 350, y: 150 }
+      { id: 'verifier', kind: 'native', role: 'checker', model: 'claude-haiku-4-5-20251001', x: 350, y: 150 }
     ];
     let edges = [
       { from: 'researcher', to: 'verifier' }

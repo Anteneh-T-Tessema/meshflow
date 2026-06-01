@@ -91,6 +91,59 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(templates).encode("utf-8"))
             return
 
+        if self.path == "/api/runs":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                import asyncio
+                from meshflow.core.ledger import ReplayLedger
+                ledger = ReplayLedger()
+                runs = asyncio.run(ledger.list_runs())
+                self.wfile.write(json.dumps(runs).encode("utf-8"))
+            except Exception:
+                self.wfile.write(json.dumps([]).encode("utf-8"))
+            return
+
+        if self.path.startswith("/api/trace/"):
+            run_id = self.path[len("/api/trace/"):]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                import asyncio
+                from meshflow.core.ledger import ReplayLedger
+                ledger = ReplayLedger()
+                steps = asyncio.run(ledger.get_run(run_id))
+                self.wfile.write(json.dumps({"run_id": run_id, "steps": steps}).encode("utf-8"))
+            except Exception as exc:
+                self.wfile.write(json.dumps({"error": str(exc)}).encode("utf-8"))
+            return
+
+        if self.path.startswith("/api/graph/"):
+            run_id = self.path[len("/api/graph/"):]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                import asyncio
+                from meshflow.core.ledger import ReplayLedger
+                ledger = ReplayLedger()
+                steps = asyncio.run(ledger.get_run(run_id))
+                nodes = list({s.get("node_id", "unknown") for s in steps})
+                mermaid_lines = ["graph LR"]
+                for node in nodes:
+                    safe = node.replace("-", "_")
+                    mermaid_lines.append(f'  {safe}["{node}"]')
+                mermaid = "\n".join(mermaid_lines)
+                self.wfile.write(json.dumps({"run_id": run_id, "mermaid": mermaid}).encode("utf-8"))
+            except Exception as exc:
+                self.wfile.write(json.dumps({"error": str(exc), "mermaid": f"graph LR\n  err[{exc}]"}).encode("utf-8"))
+            return
+
         elif self.path == "/api/templates":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -124,7 +177,7 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     AgentTemplate(
                         name="security-code-critic",
                         role="critic",
-                        model="claude-haiku-3-5",
+                        model="claude-haiku-4-5-20251001",
                         system_prompt="You are an expert security auditor. Find vulnerabilities.",
                         description="Performs strict security inspection of source code, checking for SQLi, XSS, and command injection.",
                         tags=["security", "audit", "critic"],
@@ -201,6 +254,18 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+            return
+
+        if self.path.startswith("/api/templates/fork/"):
+            name = self.path[len("/api/templates/fork/"):]
+            content_length = int(self.headers.get("Content-Length", 0))
+            if content_length:
+                self.rfile.read(content_length)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"name": name, "ok": True}).encode("utf-8"))
             return
 
         self.send_error(404)
