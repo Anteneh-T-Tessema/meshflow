@@ -79,7 +79,7 @@ from meshflow.intelligence.memory import AgentMemory, MemoryItem
 from meshflow.intelligence.consolidator import MemoryConsolidator, ConsolidationReport
 from meshflow.intelligence.team_workspace import TeamWorkspace, WorkspaceSummary
 from meshflow.intelligence.knowledge import VectorStore, KnowledgeSource, AgentKnowledge
-from meshflow.core.streaming import StreamChunk
+from meshflow.core.streaming import StreamChunk, tokens, cost_events, filter_stream, task_outputs
 from meshflow.streaming.backpressure import BackpressureQueue, BackpressureStrategy
 from meshflow.streaming.multiplexer import StreamMultiplexer, Subscription
 from meshflow.streaming.partial_output import (
@@ -322,7 +322,7 @@ from meshflow.flags import (
     FlagStore,
     FlagEvaluator,
 )
-from meshflow.vault import VaultSecret, VaultAuditLog, VaultStore
+from meshflow.vault import VaultSecret, VaultAuditLog, VaultStore, AWSSecretsProvider, HashiCorpVaultProvider, EnvSecretsProvider
 from meshflow.tenant import Tenant, TenantContext, TenantStore, TenantGuard, scoped_db_path
 from meshflow.tracing import TraceContext, Span, SpanKind, SpanStatus, TraceStore, Tracer
 from meshflow.policy import (
@@ -530,6 +530,10 @@ __all__ = [
     "AgentKnowledge",
     # ── Streaming ─────────────────────────────────────────────────────────────
     "StreamChunk",
+    "tokens",
+    "cost_events",
+    "filter_stream",
+    "task_outputs",
     # ── Multi-agent patterns ──────────────────────────────────────────────────
     "Supervisor",
     "SupervisorResult",
@@ -836,6 +840,9 @@ __all__ = [
     "VaultSecret",
     "VaultAuditLog",
     "VaultStore",
+    "AWSSecretsProvider",
+    "HashiCorpVaultProvider",
+    "EnvSecretsProvider",
     # ── Tenant isolation ──────────────────────────────────────────────────────
     "Tenant",
     "TenantContext",
