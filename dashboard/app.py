@@ -321,7 +321,7 @@ with st.sidebar:
         "Navigate",
         ["Overview", "Runs", "HITL Queue", "Metrics", "Submit Task", "Live", "Pool",
          "Evals", "Plugins", "Graph", "Audit", "SLA", "OTEL",
-         "Compliance", "Alerts", "API Keys", "Analytics", "Model Router"],
+         "Compliance", "Alerts", "API Keys", "Analytics", "Model Router", "Zero Trust"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -1464,6 +1464,128 @@ elif page == "Model Router":
             st.subheader("Cross-session memory analytics")
             st.info("No memory tier hit data yet. Memory hits are emitted to step metadata "
                     "when `AgentMemory` is used with `log_tier_hits=True`.")
+
+
+# ── Zero Trust ────────────────────────────────────────────────────────────────
+
+elif page == "Zero Trust":
+    st.header("Zero Trust Security")
+    st.caption("Foundation / Enterprise / Advanced tier controls — per the Anthropic Zero Trust for AI Agents framework.")
+
+    col_tier, col_reg = st.columns(2)
+    tier_choice = col_tier.selectbox("Tier", ["Foundation", "Enterprise", "Advanced"], index=1)
+    reg_choice = col_reg.selectbox("Regulation preset", ["none", "hipaa", "sox", "gdpr", "pci", "nerc"])
+
+    try:
+        from meshflow.zero_trust.policy import ZeroTrustPolicy, ZeroTrustTier
+
+        tier_map = {
+            "Foundation": ZeroTrustTier.FOUNDATION,
+            "Enterprise": ZeroTrustTier.ENTERPRISE,
+            "Advanced":   ZeroTrustTier.ADVANCED,
+        }
+        if reg_choice != "none":
+            policy = ZeroTrustPolicy.for_regulation(reg_choice)
+        else:
+            policy = ZeroTrustPolicy.for_tier(tier_map[tier_choice])
+
+        # ── KPI tiles ─────────────────────────────────────────────────────────
+        enabled  = policy.controls_enabled()
+        disabled = policy.controls_disabled()
+        total    = len(enabled) + len(disabled)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Tier",             policy.tier.value.capitalize())
+        c2.metric("Controls enabled", len(enabled))
+        c3.metric("Controls gap",     len(disabled))
+        pct = int(100 * len(enabled) / max(total, 1))
+        c4.metric("Coverage",         f"{pct}%")
+
+        st.divider()
+
+        # ── Control pillars ───────────────────────────────────────────────────
+        st.subheader("Control pillars")
+        pillars = {
+            "Identity & Auth":      ["crypto_identity", "short_lived_tokens", "require_mtls", "hardware_bound"],
+            "Privilege":            ["deny_by_default", "abac_context", "jit_privilege", "continuous_auth"],
+            "Isolation":            ["identity_isolation", "sandboxed_execution", "hardware_isolation"],
+            "Observability":        ["action_logging", "immutable_logs", "otel_tracing", "siem_streaming", "full_provenance"],
+            "Behavioral Monitoring":["behavior_baseline", "anomaly_detection", "auto_containment", "ml_behavioral"],
+            "Input/Output Controls":["input_validation", "injection_detection", "spotlighting", "output_pii_filter", "hitl_high_risk"],
+            "Supply Chain":         ["ai_bom", "dependency_audit", "supply_chain_verify"],
+            "Config Integrity":     ["config_version_control", "config_signing", "immutable_infra"],
+            "Governance":           ["policy_documentation", "formal_governance", "automated_compliance"],
+        }
+        cols = st.columns(3)
+        for idx, (pillar, controls) in enumerate(pillars.items()):
+            with cols[idx % 3]:
+                lines = []
+                for ctrl in controls:
+                    val = getattr(policy, ctrl, False)
+                    icon = "✅" if val else "⬜"
+                    lines.append(f"{icon} {ctrl.replace('_', ' ')}")
+                st.markdown(f"**{pillar}**\n\n" + "\n\n".join(lines))
+
+        st.divider()
+
+        # ── Enabled / Disabled details ─────────────────────────────────────────
+        col_on, col_off = st.columns(2)
+        with col_on:
+            st.subheader(f"Enabled ({len(enabled)})")
+            for ctrl in enabled:
+                st.success(ctrl.replace("_", " "), icon="✅")
+        with col_off:
+            st.subheader(f"Gap vs {policy.tier.value} target ({len(disabled)})")
+            if disabled:
+                for ctrl in disabled:
+                    st.warning(ctrl.replace("_", " "), icon="⚠️")
+            else:
+                st.success("No gaps — all tier controls active", icon="✅")
+
+        st.divider()
+
+        # ── AI-BOM quick scan ─────────────────────────────────────────────────
+        if policy.ai_bom:
+            st.subheader("AI Bill of Materials (quick scan)")
+            try:
+                from meshflow.zero_trust.bom import AIBillOfMaterials
+                bom = AIBillOfMaterials.from_meshflow_project()
+                risk = bom.risk_summary()
+                b1, b2, b3 = st.columns(3)
+                b1.metric("Components tracked", risk["total_components"])
+                b2.metric("Flagged",             risk["flagged_components"])
+                b3.metric("Risk level",           risk["risk_level"].upper())
+                if risk["critical"]:
+                    st.error("Critical flags: " + ", ".join(risk["critical"]))
+                if risk["high"]:
+                    st.warning("High flags: " + ", ".join(risk["high"]))
+                if not risk["flagged_components"]:
+                    st.success("No supply chain risk flags detected")
+            except Exception as exc:
+                st.warning(f"AI-BOM scan unavailable: {exc}")
+
+        # ── JIT stats (if Advanced) ───────────────────────────────────────────
+        if policy.jit_privilege:
+            st.subheader("JIT Privilege Manager (session stats)")
+            try:
+                from meshflow.zero_trust.jit import get_default_manager
+                mgr = get_default_manager()
+                stats = mgr.stats()
+                j1, j2, j3, j4 = st.columns(4)
+                j1.metric("Total grants",    stats["total_grants"])
+                j2.metric("Active",          stats["active_grants"])
+                j3.metric("Expired",         stats["expired_grants"])
+                j4.metric("Revoked",         stats["revoked_grants"])
+            except Exception as exc:
+                st.info(f"JIT stats unavailable: {exc}")
+
+        # ── Policy JSON ────────────────────────────────────────────────────────
+        with st.expander("Full policy JSON"):
+            import json as _json
+            st.code(_json.dumps(policy.to_dict(), indent=2), language="json")
+
+    except Exception as e:
+        st.error(f"Zero Trust module unavailable: {e}")
+        st.code("pip install meshflow[full]", language="bash")
 
 
 # ── Auto-refresh ──────────────────────────────────────────────────────────────

@@ -166,6 +166,7 @@ class StepRuntime:
         budget: Any = None,
         circuit_breakers: Any = None,
         compliance_guard: Any = None,
+        zero_trust: Any = None,
     ) -> None:
         self._policy = policy
         self._run_id = run_id
@@ -181,6 +182,7 @@ class StepRuntime:
         self._budget = budget
         self._cbs = circuit_breakers  # dict[str, CircuitBreaker]
         self._compliance_guard = compliance_guard
+        self._zero_trust = zero_trust  # ZeroTrustOrchestrator | None
         self._prev_hash = ""  # grows with each committed record
 
     async def run(
@@ -224,6 +226,34 @@ class StepRuntime:
             if not self._identity.is_active(node.id):
                 blocked = True
                 block_reason = "identity:did_revoked"
+
+        # 1b. Zero Trust — continuous authorization check
+        if not blocked and self._zero_trust:
+            try:
+                zt_policy = getattr(self._zero_trust, "_policy", None)
+                if zt_policy and getattr(zt_policy, "continuous_auth", False):
+                    cont_auth = getattr(self._zero_trust, "_cont_auth", None)
+                    if cont_auth:
+                        decision = cont_auth.authorize(node.id, action="run:step")
+                        if not decision.allowed:
+                            blocked = True
+                            block_reason = f"zero_trust:auth_denied:{decision.reason}"
+            except Exception:
+                pass
+
+        # 1c. Zero Trust — apply spotlighting to input
+        if not blocked and self._zero_trust:
+            try:
+                zt_policy = getattr(self._zero_trust, "_policy", None)
+                if zt_policy and getattr(zt_policy, "spotlighting", False):
+                    from meshflow.zero_trust.spotlight import SpotlightContext
+                    _spotlight_ctx = SpotlightContext(strategy="xml_tags")
+                    node_input = type(node_input)(
+                        task=_spotlight_ctx.wrap(node_input.task),
+                        **{k: v for k, v in node_input.__dict__.items() if k != "task"},
+                    )
+            except Exception:
+                pass
 
         # 2. Circuit breaker
         if not blocked and self._cbs:

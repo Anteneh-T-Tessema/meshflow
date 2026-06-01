@@ -162,6 +162,28 @@ from meshflow.queue import TaskQueue, QueueWorker, TaskItem, TaskStatus
 from meshflow.tools.code_interpreter import CodeInterpreter, CodeResult
 from meshflow.tools.sandbox_providers import E2BSandboxProvider, ModalSandboxProvider, SandboxRouter
 from meshflow.a2a import AgentCard, A2AMessage, A2AResponse, A2AClient, A2AServer
+# ── Zero Trust framework ──────────────────────────────────────────────────────
+from meshflow.zero_trust import (
+    ZeroTrustPolicy,
+    ZeroTrustTier,
+    FOUNDATION as ZT_FOUNDATION,
+    ENTERPRISE as ZT_ENTERPRISE,
+    ADVANCED as ZT_ADVANCED,
+    SpotlightingGuardrail,
+    SpotlightContext,
+    JITPrivilegeManager,
+    PrivilegeGrant,
+    PrivilegeExpiredError,
+    AIBillOfMaterials,
+    ModelComponent as BOMModelComponent,
+    ToolComponent as BOMToolComponent,
+    ContinuousAuthorizationEngine,
+    AuthorizationContext,
+    AuthDecision,
+    ZeroTrustOrchestrator,
+    ZeroTrustSession,
+    ZeroTrustRunResult,
+)
 from meshflow.multimodal import (
     ImageInput,
     DocumentInput,
@@ -955,4 +977,24 @@ __all__ = [
     "ParetoAnalyzer",
     "ModelBenchmark",
     "BenchmarkRun",
+    # ── Zero Trust framework ──────────────────────────────────────────────────
+    "ZeroTrustPolicy",
+    "ZeroTrustTier",
+    "ZT_FOUNDATION",
+    "ZT_ENTERPRISE",
+    "ZT_ADVANCED",
+    "SpotlightingGuardrail",
+    "SpotlightContext",
+    "JITPrivilegeManager",
+    "PrivilegeGrant",
+    "PrivilegeExpiredError",
+    "AIBillOfMaterials",
+    "BOMModelComponent",
+    "BOMToolComponent",
+    "ContinuousAuthorizationEngine",
+    "AuthorizationContext",
+    "AuthDecision",
+    "ZeroTrustOrchestrator",
+    "ZeroTrustSession",
+    "ZeroTrustRunResult",
 ]
