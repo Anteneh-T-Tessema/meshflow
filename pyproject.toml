@@ -78,7 +78,7 @@ full      = [
 # Development tooling
 dev = [
     "pytest>=8.2.0",
-    "pytest-asyncio>=0.23.0",
+    "pytest-asyncio>=0.23.0,<2.0.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
@@ -93,6 +93,7 @@ meshflow-mcp = "meshflow.cli.main:mcp_stdio_main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
     "live: tests that call real LLM APIs — skipped unless ANTHROPIC_API_KEY is set",
