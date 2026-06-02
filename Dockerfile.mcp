@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 LABEL maintainer="anteneh@yayasystems.com"
 LABEL description="MeshFlow MCP Server — governed multi-agent orchestration as an MCP tool"
-LABEL version="1.9.2"
+LABEL version="1.9.3"
 
 # Minimal system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
