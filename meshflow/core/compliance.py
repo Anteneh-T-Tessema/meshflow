@@ -155,6 +155,73 @@ PROFILES: dict[str, ComplianceProfile] = {
         require_evidence=True,
         policy_mode=PolicyMode.LEGAL_CRITICAL,
     ),
+    # ── International / Industry ─────────────────────────────────────────────
+    "iso27001": ComplianceProfile(
+        name="ISO 27001",
+        hitl_threshold=0.75,
+        verifier_domains=["phi_scrubbing", "aml"],
+        audit_retention_days=1095,   # ISO 27001 Annex A.12.4: 3 years typical
+        phi_scrubbing=True,
+        max_cost_usd_per_run=2.0,
+        max_tokens_per_step=8192,
+        require_evidence=True,
+        policy_mode=PolicyMode.LEGAL_CRITICAL,
+    ),
+    "iso-27001": ComplianceProfile(  # alias
+        name="ISO 27001",
+        hitl_threshold=0.75,
+        verifier_domains=["phi_scrubbing", "aml"],
+        audit_retention_days=1095,
+        phi_scrubbing=True,
+        max_cost_usd_per_run=2.0,
+        max_tokens_per_step=8192,
+        require_evidence=True,
+        policy_mode=PolicyMode.LEGAL_CRITICAL,
+    ),
+    "ccpa": ComplianceProfile(
+        name="CCPA",
+        hitl_threshold=0.72,
+        verifier_domains=["gdpr", "phi_scrubbing"],   # CCPA mirrors GDPR requirements
+        audit_retention_days=365,    # CCPA: 12-month lookback
+        phi_scrubbing=True,
+        max_cost_usd_per_run=1.5,
+        max_tokens_per_step=4096,
+        require_evidence=True,
+        policy_mode=PolicyMode.LEGAL_CRITICAL,
+    ),
+    "dora": ComplianceProfile(       # EU Digital Operational Resilience Act (financial)
+        name="DORA",
+        hitl_threshold=0.70,
+        verifier_domains=["fedramp", "phi_scrubbing", "aml"],
+        audit_retention_days=1825,   # DORA: 5 years
+        phi_scrubbing=True,
+        max_cost_usd_per_run=1.0,
+        max_tokens_per_step=4096,
+        require_evidence=True,
+        policy_mode=PolicyMode.LEGAL_CRITICAL,
+    ),
+    "eu-ai-act": ComplianceProfile(  # EU AI Act (high-risk AI systems)
+        name="EU AI Act",
+        hitl_threshold=0.65,
+        verifier_domains=["gdpr", "phi_scrubbing"],
+        audit_retention_days=3650,   # EU AI Act: 10 years for high-risk systems
+        phi_scrubbing=True,
+        max_cost_usd_per_run=0.5,    # tight cap for high-risk AI
+        max_tokens_per_step=2048,
+        require_evidence=True,
+        policy_mode=PolicyMode.LEGAL_CRITICAL,
+    ),
+    "basel-iii": ComplianceProfile(  # Basel III / financial risk management
+        name="Basel III",
+        hitl_threshold=0.80,
+        verifier_domains=["aml", "erp_audit"],
+        audit_retention_days=2555,   # Basel III: 7 years
+        phi_scrubbing=False,
+        max_cost_usd_per_run=1.0,
+        max_tokens_per_step=4096,
+        require_evidence=True,
+        policy_mode=PolicyMode.LEGAL_CRITICAL,
+    ),
     # ── US Federal ────────────────────────────────────────────────────────────
     "fedramp": ComplianceProfile(
         name="FedRAMP",

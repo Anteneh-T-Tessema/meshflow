@@ -171,7 +171,7 @@ One `pip install` gets you:
 - **Protocols** — A2A (Agent-to-Agent), MCP server/client, TypeScript client SDK, Go SDK
 - **Deployment** — `meshflow serve` (FastAPI + SSE + WebSocket), Helm chart, k8s probes, `Doctor`
 
-4,379 tests. Apache 2.0. No platform tax.
+4,616 tests. Apache 2.0. No platform tax.
 
 ---
 

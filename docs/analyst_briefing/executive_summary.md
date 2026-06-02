@@ -61,7 +61,7 @@ Flowise is a visual, no-code agent builder. CVE-2025-59528 (critical RCE) disclo
 
 | Metric | Value |
 |---|---|
-| Test suite | 4,405 passing tests |
+| Test suite | 4,616 passing tests |
 | Compliance profiles | HIPAA, SOX, GDPR, PCI-DSS, NERC CIP |
 | Audit mechanism | SHA-256 tamper-evident hash chain (`ReplayLedger`) |
 | Pre-built connectors | 55 (databases, APIs, cloud services, SIEMs) |

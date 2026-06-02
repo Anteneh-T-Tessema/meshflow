@@ -271,6 +271,35 @@ class ZeroTrustPolicy:
             p.full_provenance = True
             p.description = "NIST 800-53 Zero Trust baseline"
             return p
+        if reg in ("iso27001", "iso-27001"):
+            p = cls.for_tier(ZeroTrustTier.ENTERPRISE)
+            p.regulation = reg
+            p.output_pii_filter = True
+            p.immutable_logs = True
+            p.config_signing = True
+            p.description = "ISO 27001 Zero Trust for ISMS-certified deployments"
+            return p
+        if reg == "ccpa":
+            p = cls.for_tier(ZeroTrustTier.ENTERPRISE)
+            p.regulation = reg
+            p.output_pii_filter = True
+            p.description = "CCPA Zero Trust for California consumer privacy"
+            return p
+        if reg in ("dora", "eu-ai-act"):
+            p = cls.for_tier(ZeroTrustTier.ADVANCED)
+            p.regulation = reg
+            p.output_pii_filter = True
+            p.full_provenance = True
+            p.siem_streaming = True
+            p.description = f"{reg.upper()} Zero Trust for EU regulatory compliance"
+            return p
+        if reg == "basel-iii":
+            p = cls.for_tier(ZeroTrustTier.ENTERPRISE)
+            p.regulation = reg
+            p.immutable_logs = True
+            p.full_provenance = True
+            p.description = "Basel III Zero Trust for financial risk management"
+            return p
         # Default to Enterprise
         return cls.for_tier(ZeroTrustTier.ENTERPRISE)
 

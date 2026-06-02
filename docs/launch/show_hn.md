@@ -91,7 +91,7 @@ MeshFlow is the same bet for agents. Not a better framework. Infrastructure that
 - MCP server auto-generation from any workflow
 - TypeScript client SDK with WebCrypto webhook signature verification
 - `meshflow serve` → FastAPI REST + SSE + WebSocket server, `/health/live` + `/health/ready` for k8s
-- 85-page documentation site, 4,379 passing tests
+- 85-page documentation site, 4,616 passing tests
 
 ---
 
@@ -104,5 +104,5 @@ MeshFlow is the same bet for agents. Not a better framework. Infrastructure that
 Apache 2.0. Self-hostable. No platform tax.
 
 GitHub: https://github.com/Anteneh-T-Tessema/meshflow
-PyPI: https://pypi.org/project/meshflow/ (v1.3.0)
-npm: https://www.npmjs.com/package/meshflow-sdk (v1.3.0)
+PyPI: https://pypi.org/project/meshflow/ (v1.5.0)
+npm: https://www.npmjs.com/package/meshflow-sdk (v1.5.0)

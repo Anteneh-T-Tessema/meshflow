@@ -48,7 +48,7 @@ pip install meshflow
 
 **Framework-agnostic** — `govern(your_langgraph_graph)`, `from_crewai(your_crew)`, `from_autogen(your_agent)` add governance to any existing system without rewriting it.
 
-4,379 passing tests. Apache 2.0. `pip install meshflow`.
+4,616 passing tests. Apache 2.0. `pip install meshflow`.
 
 GitHub: https://github.com/Anteneh-T-Tessema/meshflow
 Docs: https://meshflow.dev
@@ -247,7 +247,7 @@ class Report(BaseModel):
 report: Report = await agent.run_typed("Analyze this data", Report)
 ```
 
-4,379 passing tests across Python 3.11/3.12/3.13. Apache 2.0. 
+4,616 passing tests across Python 3.11/3.12/3.13. Apache 2.0. 
 
 GitHub: https://github.com/Anteneh-T-Tessema/meshflow
 PyPI: https://pypi.org/project/meshflow/

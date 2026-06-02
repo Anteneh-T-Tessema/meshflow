@@ -78,7 +78,7 @@ That's what MeshFlow exists to prevent.
 **What we shipped today**
 
 MeshFlow v1.0.0:
-- 4,379 passing tests across Python 3.11, 3.12, 3.13
+- 4,616 passing tests across Python 3.11, 3.12, 3.13
 - HIPAA/SOX/GDPR/PCI/NERC compliance profiles — one line to apply
 - SHA-256 tamper-evident audit chain on every step
 - Hard cost caps that stop before overage, not after

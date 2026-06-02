@@ -117,7 +117,7 @@ NERC-CIP critical infrastructure teams and government contractors need air-gap-c
 
 | Metric | Value |
 |--------|-------|
-| Passing tests | 4,405 |
+| Passing tests | 4,616 |
 | Test frameworks used | pytest, mypy (strict), ruff |
 | Python versions tested | 3.11, 3.12 |
 | Compliance frameworks | HIPAA, SOX, GDPR, PCI-DSS, NERC |

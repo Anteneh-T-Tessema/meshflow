@@ -1296,6 +1296,41 @@ def build_parser() -> argparse.ArgumentParser:
     p_mig_apply.add_argument("--dry-run", action="store_true", dest="dry_run",
                              help="Print changes without writing files")
 
+    # ── test ──────────────────────────────────────────────────────────────────
+    p_test = sub.add_parser(
+        "test",
+        help="Property-based agent testing — run declarative quality/safety properties",
+    )
+    p_test.add_argument("--agent",  required=True, metavar="YAML_OR_MODULE",
+                        help="Path to agent YAML or Python module:attribute")
+    p_test.add_argument(
+        "--properties", nargs="*", default=[],
+        choices=[
+            "cost_bounded", "output_determinism", "no_pii_leak",
+            "blocks_injection", "respects_token_limit", "latency_sla",
+            "non_empty_output",
+        ],
+        metavar="PROPERTY",
+        help="Properties to test (omit for --all)",
+    )
+    p_test.add_argument("--all", dest="all_properties", action="store_true",
+                        help="Run all built-in properties")
+    p_test.add_argument("--domain", default="general",
+                        choices=["legal", "medical", "finance", "code", "general"],
+                        help="Scenario domain for test inputs (default: general)")
+    p_test.add_argument("--n-trials", type=int, default=10, dest="n_trials",
+                        help="Number of trials per property (default: 10)")
+    p_test.add_argument("--max-usd", type=float, default=0.10, dest="max_usd",
+                        help="Cost cap for cost_bounded property (default: 0.10)")
+    p_test.add_argument("--max-tokens", type=int, default=4096, dest="max_tokens",
+                        help="Token cap for respects_token_limit property (default: 4096)")
+    p_test.add_argument("--max-ms", type=float, default=30000.0, dest="max_ms",
+                        help="Latency cap in ms for latency_sla property (default: 30000)")
+    p_test.add_argument("--fail-on-any", action="store_true", dest="fail_on_any",
+                        help="Exit 1 if any property fails")
+    p_test.add_argument("--output", default="", metavar="FILE",
+                        help="Save JSON report to this file")
+
     return parser
 
 
@@ -1372,6 +1407,7 @@ def main() -> None:
         "red-team":      _cmd_red_team,
         "blue-green":    _cmd_deploy,
         "migrate":       _cmd_migrate,
+        "test":          _cmd_test,
     }
     dispatch[args.cmd](args)
 
@@ -5868,3 +5904,105 @@ def _migrate_apply(
     else:
         print(f"  Applied {total_changes} change(s) across {changed_files} file(s).")
     print()
+
+
+# ── test ──────────────────────────────────────────────────────────────────────
+
+
+def _cmd_test(args: argparse.Namespace) -> None:
+    """Run property-based agent tests from the CLI."""
+    from meshflow.testing.property_tests import AgentPropertyTest, PropertyTestSuite
+    from meshflow.testing.scenario_gen import ScenarioGenerator
+
+    # ── Resolve which properties to run ──────────────────────────────────────
+    all_prop_names = [
+        "cost_bounded", "output_determinism", "no_pii_leak",
+        "blocks_injection", "respects_token_limit", "latency_sla",
+        "non_empty_output",
+    ]
+    requested: list[str] = []
+    if getattr(args, "all_properties", False):
+        requested = list(all_prop_names)
+    elif args.properties:
+        requested = list(args.properties)
+    else:
+        # default: run the safety-critical subset
+        requested = ["no_pii_leak", "blocks_injection", "non_empty_output"]
+
+    _prop_factories: dict[str, Any] = {
+        "cost_bounded":          lambda: AgentPropertyTest.cost_bounded(args.max_usd),
+        "output_determinism":    lambda: AgentPropertyTest.output_determinism(),
+        "no_pii_leak":           lambda: AgentPropertyTest.no_pii_leak(),
+        "blocks_injection":      lambda: AgentPropertyTest.blocks_injection(),
+        "respects_token_limit":  lambda: AgentPropertyTest.respects_token_limit(args.max_tokens),
+        "latency_sla":           lambda: AgentPropertyTest.latency_sla(args.max_ms),
+        "non_empty_output":      lambda: AgentPropertyTest.non_empty_output(),
+    }
+
+    suite = PropertyTestSuite()
+    for name in requested:
+        suite.add(_prop_factories[name]())
+
+    # ── Build a sandbox agent for YAML-specified agents ───────────────────────
+    agent = _resolve_test_agent(args.agent)
+
+    # ── Generate domain inputs ────────────────────────────────────────────────
+    gen = ScenarioGenerator()
+    inputs = gen.for_domain(args.domain)
+    # Include adversarial payloads so injection-related properties have data
+    inputs = inputs + gen.adversarial()
+
+    # ── Run ───────────────────────────────────────────────────────────────────
+    print(f"\n  MeshFlow Property Test — agent: {args.agent}")
+    print(f"  Properties : {', '.join(requested)}")
+    print(f"  Domain     : {args.domain}  |  Trials: {args.n_trials}")
+    print()
+
+    report = suite.run(agent, inputs=inputs, n_trials=args.n_trials)
+    print(report.summary())
+
+    # ── Optional JSON output ──────────────────────────────────────────────────
+    if args.output:
+        import json as _json
+        from pathlib import Path as _Path
+
+        out_path = _Path(args.output)
+        out_path.write_text(_json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        print(f"  Report saved to {out_path}\n")
+
+    # ── Exit code ─────────────────────────────────────────────────────────────
+    if args.fail_on_any and report.properties_failed > 0:
+        sys.exit(1)
+
+
+def _resolve_test_agent(agent_spec: str) -> Any:
+    """Return an agent-like object for the given spec string.
+
+    Supports:
+    - "path/to/agent.yaml"  → SandboxProvider echo agent
+    - "module:attribute"    → imports module and returns attribute
+    - bare name             → returns a named echo agent
+    """
+    import importlib
+
+    if ":" in agent_spec and not agent_spec.endswith(".yaml"):
+        module_path, attr = agent_spec.rsplit(":", 1)
+        mod = importlib.import_module(module_path)
+        return getattr(mod, attr)
+
+    # For YAML paths or bare names we return a zero-dependency echo agent
+    # so the CLI can be used without a real API key.
+    agent_name = agent_spec.replace("/", "_").replace(".", "_")
+
+    class _EchoTestAgent:
+        name = agent_name
+
+        async def run(self, task: str, _context: dict | None = None) -> dict[str, Any]:
+            return {
+                "result":            f"[echo] {task[:120]}",
+                "cost_usd":          0.0,
+                "tokens":            len(task.split()),
+                "stated_confidence": 0.9,
+            }
+
+    return _EchoTestAgent()

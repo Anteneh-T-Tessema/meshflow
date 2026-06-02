@@ -20,7 +20,7 @@
 | **PII / PHI detection and blocking** | ✅ Presidio-backed interceptors, configurable per compliance profile | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
 | **Sandbox code execution** | ✅ Subprocess sandbox with resource limits | ⚠️ Not built-in; user-managed | ❌ None | ⚠️ Docker executor available | ❌ None | ❌ None |
 | **Published migration guides** | ✅ LangGraph, CrewAI, AutoGen, Flowise | ❌ N/A | ❌ N/A | ❌ N/A | ❌ N/A | ❌ N/A |
-| **Test suite depth** | ✅ 4,405 tests | ⚠️ Not publicly disclosed | ⚠️ Not publicly disclosed | ⚠️ Not publicly disclosed | ❌ Closed source | ⚠️ Not publicly disclosed |
+| **Test suite depth** | ✅ 4,616 tests | ⚠️ Not publicly disclosed | ⚠️ Not publicly disclosed | ⚠️ Not publicly disclosed | ❌ Closed source | ⚠️ Not publicly disclosed |
 | **Self-hosted deployment** | ✅ Docker, Helm, bare metal | ⚠️ Self-host possible; LangGraph Platform is hosted SaaS | ✅ Self-hosted | ✅ Self-hosted | ❌ Cloud API only | ✅ Self-hosted |
 | **Vendor neutrality (model provider)** | ✅ Any model via LiteLLM / ModelRouter | ⚠️ Any model; LangSmith is Anthropic/LangChain ecosystem | ✅ Any model | ✅ Any model | ❌ OpenAI models primary | ⚠️ Mostly OpenAI-first templates |
 

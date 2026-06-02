@@ -114,7 +114,7 @@ Combined, these five optimizations reduce total LLM spend by 70–85% in product
 
 **v1.0.0 — Production/Stable**
 
-- 4,379 passing tests across 54 test files
+- 4,616 passing tests across 54 test files
 - 85-page documentation site
 - Full LangGraph-compatible `StateGraph` with typed reducers, `interrupt()`, `Command`
 - Full CrewAI-compatible `Crew`, `Task`, `Process` with YAML-driven pipelines
