@@ -63,12 +63,16 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           tail -200 /tmp/test_out.txt || echo "no test output file"
 
+      - name: Save test tail on failure
+        if: failure()
+        run: tail -200 /tmp/test_out.txt > /tmp/test_tail.txt || true
+
       - name: Upload test output
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: test-output-py${{ matrix.python-version }}
-          path: /tmp/test_out.txt
+          path: /tmp/test_tail.txt
 
       - name: Upload test results
         if: always()
