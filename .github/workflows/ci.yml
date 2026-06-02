@@ -54,6 +54,10 @@ jobs:
             --ignore=tests/test_integration.py \
             -x 2>&1 | tee /tmp/test_out.txt
 
+      - name: Show test output on failure
+        if: failure()
+        run: cat /tmp/test_out.txt || echo "no test output file"
+
       - name: Upload test output
         if: failure()
         uses: actions/upload-artifact@v4
