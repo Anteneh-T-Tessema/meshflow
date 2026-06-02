@@ -58,7 +58,8 @@ from meshflow.agents.skills import Skill, SKILLS, skill_prompt, list_skills
 from meshflow.agents.messaging import MessageBus
 from meshflow.agents.conversation import GroupChat, GroupChatManager, ConversationResult
 from meshflow.agents.react import ReActAgent, ReActResult, ThoughtStep
-from meshflow.agents.router import ProviderRouter, auto_provider, auto_model
+from meshflow.agents.router import ProviderRouter, auto_provider, auto_model, ModelTierRouter, ModelTier
+from meshflow.agents.base import model_is_local
 from meshflow.agents.base import EchoProvider, AnthropicProvider, OpenAICompatibleProvider
 from meshflow.agents.providers import (
     GeminiProvider,
@@ -596,6 +597,9 @@ __all__ = [
     "ThoughtStep",
     # ── Smart provider routing ─────────────────────────────────────────────────
     "ProviderRouter",
+    "ModelTierRouter",
+    "ModelTier",
+    "model_is_local",
     "auto_provider",
     "auto_model",
     # ── LLM providers — any LLM, zero friction ───────────────────────────────

@@ -316,6 +316,8 @@ class Mesh:
         total_cost = 0.0
         total_cache_read = 0
         total_cache_creation = 0
+        agent_costs: dict[str, float] = {}
+        cloud_agents: list[str] = []
         all_outcomes: list[StepOutcome] = []
 
         # Define the governed pipeline order
@@ -332,6 +334,11 @@ class Mesh:
             total_cost += outcome.cost_usd
             total_cache_read += outcome.cache_read_tokens
             total_cache_creation += outcome.cache_creation_tokens
+            agent_costs[outcome.agent_id] = (
+                agent_costs.get(outcome.agent_id, 0.0) + outcome.cost_usd
+            )
+            if outcome.is_cloud and outcome.agent_id not in cloud_agents:
+                cloud_agents.append(outcome.agent_id)
 
             yield MeshEvent(
                 event_type=event_type,
@@ -432,6 +439,8 @@ class Mesh:
             drift_alerts=0,
             cache_read_tokens=total_cache_read,
             cache_creation_tokens=total_cache_creation,
+            agent_costs=agent_costs,
+            cloud_agents=cloud_agents,
         )
 
         yield MeshEvent(

@@ -64,6 +64,8 @@ class StepOutcome:
     collusion_alerts: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    model_used: str = ""      # resolved model name for this step
+    is_cloud: bool = False    # True when model_used is a cloud/paid provider
 
 
 class GovernedStepExecutor:
@@ -182,6 +184,21 @@ class GovernedStepExecutor:
         duration_ms = (time.monotonic() - start) * 1000
         tokens = result.get("tokens", 0)
         cost_usd = result.get("cost_usd", 0.0)
+
+        # Resolve model name and detect cloud vs local
+        _model_used = str(agent.config.model or "")
+        try:
+            from meshflow.agents.base import model_is_local
+            _is_cloud = bool(_model_used) and not model_is_local(_model_used)
+        except Exception:
+            _is_cloud = False
+        if _is_cloud and cost_usd == 0.0 and not model_is_local(_model_used):
+            import logging as _logging
+            _logging.getLogger("meshflow.executor").warning(
+                "Cloud model '%s' entered pipeline for agent '%s' with $0 cost — "
+                "check your CostCap if mixing local and cloud agents.",
+                _model_used, agent.agent_id,
+            )
 
         # ── 6. Uncertainty evaluation ─────────────────────────────────────────
         output_text = str(
@@ -323,6 +340,8 @@ class GovernedStepExecutor:
             dasc_verdict=dasc_verdict,
             cache_read_tokens=int(result.get("cache_read_tokens") or 0),
             cache_creation_tokens=int(result.get("cache_creation_tokens") or 0),
+            model_used=_model_used,
+            is_cloud=_is_cloud,
         )
 
     def _record_telemetry(

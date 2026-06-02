@@ -46,7 +46,38 @@ def update_pricing(model_key: str, input_per_1k: float, output_per_1k: float) ->
     _PRICING[model_key] = (input_per_1k, output_per_1k)
 
 
+# ── Local-model detection ──────────────────────────────────────────────────────
+
+_LOCAL_PREFIXES: tuple[str, ...] = (
+    "ollama/", "ollama:", "local/", "local:",
+    "llama", "mistral", "gemma", "phi", "qwen",
+    "deepseek", "codellama", "vicuna", "orca",
+    "falcon", "mpt", "openhermes", "wizardlm",
+    "neural-chat", "starling", "solar", "yi-",
+)
+
+
+def model_is_local(model: str) -> bool:
+    """Return True when *model* runs locally (zero API cost).
+
+    Matches Ollama-style names (``llama3.2``, ``ollama/mistral``), LiteLLM
+    local prefixes, and common open-weight model families. Use this to skip
+    cost attribution for local providers or to warn before a cloud model
+    enters an otherwise-local pipeline.
+    """
+    m = model.strip().lower()
+    for prefix in _LOCAL_PREFIXES:
+        if m.startswith(prefix) or ("/" + prefix.rstrip("/")) in m or (":" + prefix.rstrip(":")) in m:
+            return True
+    # Explicit Ollama host pattern
+    if "localhost:" in m or "11434" in m:
+        return True
+    return False
+
+
 def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    if model_is_local(model):
+        return 0.0
     model_lower = model.lower()
     for key, (in_rate, out_rate) in _PRICING.items():
         if key in model_lower:

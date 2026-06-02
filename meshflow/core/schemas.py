@@ -267,6 +267,8 @@ class RunResult:
     drift_alerts: int = 0
     cache_read_tokens: int = 0       # tokens served from Anthropic prompt cache
     cache_creation_tokens: int = 0   # tokens written to Anthropic prompt cache
+    agent_costs: dict[str, float] = field(default_factory=dict)   # agent_id → cost_usd
+    cloud_agents: list[str] = field(default_factory=list)         # agent_ids that used cloud models
 
 
 # ── Policy ────────────────────────────────────────────────────────────────────

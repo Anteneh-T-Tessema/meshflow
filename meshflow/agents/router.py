@@ -321,3 +321,127 @@ def auto_model(
     r = router or _default_router
     _, model = r.route(role, budget_usd, compliance)
     return model
+
+
+# ── ModelTierRouter ────────────────────────────────────────────────────────────
+
+@dataclass
+class ModelTier:
+    """A named model tier with an optional cost guard.
+
+    Attributes
+    ----------
+    name:       Human label (e.g. ``"fast"``, ``"smart"``, ``"large"``).
+    model:      Model identifier — Ollama-style for local, provider ID for cloud.
+    max_tokens: Soft cap on output tokens for this tier (advisory only).
+    """
+
+    name: str
+    model: str
+    max_tokens: int = 2048
+
+
+class ModelTierRouter:
+    """Right-size each agent in a mixed-model pipeline.
+
+    Maps task characteristics to the cheapest model that can handle them.
+    Local models (Ollama, LiteLLM-local) are zero-cost and are tried first.
+
+    Quick start::
+
+        from meshflow.agents.router import ModelTierRouter, ModelTier
+        from meshflow import Agent, Workflow, CostCap
+
+        router = ModelTierRouter(
+            tiers=[
+                ModelTier("fast",  "llama3.2",                        max_tokens=512),
+                ModelTier("smart", "mistral",                         max_tokens=2048),
+                ModelTier("large", "meta.llama3-70b-instruct-v1:0",   max_tokens=4096),
+            ],
+            # threshold chars in task text that bumps up a tier
+            smart_threshold=300,
+            large_threshold=800,
+        )
+
+        wf = Workflow(cost_cap=CostCap(usd=0.50))
+        wf.add(
+            Agent("planner",    model_router=router),
+            Agent("researcher", model_router=router),
+            Agent("writer",     model_router=router),
+        )
+
+    The CostCap is effectively $0 while all models stay local. Swap
+    ``"meta.llama3-70b-instruct-v1:0"`` for a Bedrock/OpenAI model and the
+    cap protects you automatically — only large-tier calls touch your wallet.
+    """
+
+    PRESET_LOCAL: list[ModelTier] = [
+        ModelTier("fast",  "llama3.2",   max_tokens=512),
+        ModelTier("smart", "mistral",    max_tokens=2048),
+        ModelTier("large", "llama3.2",   max_tokens=4096),  # fall back to local
+    ]
+
+    PRESET_HYBRID_BEDROCK: list[ModelTier] = [
+        ModelTier("fast",  "llama3.2",                                  max_tokens=512),
+        ModelTier("smart", "mistral",                                   max_tokens=2048),
+        ModelTier("large", "meta.llama3-70b-instruct-v1:0",             max_tokens=4096),
+    ]
+
+    PRESET_HYBRID_OPENAI: list[ModelTier] = [
+        ModelTier("fast",  "llama3.2",   max_tokens=512),
+        ModelTier("smart", "mistral",    max_tokens=2048),
+        ModelTier("large", "gpt-4o",     max_tokens=4096),
+    ]
+
+    def __init__(
+        self,
+        tiers: list[ModelTier] | None = None,
+        *,
+        smart_threshold: int = 300,
+        large_threshold: int = 800,
+    ) -> None:
+        self._tiers = tiers or list(self.PRESET_LOCAL)
+        self._smart = smart_threshold
+        self._large = large_threshold
+
+    # ── ProviderRouter-compatible interface ───────────────────────────────────
+
+    def route(self, task: str = "", tools: list[Any] | None = None) -> Any:  # type: ignore[override]
+        """Pick a tier based on task length and tool complexity.
+
+        Returns a duck-typed object with ``.model`` so Agent.model_router
+        dispatch works transparently.
+        """
+        score = len(task)
+        if tools:
+            score += len(tools) * 100
+
+        if score >= self._large and len(self._tiers) >= 3:
+            chosen = self._tiers[2]
+        elif score >= self._smart and len(self._tiers) >= 2:
+            chosen = self._tiers[1]
+        else:
+            chosen = self._tiers[0]
+
+        from meshflow.agents.base import model_is_local
+        import logging
+        if not model_is_local(chosen.model):
+            logging.getLogger("meshflow.router").info(
+                "ModelTierRouter: cloud model '%s' selected for task (len=%d). "
+                "Ensure your CostCap is set.",
+                chosen.model, len(task),
+            )
+
+        return _TierResult(model=chosen.model, tier=chosen.name)
+
+    def tiers(self) -> list[ModelTier]:
+        return list(self._tiers)
+
+
+@dataclass
+class _TierResult:
+    """Minimal result duck-typed to match ProviderRouter routing result."""
+
+    model: str
+    tier: str
+    cost_usd: float = 0.0
