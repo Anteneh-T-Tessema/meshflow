@@ -28,6 +28,13 @@ coverage.xml
 
 # Build tools
 .hatch/
+
+# SDK build artifacts
+sdks/rust/target/
+sdks/java/target/
+sdks/typescript/node_modules/
+sdks/typescript/dist/
+sdks/go/bin/
 *.whl
 
 # Environment
