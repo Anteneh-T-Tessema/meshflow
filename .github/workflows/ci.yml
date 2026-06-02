@@ -65,7 +65,11 @@ jobs:
 
       - name: Save test tail on failure
         if: failure()
-        run: tail -200 /tmp/test_out.txt > /tmp/test_tail.txt || true
+        run: |
+          echo "=== FAILED TESTS ===" > /tmp/test_tail.txt
+          grep -E "^FAILED|^ERROR" /tmp/test_out.txt >> /tmp/test_tail.txt || true
+          echo "=== LAST 80 LINES ===" >> /tmp/test_tail.txt
+          tail -80 /tmp/test_out.txt >> /tmp/test_tail.txt || true
 
       - name: Upload test output
         if: failure()
