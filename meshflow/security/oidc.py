@@ -268,7 +268,7 @@ class JWKSCache:
         self._explicit_jwks_uri = jwks_uri
         self._lock = threading.Lock()
         self._keys: dict[str, dict[str, Any]] = {}  # kid → JWK
-        self._fetched_at: float = 0.0
+        self._fetched_at: float = float("-inf")  # sentinel: always expired until first fetch
 
     # ── Discovery ──────────────────────────────────────────────────────────────
 
@@ -317,7 +317,7 @@ class JWKSCache:
     def invalidate(self) -> None:
         """Force a re-fetch on the next call to ``get()``."""
         with self._lock:
-            self._fetched_at = 0.0
+            self._fetched_at = float("-inf")
 
     def inject(self, keys: dict[str, dict[str, Any]]) -> None:
         """Inject keys directly (used in tests to bypass network)."""
