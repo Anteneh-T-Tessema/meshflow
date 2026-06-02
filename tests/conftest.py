@@ -33,27 +33,30 @@ def pytest_collection_modifyitems(items: list[Any]) -> None:
     """Skip CLI subprocess tests if 'meshflow' binary is not on PATH."""
     import shutil
     meshflow_available = shutil.which("meshflow") is not None
-    if not meshflow_available:
-        skip_marker = pytest.mark.skip(reason="meshflow CLI not found on PATH")
-        for item in items:
-            if "cli" in item.keywords or _uses_meshflow_subprocess(item):
+    if meshflow_available:
+        return  # nothing to skip
+    skip_marker = pytest.mark.skip(reason="meshflow CLI not found on PATH")
+    cli_modules = {
+        "test_sprint46", "test_sprint47", "test_sprint48", "test_sprint49",
+        "test_sprint50", "test_sprint51", "test_sprint52", "test_sprint53",
+        "test_sprint54", "test_sprint55", "test_sprint56", "test_sprint57",
+        "test_sprint58", "test_sprint59", "test_sprint60",
+    }
+    for item in items:
+        try:
+            if "cli" in item.keywords:
                 item.add_marker(skip_marker)
-
-
-def _uses_meshflow_subprocess(item: Any) -> bool:
-    """Heuristic: check if the test source contains subprocess calls to meshflow."""
-    try:
-        src = item.function.__module__
-        # Test modules known to call meshflow CLI via subprocess
-        cli_modules = {
-            "test_sprint46", "test_sprint47", "test_sprint48", "test_sprint49",
-            "test_sprint50", "test_sprint51", "test_sprint52", "test_sprint53",
-            "test_sprint54", "test_sprint55", "test_sprint56", "test_sprint57",
-            "test_sprint58", "test_sprint59", "test_sprint60",
-        }
-        return any(m in src for m in cli_modules) and "CLI" in getattr(item, "cls", type).__name__
-    except Exception:
-        return False
+                continue
+            module_name = getattr(item, "module", None)
+            if module_name is None:
+                continue
+            mod = getattr(module_name, "__name__", "") or ""
+            cls = getattr(item, "cls", None)
+            cls_name = getattr(cls, "__name__", "") if cls else ""
+            if any(m in mod for m in cli_modules) and "CLI" in cls_name:
+                item.add_marker(skip_marker)
+        except Exception:
+            pass
 
 
 # ── In-process ledger fixture ─────────────────────────────────────────────────
