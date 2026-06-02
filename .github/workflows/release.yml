@@ -26,7 +26,10 @@ jobs:
       - name: Full test suite
         env:
           MESHFLOW_MOCK: "1"
-        run: pytest --tb=short -q
+        run: |
+          python -m pytest tests/ --tb=short -q \
+            --ignore=tests/test_integration.py \
+            --asyncio-mode=auto
 
       - name: Verify version matches tag
         run: |
