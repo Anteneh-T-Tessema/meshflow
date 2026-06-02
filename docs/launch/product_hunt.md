@@ -92,7 +92,7 @@ governed = from_crewai(your_crew)          # CrewAI
 governed = from_autogen(your_agent)        # AutoGen
 ```
 
-**Apache 2.0. Self-hostable. No platform tax. 4,659 tests passing.**
+**Apache 2.0. Self-hostable. No platform tax. 4,723 tests passing.**
 
 ---
 

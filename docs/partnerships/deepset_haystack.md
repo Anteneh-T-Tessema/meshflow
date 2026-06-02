@@ -130,11 +130,24 @@ result = wf.run("Retrieve all patient records mentioning aspirin and summarize r
 
 **Email subject:** "MeshFlow × Haystack — EU AI Act + GDPR compliance integration proposal"
 
-**Email body (first paragraph):**
+**Email body (ready to send):**
 
 > Hi [name],
 >
-> I'm Anteneh, founder of MeshFlow — the open-source governance kernel for production agent systems (Apache 2.0, 4,659 tests, HIPAA/GDPR/ISO 27001/EU AI Act built in). We've built a native integration for Haystack pipelines and I think there's a natural co-marketing story: Haystack for retrieval quality, MeshFlow for compliance and audit. The EU AI Act Article 9 angle especially resonates — I know deepset has a strong EU enterprise base. Would you be open to a 30-minute call?
+> I'm Anteneh, founder of MeshFlow — the open-source governance kernel for production agent systems (Apache 2.0, 4,723 tests, HIPAA/GDPR/ISO 27001/EU AI Act built in).
+>
+> We shipped a native Haystack integration last week: `governed_haystack_pipeline()` wraps any Haystack pipeline as a governed MeshNode — GDPR Art. 30 lineage tracking, PHI detection on retrieved documents, and a tamper-evident audit trail on every retrieval step. Docs: https://github.com/Anteneh-T-Tessema/meshflow/blob/main/docs/integrations/haystack.md
+>
+> The co-marketing story is clean: Haystack for retrieval quality, MeshFlow for compliance and audit. The EU AI Act Article 9 angle especially resonates — your EU enterprise base is exactly the audience who needs both layers in production.
+>
+> I think there's a natural joint blog post: "Building GDPR-compliant clinical document agents with Haystack + MeshFlow." We'd write the technical content, you'd publish on the deepset blog, we cross-post. HN submission from both accounts simultaneously.
+>
+> Would you be open to a 30-minute call this week or next?
+>
+> Best,
+> Anteneh
+> anteneh@yayasystems.com
+> https://github.com/Anteneh-T-Tessema/meshflow
 
 **Follow-up cadence:**
 - Email day 1

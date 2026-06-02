@@ -456,8 +456,9 @@ from meshflow.integrations.haystack import (
     HaystackResult,
     governed_haystack_pipeline,
 )
+from meshflow.proxy.openai_proxy import MeshFlowProxy, ProxyToolCallEvent, ProxyDecision
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -1103,4 +1104,8 @@ __all__ = [
     "HaystackStepAdapter",
     "HaystackResult",
     "governed_haystack_pipeline",
+    # ── OpenAI-compatible proxy layer ─────────────────────────────────────────
+    "MeshFlowProxy",
+    "ProxyToolCallEvent",
+    "ProxyDecision",
 ]

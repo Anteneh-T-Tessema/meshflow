@@ -64,6 +64,73 @@ class NodeOutput:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+# ── ModelRouter helpers ───────────────────────────────────────────────────────
+
+def _router_model(router: Any, task: str) -> str:
+    """Call a ModelRouter and return the chosen model string."""
+    try:
+        result = router.route(task)
+        return str(result.model or "")
+    except Exception:
+        return ""
+
+
+def _patch_crewai_agents(crew: Any, model: str) -> list[Any]:
+    """Patch every CrewAI agent's llm to use *model*; return originals."""
+    if not model:
+        return []
+    originals: list[Any] = []
+    agents = getattr(crew, "agents", []) or []
+    for agent in agents:
+        originals.append(getattr(agent, "llm", None))
+        try:
+            from meshflow.agents.providers import LLM
+            agent.llm = LLM(model)
+        except Exception:
+            originals[-1] = None  # mark as unpatchable
+    return originals
+
+
+def _restore_crewai_agents(crew: Any, originals: list[Any]) -> None:
+    """Restore crew agents' llm attributes from *originals*."""
+    agents = getattr(crew, "agents", []) or []
+    for agent, original in zip(agents, originals):
+        if original is not None:
+            try:
+                agent.llm = original
+            except Exception:
+                pass
+
+
+def _patch_autogen_agent(agent: Any, model: str) -> Any:
+    """Patch an AutoGen agent's llm_config with *model*; return original config."""
+    if not model:
+        return None
+    original = getattr(agent, "llm_config", None)
+    try:
+        import copy
+        new_cfg = copy.deepcopy(original) if original else {}
+        config_list = new_cfg.get("config_list", [])
+        if config_list:
+            for entry in config_list:
+                entry["model"] = model
+        else:
+            new_cfg["config_list"] = [{"model": model}]
+        agent.llm_config = new_cfg
+    except Exception:
+        pass
+    return original
+
+
+def _restore_autogen_agent(agent: Any, original_cfg: Any) -> None:
+    """Restore an AutoGen agent's llm_config."""
+    if original_cfg is not None:
+        try:
+            agent.llm_config = original_cfg
+        except Exception:
+            pass
+
+
 @dataclass
 class MeshNode:
     """Universal node that StepRuntime governs.
@@ -153,14 +220,41 @@ class MeshNode:
         )
 
     @classmethod
-    def from_crewai(cls, node_id: str, crew: Any) -> "MeshNode":
-        """Wrap a CrewAI Crew as a MeshNode."""
+    def from_crewai(
+        cls,
+        node_id: str,
+        crew: Any,
+        model_router: Any = None,
+    ) -> "MeshNode":
+        """Wrap a CrewAI Crew as a MeshNode.
+
+        Parameters
+        ----------
+        model_router:
+            Optional MeshFlow ``ModelRouter``.  When provided, the router
+            selects the model for this task and patches every crew agent's
+            ``llm`` attribute before ``kickoff()`` is called.  The original
+            ``llm`` is restored afterwards so the crew object is not mutated
+            permanently.
+        """
 
         async def runner(inp: NodeInput) -> NodeOutput:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, lambda: crew.kickoff(inputs={"task": inp.task})
-            )
+
+            if model_router is not None:
+                # Route task → model, patch crew agents, restore after
+                routed_model = _router_model(model_router, inp.task)
+                originals = _patch_crewai_agents(crew, routed_model)
+                try:
+                    result = await loop.run_in_executor(
+                        None, lambda: crew.kickoff(inputs={"task": inp.task})
+                    )
+                finally:
+                    _restore_crewai_agents(crew, originals)
+            else:
+                result = await loop.run_in_executor(
+                    None, lambda: crew.kickoff(inputs={"task": inp.task})
+                )
             return NodeOutput(content=str(result))
 
         return cls(
@@ -168,15 +262,67 @@ class MeshNode:
             kind=NodeKind.CREWAI,
             risk_profile=RiskTier.INTERNAL,
             capabilities=["role_task_execution", "crew_coordination"],
+            metadata={"model_router": model_router is not None},
             _runner=runner,
         )
 
     @classmethod
-    def from_langgraph(cls, node_id: str, graph: Any) -> "MeshNode":
-        """Wrap a LangGraph compiled StateGraph as a MeshNode."""
+    def from_langgraph(
+        cls,
+        node_id: str,
+        graph: Any,
+        model_router: Any = None,
+        graph_factory: "Callable[[str], Any] | None" = None,
+    ) -> "MeshNode":
+        """Wrap a LangGraph compiled StateGraph as a MeshNode.
+
+        Parameters
+        ----------
+        model_router:
+            Optional MeshFlow ``ModelRouter``.  Two modes:
+
+            1. **Configurable graph** (preferred): if the graph was compiled
+               with ``configurable`` support, the routed model is passed via
+               ``config={"configurable": {"model": "<model>"}}`` at invocation
+               time — no graph recompilation needed.
+
+            2. **Graph factory** (for non-configurable graphs): pass
+               ``graph_factory=lambda model: build_graph(model)`` alongside
+               ``model_router``.  The router selects the model, the factory
+               rebuilds the graph, and the rebuilt graph handles the task.
+               Results are cached per model so the factory isn't called on
+               every step.
+        graph_factory:
+            Callable ``(model: str) -> compiled_graph``.  Required when using
+            ``model_router`` with non-configurable LangGraph graphs.
+        """
+
+        _graph_cache: dict[str, Any] = {}
 
         async def runner(inp: NodeInput) -> NodeOutput:
-            result = await graph.ainvoke({"messages": [{"role": "user", "content": inp.task}]})
+            active_graph = graph
+
+            if model_router is not None:
+                routed_model = _router_model(model_router, inp.task)
+                if graph_factory is not None:
+                    # Factory mode: rebuild graph for this model (cached)
+                    if routed_model not in _graph_cache:
+                        _graph_cache[routed_model] = graph_factory(routed_model)
+                    active_graph = _graph_cache[routed_model]
+                    result = await active_graph.ainvoke(
+                        {"messages": [{"role": "user", "content": inp.task}]}
+                    )
+                else:
+                    # Configurable mode: pass model via LangGraph config
+                    result = await active_graph.ainvoke(
+                        {"messages": [{"role": "user", "content": inp.task}]},
+                        config={"configurable": {"model": routed_model}},
+                    )
+            else:
+                result = await active_graph.ainvoke(
+                    {"messages": [{"role": "user", "content": inp.task}]}
+                )
+
             msgs = result.get("messages", [])
             content = msgs[-1].get("content", str(result)) if msgs else str(result)
             return NodeOutput(content=content)
@@ -186,22 +332,60 @@ class MeshNode:
             kind=NodeKind.LANGGRAPH,
             risk_profile=RiskTier.INTERNAL,
             capabilities=["graph_execution", "stateful_reasoning"],
+            metadata={"model_router": model_router is not None},
             _runner=runner,
         )
 
     @classmethod
-    def from_autogen(cls, node_id: str, agent: Any, manager: Any = None) -> "MeshNode":
-        """Wrap an AutoGen ConversableAgent (+ optional GroupChatManager) as a MeshNode."""
+    def from_autogen(
+        cls,
+        node_id: str,
+        agent: Any,
+        manager: Any = None,
+        model_router: Any = None,
+    ) -> "MeshNode":
+        """Wrap an AutoGen ConversableAgent (+ optional GroupChatManager) as a MeshNode.
+
+        Parameters
+        ----------
+        model_router:
+            Optional MeshFlow ``ModelRouter``.  When provided, the router
+            selects a model and patches ``agent.llm_config["config_list"]``
+            before each call, restoring the original config afterwards.
+        """
 
         async def runner(inp: NodeInput) -> NodeOutput:
             loop = asyncio.get_event_loop()
-            if manager:
-                result = await loop.run_in_executor(None, lambda: manager.run(message=inp.task))
+
+            if model_router is not None:
+                routed_model = _router_model(model_router, inp.task)
+                original_cfg = _patch_autogen_agent(agent, routed_model)
+                try:
+                    if manager:
+                        result = await loop.run_in_executor(
+                            None, lambda: manager.run(message=inp.task)
+                        )
+                    else:
+                        result = await loop.run_in_executor(
+                            None,
+                            lambda: agent.generate_reply(
+                                messages=[{"content": inp.task, "role": "user"}]
+                            ),
+                        )
+                finally:
+                    _restore_autogen_agent(agent, original_cfg)
             else:
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: agent.generate_reply(messages=[{"content": inp.task, "role": "user"}]),
-                )
+                if manager:
+                    result = await loop.run_in_executor(
+                        None, lambda: manager.run(message=inp.task)
+                    )
+                else:
+                    result = await loop.run_in_executor(
+                        None,
+                        lambda: agent.generate_reply(
+                            messages=[{"content": inp.task, "role": "user"}]
+                        ),
+                    )
             return NodeOutput(content=str(result))
 
         return cls(
@@ -209,6 +393,7 @@ class MeshNode:
             kind=NodeKind.AUTOGEN,
             risk_profile=RiskTier.INTERNAL,
             capabilities=["conversational_agents", "group_chat"],
+            metadata={"model_router": model_router is not None},
             _runner=runner,
         )
 

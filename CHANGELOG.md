@@ -5,6 +5,83 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.8.0] — 2026-06-02
+
+### Wire-level proxy, ModelRouter for all frameworks, launch
+
+**4,723 tests passing (+36 new tests).**
+
+#### MeshFlowProxy — OpenAI-compatible wire-level enforcement (`meshflow/proxy/openai_proxy.py`)
+
+The enforcement gap that neither StepRuntime nor ToolCallInterceptor fully closes: frameworks like LangGraph, CrewAI, and AutoGen manage their own LLM calls internally. Any tool call they generate never passes through MeshFlow's governed execution path.
+
+`MeshFlowProxy` sits one level lower — at the HTTP client — and intercepts universally.
+
+```python
+from meshflow import MeshFlowProxy, PolicyToolCallInterceptor
+from meshflow.policy.engine import PolicyStore, PolicyEngine, PolicyAction
+import openai
+
+store = PolicyStore()
+store.add_rule("block-shell", PolicyAction.DENY,
+               [("tool_name", "eq", "exec_shell")], framework="tool_calls")
+interceptor = PolicyToolCallInterceptor(PolicyEngine(store))
+
+# Drop-in replacement for openai.OpenAI()
+client = MeshFlowProxy(openai.OpenAI(), tool_call_interceptor=interceptor)
+
+# Every framework using this client gets enforcement — no framework changes needed
+from langchain_openai import ChatOpenAI
+llm = ChatOpenAI(client=client)
+```
+
+- `MeshFlowProxy(client, tool_call_interceptor, agent_id, on_block)` — wraps any OpenAI-compatible client
+- Intercepts `chat.completions.create()` synchronously and `acreate()` asynchronously
+- Blocked tool calls removed from response; allowed calls pass through unmodified
+- `modified_args` support: interceptor can sanitize args (PII scrubbing) before the call reaches the framework
+- `on_block` callback fires for every blocked call — wire directly to SIEM/alerting
+- `proxy.stats()` / `proxy.blocked_calls()` — audit log of every decision
+- `_ProxiedResponse` wraps immutable Pydantic response objects; `response.choices[0].message.tool_calls` returns only allowed calls; `response.blocked_tool_calls` lists what was stopped
+- Mixed allow/block: multiple tool calls in one response handled individually
+
+#### ModelRouter for framework adapters (`meshflow/core/node.py`)
+
+`ModelRouter` now works with `from_crewai`, `from_langgraph`, and `from_autogen` — not just native MeshFlow `Agent`.
+
+```python
+from meshflow import ModelRouter
+from meshflow.core.node import MeshNode
+
+router = ModelRouter()  # cheap tasks → haiku, complex → opus
+
+# CrewAI — patches each crew agent's llm before kickoff, restores after
+node = MeshNode.from_crewai("crew", crew, model_router=router)
+
+# AutoGen — patches agent.llm_config["config_list"] before generate_reply
+node = MeshNode.from_autogen("agent", autogen_agent, model_router=router)
+
+# LangGraph — two modes:
+# 1. Configurable graph: passes model via config={"configurable": {"model": "..."}}
+node = MeshNode.from_langgraph("graph", compiled_graph, model_router=router)
+
+# 2. Factory mode: rebuilds graph for selected model (cached per model)
+node = MeshNode.from_langgraph(
+    "graph", compiled_graph,
+    model_router=router,
+    graph_factory=lambda model: build_my_graph(model),
+)
+```
+
+Implementation: `_patch_crewai_agents` / `_restore_crewai_agents` and `_patch_autogen_agent` / `_restore_autogen_agent` use `try/finally` to guarantee the original LLM config is always restored — even if the framework raises. LangGraph factory results are cached per model so the factory is called at most once per unique model selection.
+
+#### Launch materials finalized
+
+- `docs/launch/show_hn.md` — updated to v1.8.0, 4,723 tests, `MeshFlowProxy` in feature list
+- `docs/launch/product_hunt.md` — test count updated
+- `docs/partnerships/deepset_haystack.md` — outreach email finalized and ready to send
+
+---
+
 ## [1.7.0] — 2026-06-02
 
 ### Governed tool calls, open audit standard, Haystack integration

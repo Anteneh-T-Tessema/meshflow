@@ -90,8 +90,9 @@ MeshFlow is the same bet for agents. Not a better framework. Infrastructure that
 - A2A (Agent-to-Agent) HTTP protocol with `/.well-known/agent-card` discovery
 - MCP server auto-generation from any workflow
 - TypeScript, Go, Java, Rust client SDKs
+- `MeshFlowProxy` — drop-in OpenAI client wrapper; any framework gets wire-level tool call enforcement
 - `meshflow serve` → FastAPI REST + SSE + WebSocket server, `/health/live` + `/health/ready` for k8s
-- 85-page documentation site, 4,659 passing tests
+- 85-page documentation site, 4,723 passing tests
 
 ---
 
@@ -104,6 +105,6 @@ MeshFlow is the same bet for agents. Not a better framework. Infrastructure that
 Apache 2.0. Self-hostable. No platform tax.
 
 GitHub: https://github.com/Anteneh-T-Tessema/meshflow
-PyPI: https://pypi.org/project/meshflow/ (v1.6.0)
-npm: https://www.npmjs.com/package/meshflow-sdk (v1.6.0)
-Rust: https://crates.io/crates/meshflow-sdk (v1.6.0)
+PyPI: https://pypi.org/project/meshflow/ (v1.8.0)
+npm: https://www.npmjs.com/package/meshflow-sdk (v1.8.0)
+Rust: https://crates.io/crates/meshflow-sdk (v1.8.0)
