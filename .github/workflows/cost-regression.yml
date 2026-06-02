@@ -39,14 +39,15 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MESHFLOW_MODEL: claude-haiku-4-5-20251001   # cheap model for CI
+          MESHFLOW_MOCK: "1"
         run: |
-          .venv/bin/python -m pytest tests/ -q --tb=short \
+          python -m pytest tests/ -q --tb=short \
             -m "not slow" \
             --no-header \
             -x
           # Run the eval suite and save results
           if [ -f eval/ci_suite.yaml ]; then
-            .venv/bin/python -m meshflow run eval/ci_suite.yaml \
+            python -m meshflow run eval/ci_suite.yaml \
               --save-baseline eval_current.json 2>/dev/null || \
             echo '{"total_tokens":0,"total_cost_usd":0,"pass_rate":1.0}' > eval_current.json
           else

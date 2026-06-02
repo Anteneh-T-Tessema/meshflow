@@ -50,7 +50,10 @@ runs:
 
     - name: Install meshflow
       shell: bash
-      run: pip install --quiet "meshflow${{ inputs.meshflow-version }}"
+      run: |
+        if ! python -c "import meshflow" 2>/dev/null; then
+          pip install --quiet "meshflow${{ inputs.meshflow-version }}"
+        fi
 
     - name: Run Zero Trust audit
       id: audit

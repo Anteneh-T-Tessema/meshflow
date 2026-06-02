@@ -386,6 +386,8 @@ class MeshFlowTracer:
         return len(self._records)
 
     def otel_spans(self) -> list[Any]:
+        if not self._otel_available or self._in_memory is None:
+            return []
         self.force_flush()
         return list(self._in_memory.get_finished_spans())
 
@@ -408,10 +410,13 @@ class MeshFlowTracer:
         }
 
     def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        if self._provider is None:
+            return True
         return self._provider.force_flush(timeout_millis=timeout_millis)
 
     def shutdown(self) -> None:
-        self._provider.shutdown()
+        if self._provider is not None:
+            self._provider.shutdown()
 
 
 # ── Module-level default tracer (lazy-init) ───────────────────────────────────

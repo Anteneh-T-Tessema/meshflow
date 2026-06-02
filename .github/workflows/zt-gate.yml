@@ -22,6 +22,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local meshflow
+        run: pip install -e . --quiet
+
       - name: Zero Trust Audit — ${{ matrix.tier }}
         id: zt
         uses: ./.github/actions/zt-audit
@@ -44,6 +52,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local meshflow
+        run: pip install -e . --quiet
 
       - name: Zero Trust Audit — HIPAA
         uses: ./.github/actions/zt-audit
