@@ -5,6 +5,58 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.9.0] — 2026-06-02
+
+### HTTP proxy server — language-agnostic enforcement
+
+**4,749 tests passing (+12 new tests).**
+
+#### `MeshFlowHTTPProxy` — stdlib HTTP reverse proxy (`meshflow/proxy/http_server.py`)
+
+Any process — Python, JavaScript, Ruby, Go, Rust, curl — that routes to
+`http://localhost:<port>/v1` gets full tool call enforcement and audit logging.
+No SDK integration required.
+
+```bash
+# Start the proxy (no API key needed, audit-only by default)
+meshflow proxy --port 8080
+
+# With a policy file
+meshflow proxy --port 8080 --policy policy.yaml
+
+# Azure OpenAI or any OpenAI-compatible upstream
+meshflow proxy --port 8080 --upstream https://my.openai.azure.com
+
+# Point any client to the proxy
+export OPENAI_BASE_URL=http://localhost:8080/v1
+export OPENAI_API_BASE=http://localhost:8080/v1   # LangChain
+python my_langgraph_app.py  # fully governed, zero code changes
+```
+
+Implementation:
+- `ThreadingHTTPServer` — one thread per connection, concurrent-safe
+- `_ProxyHandler` — `BaseHTTPRequestHandler` subclass; forwards all requests to `--upstream`
+- POST `/v1/chat/completions` intercepted; non-streaming JSON responses have blocked tool calls stripped; streaming SSE responses have blocked tool call index chunks dropped
+- `_assemble_from_sse(chunks)` — assembles `{index: {id, name, arguments}}` from parsed SSE dicts
+- Content-Length always recomputed from actual body — never forwarded from upstream (avoids `IncompleteRead` when modified response is shorter)
+- `on_block` callback fires per blocked call with `{tool_name, reason, ts, agent_id}`
+- Policy YAML loaded via existing `PolicyLoader.from_yaml()` at startup
+- `proxy.stats()` returns `{allowed, blocked}` counts
+
+#### Trace viewer — tool call display
+
+`meshflow trace <run_id>` now surfaces tool calls from `StepRecord.metadata["tool_calls"]` under each step:
+
+```
+|-- [01] v  researcher    native     conf=0.92   342ms   $0.00031   OK
+|        > Quarterly revenue increased 12%...
+|        v tool:web_search [llm]     allowed
+|        v tool:read_file [llm]      allowed
+|        X tool:exec_shell [proxy]   BLOCKED(policy:block-shell:...)
+```
+
+---
+
 ## [1.8.2] — 2026-06-02
 
 ### Async streaming proxy

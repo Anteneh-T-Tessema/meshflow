@@ -131,6 +131,21 @@ class TraceViewer:
                   f"conf={1-uncertain:.2f}  {dur:.0f}ms  ${cost:.5f}  {status}")
             if out:
                 print(f"  {'    ' if i == len(steps)-1 else '|   '}    > {out}")
+
+            # Surface tool call enforcement from metadata
+            tool_calls = (step.get("metadata") or {}).get("tool_calls", [])
+            if tool_calls:
+                indent = "    " if i == len(steps) - 1 else "|   "
+                for tc in tool_calls:
+                    tc_name = tc.get("tool_name", "?")
+                    tc_allowed = tc.get("allowed", True)
+                    tc_reason = tc.get("block_reason", "")
+                    tc_src = tc.get("source", "")
+                    tc_icon = "v" if tc_allowed else "X"
+                    tc_status = "allowed" if tc_allowed else f"BLOCKED({tc_reason[:30]})"
+                    src_tag = f" [{tc_src}]" if tc_src else ""
+                    print(f"  {indent}    {tc_icon} tool:{tc_name}{src_tag}  {tc_status}")
+
             if i < len(steps) - 1:
                 print("  |")
 

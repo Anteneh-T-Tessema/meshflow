@@ -457,8 +457,9 @@ from meshflow.integrations.haystack import (
     governed_haystack_pipeline,
 )
 from meshflow.proxy.openai_proxy import MeshFlowProxy, ProxyToolCallEvent, ProxyDecision
+from meshflow.proxy.http_server import MeshFlowHTTPProxy
 
-__version__ = "1.8.2"
+__version__ = "1.9.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -1111,4 +1112,6 @@ __all__ = [
     "MeshFlowProxy",
     "ProxyToolCallEvent",
     "ProxyDecision",
+    # ── HTTP proxy server (language-agnostic enforcement) ─────────────────────
+    "MeshFlowHTTPProxy",
 ]

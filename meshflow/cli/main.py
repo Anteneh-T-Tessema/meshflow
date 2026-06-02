@@ -312,6 +312,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_audit_verify.add_argument("--db", default="meshflow_runs.db", help="Ledger path")
     p_audit_verify.add_argument("--json", action="store_true", dest="as_json", help="Output result as JSON")
 
+    # proxy server
+    p_proxy = sub.add_parser("proxy", help="Start the MeshFlow HTTP proxy server (language-agnostic enforcement)")
+    p_proxy.add_argument("--port", type=int, default=8080, help="Port to listen on (default 8080)")
+    p_proxy.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1)")
+    p_proxy.add_argument("--upstream", default="https://api.openai.com", help="Upstream API base URL")
+    p_proxy.add_argument("--policy", default="", dest="policy_file", help="Policy YAML file for tool call rules")
+    p_proxy.add_argument("--agent-id", default="http-proxy", dest="agent_id", help="Agent ID label in audit logs")
+
     # eval diff
     p_eval_diff = sub.add_parser("eval-diff", help="Compare two eval baseline JSON files")
     p_eval_diff.add_argument("baseline_a", help="Older baseline JSON path")
@@ -1413,6 +1421,7 @@ def main() -> None:
         "blue-green":    _cmd_deploy,
         "migrate":       _cmd_migrate,
         "test":          _cmd_test,
+        "proxy":         _cmd_proxy,
     }
     dispatch[args.cmd](args)
 
@@ -6053,3 +6062,79 @@ def _resolve_test_agent(agent_spec: str) -> Any:
             }
 
     return _EchoTestAgent()
+
+
+# ── proxy server ──────────────────────────────────────────────────────────────
+
+
+def _cmd_proxy(args: argparse.Namespace) -> None:
+    """Start the MeshFlow HTTP proxy server.
+
+    Routes all traffic to --upstream (default https://api.openai.com).
+    Intercepts POST /v1/chat/completions to enforce tool call policy.
+
+    Examples::
+
+        # No policy — audit logging only
+        meshflow proxy --port 8080
+
+        # With policy YAML
+        meshflow proxy --port 8080 --policy policy.yaml
+
+        # Custom upstream (Azure OpenAI, custom base URL, etc.)
+        meshflow proxy --port 8080 --upstream https://my.azure.openai.azure.com
+
+        # Then point any client to the proxy
+        OPENAI_BASE_URL=http://localhost:8080/v1 python my_app.py
+    """
+    from meshflow.proxy.http_server import MeshFlowHTTPProxy
+
+    port = args.port
+    host = args.host
+    upstream = args.upstream
+    policy_file = getattr(args, "policy_file", "").strip()
+    agent_id = getattr(args, "agent_id", "http-proxy")
+
+    interceptor = None
+    if policy_file:
+        import os as _os
+        if not _os.path.exists(policy_file):
+            print(f"  Policy file not found: {policy_file}")
+            sys.exit(1)
+        try:
+            with open(policy_file) as fh:
+                policy_yaml = fh.read()
+            from meshflow.policy.engine import PolicyStore, PolicyEngine as _RE
+            from meshflow.policy.engine import PolicyLoader
+            from meshflow.core.tool_intercept import PolicyToolCallInterceptor
+            store = PolicyStore()
+            PolicyLoader.from_yaml(policy_yaml, store=store)
+            interceptor = PolicyToolCallInterceptor(_RE(store))
+            print(f"  Policy loaded: {policy_file}")
+        except Exception as e:
+            print(f"  Failed to load policy: {e}")
+            sys.exit(1)
+    else:
+        # Default: audit-only interceptor (no rules = allow everything, log all)
+        from meshflow.policy.engine import PolicyStore, PolicyEngine as _RE
+        from meshflow.core.tool_intercept import PolicyToolCallInterceptor
+        store = PolicyStore()
+        interceptor = PolicyToolCallInterceptor(_RE(store, audit=False))
+
+    proxy = MeshFlowHTTPProxy(
+        port=port,
+        host=host,
+        upstream=upstream,
+        interceptor=interceptor,
+        agent_id=agent_id,
+    )
+
+    print(f"\n  MeshFlow Proxy listening on http://{host}:{port}/v1")
+    print(f"  Upstream: {upstream}")
+    print(f"  Policy: {policy_file or '(none — audit logging only)'}")
+    print(f"  Press Ctrl+C to stop.\n")
+    print(f"  Set in your client:")
+    print(f"    OPENAI_BASE_URL=http://{host}:{port}/v1")
+    print(f"    OPENAI_API_BASE=http://{host}:{port}/v1   # LangChain\n")
+
+    proxy.serve_forever()
