@@ -1,15 +1,16 @@
 ---
 name: meshflow
-version: "1.0"
+version: "1.9"
 description: >
   Invoke when the user wants to build, run, orchestrate, govern, debug, or
   optimize any multi-agent workflow, agentic pipeline, or LLM-powered system.
   Triggers on: 'build an agent', 'multi-agent', 'orchestrate agents', 'agent
   team', 'durable workflow', 'cost cap', 'token budget', 'guardrails', 'HITL',
   'human in the loop', 'parallel agents', 'agent crew', 'compliance', 'HIPAA',
-  'SOC2', 'GDPR', 'audit trail', 'rate limiting agents', 'ReAct agent',
-  'LangGraph', 'CrewAI', 'AutoGen', 'governed', 'production agents',
-  'resumable workflow', 'agent governance', 'prompt caching', 'MCP server'.
+  'SOC2', 'GDPR', 'ISO 27001', 'EU AI Act', 'audit trail', 'rate limiting agents',
+  'ReAct agent', 'LangGraph', 'CrewAI', 'AutoGen', 'governed', 'production agents',
+  'resumable workflow', 'agent governance', 'prompt caching', 'MCP server',
+  'tool call enforcement', 'wire-level proxy', 'Zero Trust agents'.
 slash_command: /meshflow
 context: fork
 homepage: https://github.com/Anteneh-T-Tessema/meshflow

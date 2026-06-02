@@ -458,8 +458,14 @@ from meshflow.integrations.haystack import (
 )
 from meshflow.proxy.openai_proxy import MeshFlowProxy, ProxyToolCallEvent, ProxyDecision
 from meshflow.proxy.http_server import MeshFlowHTTPProxy
+from meshflow.integrations.anthropic import (
+    meshflow_as_anthropic_tool,
+    meshflow_tool_handler,
+    meshflow_tool_result_block,
+)
+from meshflow.integrations.openai import meshflow_as_openai_tool
 
-__version__ = "1.9.0"
+__version__ = "1.9.1"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -1114,4 +1120,10 @@ __all__ = [
     "ProxyDecision",
     # ── HTTP proxy server (language-agnostic enforcement) ─────────────────────
     "MeshFlowHTTPProxy",
+    # ── Anthropic tool-use integration ────────────────────────────────────────
+    "meshflow_as_anthropic_tool",
+    "meshflow_tool_handler",
+    "meshflow_tool_result_block",
+    # ── OpenAI tool integration ────────────────────────────────────────────────
+    "meshflow_as_openai_tool",
 ]

@@ -1426,6 +1426,30 @@ def main() -> None:
     dispatch[args.cmd](args)
 
 
+def mcp_stdio_main() -> None:
+    """Entry point for `meshflow-mcp` console script and `uvx meshflow`.
+
+    Starts the MeshFlow stdio MCP server directly — no subcommand needed.
+    Designed for ``claude_desktop_config.json`` and ``uvx`` usage::
+
+        # claude_desktop_config.json
+        {
+          "mcpServers": {
+            "meshflow": {
+              "command": "meshflow-mcp",
+              "env": {"ANTHROPIC_API_KEY": "sk-ant-..."}
+            }
+          }
+        }
+
+        # uvx (no install required)
+        uvx meshflow mcp-stdio
+    """
+    import sys as _sys
+    _sys.argv = ["meshflow-mcp", "mcp-stdio"]
+    main()
+
+
 # ── init ─────────────────────────────────────────────────────────────────────
 
 

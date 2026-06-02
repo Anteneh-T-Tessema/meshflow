@@ -5,6 +5,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.9.1] — 2026-06-02
+
+### Skills publishing infrastructure — Claude, OpenAI, MCP clients
+
+**4,749 tests passing.**
+
+#### `meshflow-mcp` entry point — zero-install MCP server
+
+```bash
+# After pip install meshflow
+meshflow-mcp              # starts the stdio MCP server directly
+
+# Without installing (uvx)
+uvx meshflow mcp-stdio
+```
+
+`meshflow-mcp` is now a standalone console script registered in `pyproject.toml`.  Designed for `claude_desktop_config.json`, Cursor, Zed, and Continue.dev — no subcommand required.
+
+#### Anthropic tool-use integration (`meshflow/integrations/anthropic.py`)
+
+Expose MeshFlow as a first-class Claude tool via the Anthropic API:
+
+```python
+from meshflow import meshflow_as_anthropic_tool, meshflow_tool_handler, meshflow_tool_result_block
+
+tool = meshflow_as_anthropic_tool()   # full schema with policy enum
+result = await meshflow_tool_handler("meshflow_run", {"task": "...", "policy": "hipaa"})
+block = meshflow_tool_result_block(tool_use_id, result)
+```
+
+- `meshflow_as_anthropic_tool(tool_name, description, include_policy_param, include_run_id_param)` — Anthropic tool schema with `input_schema`; policy enum includes `hipaa/sox/gdpr/iso27001/ccpa/dora/eu_ai_act/dev/sandbox`
+- `meshflow_tool_handler(tool_name, tool_input, agents, ledger_db)` — executes the task through MeshFlow, returns `{status, result, run_id, cost_usd, tokens_used, audit_chain_valid}`
+- `meshflow_tool_result_block(tool_use_id, result)` — formats result as an Anthropic `tool_result` content block ready to append to messages
+
+#### OpenAI tool integration — `meshflow_as_openai_tool()`
+
+```python
+from meshflow import meshflow_as_openai_tool
+
+tool = meshflow_as_openai_tool()   # OpenAI function-calling schema
+# Pass to client.chat.completions.create(tools=[tool])
+```
+
+Wraps the entire MeshFlow governance stack as a single OpenAI tool. Returns `{"type": "function", "function": {...}}` with `task` (required) and optional `policy` parameters.
+
+#### MCP manifest + client setup guide
+
+- `mcp.json` — MCP marketplace manifest with tool definitions, install instructions, and quickstart commands
+- `docs/integrations/mcp_clients.md` — step-by-step setup for Claude Desktop, Cursor, Zed, Continue.dev, and `uvx` usage; Anthropic API and OpenAI tool usage examples; audit trail verification
+- Skills PR docs updated to v1.9 with new trigger keywords (`Zero Trust agents`, `tool call enforcement`, `EU AI Act`, `wire-level proxy`)
+
+#### How to publish
+
+| Platform | Action |
+|---|---|
+| **Claude Code skill** | PR to `anthropics/claude-code-skills` using `docs/submissions/anthropic_skills_PR.md` |
+| **Claude Desktop MCP** | Share `claude_desktop_config.json` snippet from `docs/integrations/mcp_clients.md` |
+| **Cursor / Zed / Continue** | Share config snippets from `docs/integrations/mcp_clients.md` |
+| **Anthropic API** | `from meshflow import meshflow_as_anthropic_tool` |
+| **OpenAI API** | `from meshflow import meshflow_as_openai_tool` |
+| **MCP marketplace** | Submit `mcp.json` to mcp.run or equivalent registry |
+
+---
+
 ## [1.9.0] — 2026-06-02
 
 ### HTTP proxy server — language-agnostic enforcement

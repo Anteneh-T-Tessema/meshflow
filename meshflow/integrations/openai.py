@@ -8,6 +8,7 @@ Adapter surface:
   - team_from_openai_agents(agents, name, policy, pattern)    → MeshFlow Team
   - tool_from_openai_function(fn, ...)                        → MeshFlow Tool
   - mesh_tool_to_openai_function(tool)                        → OpenAI function schema dict
+  - meshflow_as_openai_tool(...)                              → OpenAI tool schema for MeshFlow
 
 Usage:
     from meshflow.integrations.openai import (
@@ -293,3 +294,81 @@ def tool_from_openai_function(
         risk=risk,
         tags=["openai"],
     )
+
+
+def meshflow_as_openai_tool(
+    tool_name: str = "meshflow_run",
+    description: str | None = None,
+    include_policy_param: bool = True,
+) -> dict[str, Any]:
+    """Return an OpenAI tool schema that exposes MeshFlow as a callable tool.
+
+    The returned dict is ready for ``client.chat.completions.create(tools=[...])``
+    or the OpenAI Assistants API.
+
+    Parameters
+    ----------
+    tool_name:
+        Function name used by the model.  Defaults to ``"meshflow_run"`` — the
+        same name exposed by the MCP server so handlers are interchangeable.
+    description:
+        Override the default description.
+    include_policy_param:
+        Whether to expose a ``policy`` parameter.  Set False for simpler schemas.
+
+    Example::
+
+        import openai
+        from meshflow.integrations.openai import meshflow_as_openai_tool
+
+        client = openai.OpenAI()
+        tool = meshflow_as_openai_tool()
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            tools=[tool],
+            messages=[{"role": "user", "content": "Research AI safety compliance"}],
+        )
+
+        # Handle tool call
+        tc = response.choices[0].message.tool_calls[0]
+        import json
+        args = json.loads(tc.function.arguments)
+        # args["task"] → pass to MeshFlow
+    """
+    desc = description or (
+        "Run a governed multi-agent workflow through MeshFlow. "
+        "Every run gets: SHA-256 tamper-evident audit chain, hard cost cap, "
+        "HIPAA/SOX/GDPR/ISO 27001 compliance, Zero Trust agent identity, "
+        "and durable crash recovery. "
+        "Use for tasks requiring multiple agents, compliance enforcement, "
+        "cost governance, or tamper-evident audit trails."
+    )
+
+    properties: dict[str, Any] = {
+        "task": {
+            "type": "string",
+            "description": "The task to execute through the governed agent pipeline.",
+        },
+    }
+    required = ["task"]
+
+    if include_policy_param:
+        properties["policy"] = {
+            "type": "string",
+            "enum": ["standard", "strict", "hipaa", "sox", "gdpr", "dev", "sandbox"],
+            "description": "Governance policy mode. Default: standard.",
+        }
+
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "description": desc,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }

@@ -1,0 +1,58 @@
+{
+  "schema_version": "v1",
+  "name": "meshflow",
+  "display_name": "MeshFlow",
+  "version": "1.9.0",
+  "description": "Production-safe multi-agent orchestration with governance built in. Run governed workflows, enforce tool call policy, maintain tamper-evident audit chains, and apply HIPAA/SOX/GDPR/ISO 27001 compliance — zero configuration.",
+  "author": "Anteneh Tessema <anteneh@yayasystems.com>",
+  "homepage": "https://meshflow.dev",
+  "repository": "https://github.com/Anteneh-T-Tessema/meshflow",
+  "license": "Apache-2.0",
+  "categories": ["developer-tools", "ai-agents", "compliance", "security"],
+  "keywords": ["agents", "multi-agent", "llm", "governance", "hipaa", "gdpr", "sox", "compliance", "zero-trust", "audit"],
+  "server": {
+    "type": "stdio",
+    "command": "meshflow-mcp",
+    "args": [],
+    "env": {
+      "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
+      "MESHFLOW_MOCK": "${MESHFLOW_MOCK:-0}"
+    }
+  },
+  "tools": [
+    {
+      "name": "meshflow_run",
+      "description": "Run any task through a governed multi-agent pipeline. Every run gets: SHA-256 tamper-evident audit chain, hard cost cap, HIPAA/SOX/GDPR/ISO 27001 compliance, Zero Trust agent identity, and durable crash recovery.",
+      "parameters": {
+        "task": "The task to execute through the governed agent pipeline.",
+        "policy": "Governance policy: standard (default), strict, hipaa, sox, gdpr, dev, sandbox.",
+        "budget_usd": "Hard cost cap in USD. Execution stops before reaching this limit."
+      }
+    },
+    {
+      "name": "meshflow_run_agent",
+      "description": "Call a specific registered agent by name. Use after registering agents with MCPServer.register_agent().",
+      "parameters": {
+        "agent_name": "Name of the registered agent.",
+        "task": "The task to pass to the agent."
+      }
+    },
+    {
+      "name": "meshflow_approve_hitl",
+      "description": "Approve or reject a paused human-in-the-loop checkpoint. Use when meshflow_run returns status='paused'.",
+      "parameters": {
+        "run_id": "The run_id returned by the paused workflow.",
+        "approved": "true to approve, false to reject.",
+        "comment": "Optional comment for the audit trail."
+      }
+    }
+  ],
+  "install": {
+    "pip": "pip install meshflow",
+    "uvx": "uvx meshflow mcp-stdio"
+  },
+  "quickstart": {
+    "sandbox": "MESHFLOW_MOCK=1 meshflow-mcp",
+    "production": "ANTHROPIC_API_KEY=sk-ant-... meshflow-mcp"
+  }
+}

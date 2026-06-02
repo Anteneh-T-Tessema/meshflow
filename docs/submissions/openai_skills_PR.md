@@ -1,6 +1,6 @@
 ---
 name: meshflow
-version: "1.0"
+version: "1.9"
 description: >
   Invoke when the user wants to build, run, orchestrate, govern, debug, or
   optimize any multi-agent workflow, agentic pipeline, or LLM-powered system
