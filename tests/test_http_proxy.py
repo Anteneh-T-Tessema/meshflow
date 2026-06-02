@@ -59,7 +59,22 @@ def _fake_upstream(body: dict | str, status: int = 200) -> tuple[HTTPServer, int
     server = HTTPServer(("127.0.0.1", port), _FakeUpstreamHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
+    # Wait until the server is actually accepting connections
+    _wait_for_port("127.0.0.1", port)
     return server, port, f"http://127.0.0.1:{port}"
+
+
+def _wait_for_port(host: str, port: int, timeout: float = 5.0) -> None:
+    """Block until *host:port* accepts a TCP connection or timeout."""
+    import socket as _s
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with _s.create_connection((host, port), timeout=0.1):
+                return
+        except OSError:
+            time.sleep(0.02)
+    raise TimeoutError(f"Port {host}:{port} not ready after {timeout}s")
 
 
 def _proxy(upstream_url: str, interceptor: Any = None, port: int = 0) -> tuple[MeshFlowHTTPProxy, int]:
@@ -71,7 +86,7 @@ def _proxy(upstream_url: str, interceptor: Any = None, port: int = 0) -> tuple[M
             port = s.getsockname()[1]
     p = MeshFlowHTTPProxy(port=port, upstream=upstream_url, interceptor=interceptor)
     p.start(daemon=True)
-    time.sleep(0.05)
+    _wait_for_port("127.0.0.1", port)
     return p, port
 
 
