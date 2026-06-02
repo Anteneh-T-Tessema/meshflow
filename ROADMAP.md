@@ -61,12 +61,23 @@ This is the public roadmap. It is a living document — priorities shift based o
 
 ---
 
+## Shipped — v1.9.x (June 2026)
+
+- ✅ **Extended thinking** — `Agent(thinking=True, thinking_budget=N)` for Claude; thinking tokens tracked in StepRecord and RunResult
+- ✅ **Always-on prompt caching** — cache_control inserted automatically for Anthropic system prompts ≥ 1 024 chars
+- ✅ **Cache hit-rate metrics** — `RunResult.cache_read_tokens` / `cache_creation_tokens`; cloud reporter wired to real data
+- ✅ **Mixed-model pipelines** — `ModelTierRouter` + `ModelTier`; `model_is_local()` utility; zero cost for local calls; `RunResult.agent_costs` + `cloud_agents`
+- ✅ **CI green on Python 3.11 + 3.12** — 4,778 tests passing; all CI gates green
+- ✅ **PyPI 1.9.3 + GHCR image** — `pip install meshflow` and `ghcr.io/anteneh-t-tessema/meshflow-mcp:1.9.3`
+
 ## Next — v1.4 (June–July 2026)
 
-**Theme: Multi-language ecosystem + Enterprise auth**
+**Theme: Multi-language ecosystem + Enterprise auth + Observability**
 
 - ✅ Go SDK — `go get meshflow.dev/go-sdk` (in progress)
 - ✅ OIDC/SSO middleware — Okta, Auth0, Azure AD, Google Workspace (in progress)
+- [ ] **Workflow cost estimation** — `Workflow.estimate_cost(task)` dry-run before spending tokens
+- [ ] **`meshflow cost-report <run-id>`** — per-agent cost table in CLI
 - [ ] Show HN launch — `docs/launch/show_hn.md` ready to post
 - [ ] Product Hunt launch — `docs/launch/product_hunt.md` ready to post
 - [ ] Discord community launch — `docs/community/discord_setup.md` ready

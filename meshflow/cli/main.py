@@ -1282,6 +1282,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_zt.add_argument("--fail-on-gaps", action="store_true",
                       help="Exit non-zero if any controls are missing for the target tier")
 
+    # ── cost-report ───────────────────────────────────────────────────────────
+    p_cost = sub.add_parser("cost-report", help="Show per-agent cost breakdown for a past run or estimate for a task")
+    p_cost.add_argument("run_id", nargs="?", default="", help="Run ID from the ledger (omit to use --task)")
+    p_cost.add_argument("--task", default="", help="Estimate cost for a new task without running it")
+    p_cost.add_argument("--agents", default="", help="Comma-separated agent models for --task estimate, e.g. llama3.2,mistral,meta.llama3-70b-instruct-v1:0")
+    p_cost.add_argument("--db", default="meshflow_runs.db", help="Ledger DB path (default: meshflow_runs.db)")
+    p_cost.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
+
     # ── migrate ───────────────────────────────────────────────────────────────
     p_migrate = sub.add_parser(
         "migrate",
@@ -1417,6 +1425,7 @@ def main() -> None:
         "templates":     _cmd_templates,
         "marketplace":   _cmd_marketplace,
         "zt-audit":      _cmd_zt_audit,
+        "cost-report":   _cmd_cost_report,
         "red-team":      _cmd_red_team,
         "blue-green":    _cmd_deploy,
         "migrate":       _cmd_migrate,
@@ -6161,3 +6170,101 @@ def _cmd_proxy(args: argparse.Namespace) -> None:
     print(f"    OPENAI_API_BASE=http://{host}:{port}/v1   # LangChain\n")
 
     proxy.serve_forever()
+
+# ── cost-report ────────────────────────────────────────────────────────────────
+
+def _cmd_cost_report(args: argparse.Namespace) -> None:
+    """Show per-agent cost breakdown for a past run or estimate for a new task."""
+    import json as _json
+
+    # ── Estimation mode (no run_id, just --task + --agents) ──────────────────
+    if args.task and not args.run_id:
+        from meshflow.agents.base import _cost_usd, model_is_local
+        models = [m.strip() for m in args.agents.split(",") if m.strip()] if args.agents else []
+        if not models:
+            print("Provide --agents comma-separated model names for estimation, e.g.:")
+            print("  meshflow cost-report --task 'analyse X' --agents llama3.2,mistral,meta.llama3-70b-instruct-v1:0")
+            return
+
+        task = args.task
+        input_tokens = max(len(task) // 4, 50)
+        output_tokens = max(input_tokens // 4, 25)
+
+        rows = []
+        total = 0.0
+        for i, model in enumerate(models):
+            cost = _cost_usd(model, input_tokens, output_tokens)
+            is_local = model_is_local(model)
+            total += cost
+            rows.append({
+                "agent": f"agent-{i+1}",
+                "model": model,
+                "cost_usd": cost,
+                "is_local": is_local,
+                "tag": "local" if is_local else "cloud",
+            })
+
+        if args.as_json:
+            print(_json.dumps({"estimate": rows, "total_usd": total}, indent=2))
+            return
+
+        col_m = max(len(r["model"]) for r in rows)
+        print(f"\n  Cost estimate — task: {task[:60]!r}\n")
+        for r in rows:
+            tag = "(local)" if r["is_local"] else "(cloud ⚠️)"
+            print(f"  {r['agent']:12s}  {r['model']:{col_m}}  ${r['cost_usd']:.4f}  {tag}")
+        print("  " + "─" * (col_m + 30))
+        print(f"  {'Total':12s}  {'':{ col_m}}  ${total:.4f}")
+        print()
+        return
+
+    # ── Historical mode (run_id from ledger) ──────────────────────────────────
+    if not args.run_id:
+        print("Provide a run_id or use --task to estimate. Run 'meshflow traces' to list run IDs.")
+        return
+
+    import asyncio, sqlite3
+    db = args.db
+    run_id = args.run_id
+
+    try:
+        conn = sqlite3.connect(db)
+        rows_db = conn.execute(
+            "SELECT node_id, cost_usd, tokens_used, metadata FROM step_records WHERE run_id=? ORDER BY rowid",
+            (run_id,),
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        print(f"Cannot read ledger '{db}': {exc}")
+        return
+
+    if not rows_db:
+        print(f"No records found for run_id '{run_id}' in '{db}'.")
+        return
+
+    total_cost = 0.0
+    total_tokens = 0
+    report = []
+    for node_id, cost, tokens, meta_raw in rows_db:
+        try:
+            meta = _json.loads(meta_raw or "{}")
+        except Exception:
+            meta = {}
+        cr = meta.get("cache_read_tokens", 0)
+        cc = meta.get("cache_creation_tokens", 0)
+        cache_str = f"  cache_read={cr} cache_created={cc}" if cr or cc else ""
+        report.append({"node": node_id, "cost_usd": cost or 0.0, "tokens": tokens or 0, "cache": cache_str})
+        total_cost += cost or 0.0
+        total_tokens += tokens or 0
+
+    if args.as_json:
+        print(_json.dumps({"run_id": run_id, "steps": report, "total_cost_usd": total_cost, "total_tokens": total_tokens}, indent=2))
+        return
+
+    col_n = max(len(r["node"]) for r in report)
+    print(f"\n  Cost report — run: {run_id}\n")
+    for r in report:
+        print(f"  {r['node']:{col_n}}  ${r['cost_usd']:.4f}  {r['tokens']:>7} tok{r['cache']}")
+    print("  " + "─" * (col_n + 28))
+    print(f"  {'Total':{col_n}}  ${total_cost:.4f}  {total_tokens:>7} tok")
+    print()

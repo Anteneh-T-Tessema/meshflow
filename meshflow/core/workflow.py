@@ -2054,6 +2054,54 @@ class CostCap:
     usd: float = 1.0
 
 
+@dataclass
+class _AgentCostLine:
+    agent: str
+    model: str
+    cost_usd: float
+    is_local: bool
+
+
+@dataclass
+class CostEstimate:
+    """Per-agent cost estimate returned by :meth:`Workflow.estimate_cost`.
+
+    Attributes
+    ----------
+    lines:        One entry per agent with model name and estimated cost.
+    task_preview: First 80 chars of the task used for the estimate.
+    """
+
+    lines: list[_AgentCostLine]
+    task_preview: str = ""
+
+    @property
+    def total_usd(self) -> float:
+        return sum(ln.cost_usd for ln in self.lines)
+
+    @property
+    def cloud_agents(self) -> list[str]:
+        return [ln.agent for ln in self.lines if not ln.is_local]
+
+    @property
+    def local_agents(self) -> list[str]:
+        return [ln.agent for ln in self.lines if ln.is_local]
+
+    def __str__(self) -> str:
+        col_a = max((len(ln.agent) for ln in self.lines), default=6)
+        col_m = max((len(ln.model) for ln in self.lines), default=12)
+        rows = []
+        for ln in self.lines:
+            tag = "(local)" if ln.is_local else "(cloud)"
+            rows.append(
+                f"  {ln.agent:{col_a}}  {ln.model:{col_m}}  ${ln.cost_usd:.4f}  {tag}"
+            )
+        sep = "  " + "─" * (col_a + col_m + 18)
+        rows.append(sep)
+        rows.append(f"  {'Total':{col_a}}  {'':{ col_m}}  ${self.total_usd:.4f}")
+        return "\n".join(rows)
+
+
 class Workflow:
     """High-level synchronous wrapper executing agents sequentially.
 
@@ -2070,6 +2118,61 @@ class Workflow:
         """Add one or more agents to the sequential workflow. Supports chaining."""
         self.agents.extend(agents)
         return self
+
+    def estimate_cost(self, task: str = "") -> "CostEstimate":
+        """Estimate cost per agent before making any LLM calls.
+
+        Uses token-count heuristics (chars / 4 ≈ tokens) and the model's
+        per-token pricing. Local models (Ollama, llama, mistral…) always
+        return $0.00. Cloud models use the pricing registry in
+        ``meshflow.agents.base._PRICING``.
+
+        Returns a :class:`CostEstimate` with per-agent breakdown and totals.
+
+        Usage::
+
+            wf = Workflow(cost_cap=CostCap(usd=0.50))
+            wf.add(
+                Agent("planner",    model="llama3.2"),
+                Agent("researcher", model="mistral"),
+                Agent("writer",     model="meta.llama3-70b-instruct-v1:0"),
+            )
+            est = wf.estimate_cost("analyse our competitive landscape")
+            print(est)
+            # planner    llama3.2                              $0.0000  (local)
+            # researcher mistral                               $0.0000  (local)
+            # writer     meta.llama3-70b-instruct-v1:0        $0.0032  (cloud)
+            # ────────────────────────────────────────────────────────────
+            # Total                                            $0.0032
+        """
+        from meshflow.agents.base import _cost_usd, model_is_local
+
+        # Rough token estimate: chars / 4 input, 25% output ratio
+        input_tokens = max(len(task) // 4, 50)
+        output_tokens = max(input_tokens // 4, 25)
+
+        lines: list[_AgentCostLine] = []
+        for agent in self.agents:
+            name = getattr(agent, "name", str(agent))
+            model = ""
+            if hasattr(agent, "_resolve_model"):
+                try:
+                    model = agent._resolve_model()
+                except Exception:
+                    model = getattr(agent, "model", "") or ""
+            # If a model_router is attached, ask it to route the task
+            router = getattr(agent, "model_router", None)
+            if router is not None:
+                try:
+                    route_result = router.route(task)
+                    model = getattr(route_result, "model", model) or model
+                except Exception:
+                    pass
+            cost = _cost_usd(model, input_tokens, output_tokens)
+            is_local = model_is_local(model)
+            lines.append(_AgentCostLine(agent=name, model=model, cost_usd=cost, is_local=is_local))
+
+        return CostEstimate(lines=lines, task_preview=task[:80])
 
     def run(self, task: str) -> WorkflowResult:
         """Run the workflow sequentially and synchronously."""

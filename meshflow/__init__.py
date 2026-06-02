@@ -20,7 +20,7 @@ from meshflow.core.govern import GovernedApp, govern
 from meshflow.optimization import token_budget
 from meshflow.core.node import MeshNode, NodeInput, NodeKind, NodeOutput
 from meshflow.core.contracts import core_contract_schemas
-from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult, Workflow, CostCap
+from meshflow.core.workflow import HumanDecision, WorkflowDefinition, WorkflowResult, Workflow, CostCap, CostEstimate
 from meshflow.core.events import WorkflowEventBus
 from meshflow.core.state import StateGraph, END, START, add, last, first, Channel, node, interrupt, Command, Interrupt, Send, MemorySaver, SqliteSaver
 from meshflow.core.flows import Flow, FlowState, FlowResult, start as flow_start, listen as flow_listen, router as flow_router
@@ -543,6 +543,7 @@ __all__ = [
     "WorkflowEventBus",
     "Workflow",
     "CostCap",
+    "CostEstimate",
     # ── Kernel ────────────────────────────────────────────────────────────────
     "StepRuntime",
     "RuntimeOutcome",
