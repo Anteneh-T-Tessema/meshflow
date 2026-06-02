@@ -75,6 +75,7 @@ from meshflow.observability.telemetry import MeshFlowTracer
 from meshflow.security.dasc_gate import DascGate
 from meshflow.security.guardian import Guardian
 from meshflow.security.identity import AgentIdentityProvider
+from meshflow.core.tool_intercept import PolicyToolCallInterceptor
 
 
 def _zt_from_env() -> Any:
@@ -100,6 +101,19 @@ def _zt_from_env() -> Any:
     }
     tier = tier_map.get(tier_name, ZeroTrustTier.FOUNDATION)
     return ZeroTrustOrchestrator.for_tier(tier)
+
+
+def _default_tool_interceptor() -> PolicyToolCallInterceptor:
+    """Build a zero-config PolicyToolCallInterceptor backed by an empty PolicyStore.
+
+    No rules = default allow on every tool call.  Callers can add rules via
+    policy-as-code (PolicyStore.add_rule) to enforce deny/allow semantics.
+    The interceptor is always active so every tool call is audit-logged.
+    """
+    from meshflow.policy.engine import PolicyStore, PolicyEngine as _RuleEngine
+    store = PolicyStore()
+    engine = _RuleEngine(store, audit=False)
+    return PolicyToolCallInterceptor(engine)
 
 
 @dataclass
@@ -228,7 +242,11 @@ class Mesh:
         collusion = CollusionAuditor()
         telemetry = self._new_tracer()
         eco = EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None
-        mcp = MCPGateway(budget_usd_per_turn=pol.budget_usd / 20)
+
+        # Default tool-call interceptor — active on every run, zero config.
+        # Logs every tool call attempt; policy rules (if configured) can block.
+        _tool_interceptor = _default_tool_interceptor()
+        mcp = MCPGateway(budget_usd_per_turn=pol.budget_usd / 20, tool_call_interceptor=_tool_interceptor)
         for tool in self._mcp_tools:
             mcp.register_tool(tool)
 
@@ -592,6 +610,7 @@ class Mesh:
             ledger=ledger,
             budget=BudgetTracker(pol),
             zero_trust=_wf_zero_trust,
+            tool_call_interceptor=_default_tool_interceptor(),
         )
 
         return await workflow.run(task or f"Execute {workflow.name}", runtime, event_bus=event_bus)
@@ -652,6 +671,7 @@ class Mesh:
             eco=EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None,
             ledger=ledger,
             budget=BudgetTracker(pol),
+            tool_call_interceptor=_default_tool_interceptor(),
         )
 
         return await workflow.resume(run_id, decision, ledger, runtime)

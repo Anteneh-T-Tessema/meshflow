@@ -167,6 +167,7 @@ class StepRuntime:
         circuit_breakers: Any = None,
         compliance_guard: Any = None,
         zero_trust: Any = None,
+        tool_call_interceptor: Any = None,
     ) -> None:
         self._policy = policy
         self._run_id = run_id
@@ -183,6 +184,7 @@ class StepRuntime:
         self._cbs = circuit_breakers  # dict[str, CircuitBreaker]
         self._compliance_guard = compliance_guard
         self._zero_trust = zero_trust  # ZeroTrustOrchestrator | None
+        self.tool_call_interceptor = tool_call_interceptor  # ToolCallInterceptor | None
         self._prev_hash = ""  # grows with each committed record
         # SIEM streamer — lazy-loaded when ZT Advanced siem_streaming is active
         self._siem: Any = None
@@ -350,6 +352,17 @@ class StepRuntime:
 
         # ── EXECUTE ───────────────────────────────────────────────────────────
 
+        # Inject interceptor into node so intra-node tool calls can be governed
+        if self.tool_call_interceptor is not None and hasattr(node, "set_tool_call_interceptor"):
+            node.set_tool_call_interceptor(self.tool_call_interceptor)
+
+        # Cursor into the interceptor's audit log — lets us slice calls made during THIS step
+        _tool_log_cursor = (
+            len(self.tool_call_interceptor.audit_log())
+            if self.tool_call_interceptor is not None and hasattr(self.tool_call_interceptor, "audit_log")
+            else 0
+        )
+
         if not blocked and not paused:
             try:
                 _step_timeout = getattr(self._policy, "step_timeout_s", 0.0)
@@ -497,11 +510,19 @@ class StepRuntime:
         max_chars = getattr(self._policy, "max_output_chars", 0)
         ledger_output = raw_output[:max_chars] if max_chars > 0 else raw_output
 
+        # Collect tool calls made during this step from the interceptor audit log
+        _step_tool_calls: list[dict[str, Any]] = []
+        if (
+            self.tool_call_interceptor is not None
+            and hasattr(self.tool_call_interceptor, "audit_log")
+        ):
+            _step_tool_calls = self.tool_call_interceptor.audit_log()[_tool_log_cursor:]
+
         record = StepRecord(
             run_id=self._run_id,
             step_id=step_id,
             node_id=node.id,
-            node_kind=str(node.kind.value),
+            node_kind=node.kind.value,
             input_task=node_input.task[:500],
             output_content=ledger_output,
             verdict=verdict,
@@ -514,6 +535,7 @@ class StepRuntime:
             duration_ms=duration_ms,
             timestamp=_now_iso(),
             prev_hash=self._prev_hash,
+            metadata={"tool_calls": _step_tool_calls} if _step_tool_calls else {},
         )
         # Advance the chain pointer for the next record
         self._prev_hash = record.entry_hash
@@ -571,8 +593,8 @@ class StepRuntime:
                         trace_id=self._run_id.replace("-", "").ljust(32, "0")[:32],
                         span_id=step_id.replace("-", "").ljust(16, "0")[:16],
                         name=f"step:{node.id}",
-                        start_ns=int(_t0_ns - duration_ms * 1_000_000),
-                        end_ns=int(_t0_ns),
+                        start_ns=_t0_ns - int(duration_ms * 1_000_000),
+                        end_ns=_t0_ns,
                         attributes=_otel_attrs,
                         status="error" if blocked else "ok",
                     )

@@ -1,6 +1,6 @@
 # Show HN: MeshFlow — production-safe multi-agent orchestration (pip install meshflow)
 
-**HN title:** Show HN: MeshFlow – Zero Trust for AI agents, built in by default (pip install meshflow)
+**HN title:** Show HN: MeshFlow – Zero Trust + ISO 27001/EU AI Act compliance for agents, built in by default (pip install meshflow)
 
 ---
 
@@ -50,7 +50,7 @@ print(result.summary())
 - **Hard cost cap.** `CostCap(usd=5.00)` stops execution before it hits the limit — not after. No more weekend surprise bills.
 - **Durable execution.** Crash recovery via SQLite/Redis/Postgres/S3 checkpoints. Same `run_id` on restart = resume from last checkpoint.
 - **Subprocess sandbox.** Code execution runs in a memory-capped, network-blocked subprocess. No sandbox escapes.
-- **Compliance profiles.** `compliance_profile("hipaa")` or `"sox"`, `"gdpr"`, `"pci"`, `"nerc"` — one line, all rules enforced.
+- **Compliance profiles.** `compliance_profile("hipaa")` or `"sox"`, `"gdpr"`, `"pci"`, `"nerc"`, `"iso27001"`, `"ccpa"`, `"dora"`, `"eu_ai_act"` — one line, all rules enforced.
 - **70–85% token cost reduction.** Prompt caching, ModelRouter (routes cheap tasks to nano models), ContextCompactor. Typically pays back implementation cost in the first week.
 
 ---
@@ -89,9 +89,9 @@ MeshFlow is the same bet for agents. Not a better framework. Infrastructure that
 - `govern(your_existing_app)` — wrap any LangGraph/CrewAI/AutoGen app with one line
 - A2A (Agent-to-Agent) HTTP protocol with `/.well-known/agent-card` discovery
 - MCP server auto-generation from any workflow
-- TypeScript client SDK with WebCrypto webhook signature verification
+- TypeScript, Go, Java, Rust client SDKs
 - `meshflow serve` → FastAPI REST + SSE + WebSocket server, `/health/live` + `/health/ready` for k8s
-- 85-page documentation site, 4,616 passing tests
+- 85-page documentation site, 4,659 passing tests
 
 ---
 
@@ -104,5 +104,6 @@ MeshFlow is the same bet for agents. Not a better framework. Infrastructure that
 Apache 2.0. Self-hostable. No platform tax.
 
 GitHub: https://github.com/Anteneh-T-Tessema/meshflow
-PyPI: https://pypi.org/project/meshflow/ (v1.5.0)
-npm: https://www.npmjs.com/package/meshflow-sdk (v1.5.0)
+PyPI: https://pypi.org/project/meshflow/ (v1.6.0)
+npm: https://www.npmjs.com/package/meshflow-sdk (v1.6.0)
+Rust: https://crates.io/crates/meshflow-sdk (v1.6.0)

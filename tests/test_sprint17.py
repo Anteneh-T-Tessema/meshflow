@@ -275,8 +275,9 @@ class TestLedgerAuditExport:
 
         raw = await ledger.export_run("run-json-1")
         data = json.loads(raw)
-        assert data["run_id"] == "run-json-1"
-        assert len(data["steps"]) == 1
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["run_id"] == "run-json-1"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

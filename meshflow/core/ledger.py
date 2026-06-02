@@ -662,9 +662,14 @@ class ReplayLedger:
         return None
 
     async def export_run(self, run_id: str) -> str:
-        """Export a full run as a JSON string for archiving or transfer."""
+        """Export a full run as a JSON array matching the audit chain spec.
+
+        Each element is a step record dict.  The format is consumed by the
+        reference verifier in docs/audit_chain_spec.md and by
+        ``meshflow audit export --format json``.
+        """
         records = await self.get_run(run_id)
-        return json.dumps({"run_id": run_id, "steps": records}, indent=2)
+        return json.dumps(records, indent=2)
 
     async def export_run_csv(self, run_id: str) -> str:
         """Export a full run as a CSV string (compliance/audit artifact)."""

@@ -5,6 +5,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.7.0] — 2026-06-02
+
+### Governed tool calls, open audit standard, Haystack integration
+
+**4,687 tests passing (+28 new tests).**
+
+#### Tool-call-level enforcement (`meshflow/core/tool_intercept.py`)
+
+Every tool call an LLM generates mid-node is now evaluated against policy before execution — closing the enforcement gap between node-level governance (StepRuntime) and individual tool invocations within a node.
+
+- `ToolCallEvent` — wire type for a pending tool call: `tool_name`, `args`, `agent_id`, `source` (`"llm"` / `"mcp"` / `"registry"`), `run_id`, `node_id`
+- `ToolCallDecision` — enforcement decision: `allowed`, `block_reason`, `modified_args` (for PII-scrubbing args before execution)
+- `ToolCallInterceptor` — `@runtime_checkable` Protocol; any object with `async before_call(event) -> decision` satisfies it
+- `AllowListInterceptor` — deny-by-default by tool name
+- `PiiScanInterceptor` — block or mask args containing PHI/credentials
+- `PolicyToolCallInterceptor` — full `PolicyEngine` evaluation + optional PII scan + per-step audit log; the `source` field lets rules distinguish MCP vs LLM-generated calls
+- `ChainedInterceptor` — first-DENY-wins composition; propagates `modified_args` between stages
+
+**Zero-config activation:** a `PolicyToolCallInterceptor` backed by an empty `PolicyStore` is now instantiated on every `Mesh.run()`, `run_workflow()`, and `resume_workflow()` call. No rules = default allow; every tool call attempt is audit-logged. Users add rules via policy-as-code to enforce deny/allow semantics.
+
+**MCP path:** `MCPGateway` accepts `tool_call_interceptor=` and fires it as step 5 in the call pipeline (after manifest validation and rate limiting, before dispatch). MCP calls blocked by the interceptor never reach the handler.
+
+**StepRuntime integration:** tool calls made during each step are collected from the interceptor's audit log and written into `StepRecord.metadata["tool_calls"]`, so the ledger captures both the node-level outcome and every individual tool call attempt within that step.
+
+#### Open audit chain specification (`docs/audit_chain_spec.md`)
+
+The tamper-evident hash chain format is now published as a versioned open spec so SIEM integrations, compliance verifiers, and independent auditors can verify chain integrity without importing MeshFlow.
+
+- Canonical field set, encoding rules, hash algorithm (`SHA-256(json.dumps(fields, sort_keys=True))`)
+- Chain verification rules (prev_hash linkage + entry_hash recomputation)
+- `fork()` semantics — branched runs produce independent chains from the branch point
+- Export format (flat JSON array, one object per step)
+- Self-contained stdlib reference verifier in ≤ 50 lines — exit code 0 = valid, 1 = tampered
+- Compatibility table (v1.0–v1.6 migration `0001`/`0002`)
+
+**`ReplayLedger.export_run()` updated** to emit a flat JSON array matching the spec (previously `{"run_id": ..., "steps": [...]}`). The reference verifier and `meshflow audit export --format json` now produce identical output.
+
+#### Haystack integration (`meshflow/integrations/haystack.py`)
+
+Wraps any Haystack pipeline as a governed `MeshNode` running through the full StepRuntime kernel.
+
+- `HaystackStepAdapter(pipeline, node_id, compliance_profile, pii_scan, mask_pii, block_on_pii)` — MeshNode subclass; works with any object that has `.run(inputs: dict) -> dict`
+- `governed_haystack_pipeline(pipeline, ...)` — factory; returns an adapter you add directly to a `Workflow` or `WorkflowDefinition`
+- GDPR/PHI protection: `SensitiveDataDetector` scans retrieved documents before they reach downstream agents; detected PII is masked (or the step is blocked if `block_on_pii=True`)
+- Haystack v1 and v2 result formats both supported
+- Zero external dependencies — works offline without Haystack installed (pass any mock pipeline)
+- Compliance profile metadata stored in `node.metadata["compliance_profile"]` for audit trail
+
+```python
+from meshflow.integrations.haystack import governed_haystack_pipeline
+from meshflow import Workflow
+
+adapter = governed_haystack_pipeline(
+    haystack_pipeline=my_pipeline,
+    compliance_profile="gdpr",
+    pii_scan=True,
+)
+result = Workflow().add(adapter, Agent("summariser")).run("Retrieve patient notes for Q2")
+```
+
+---
+
 ## [1.4.0] — 2026-06-01
 
 ### Multi-language ecosystem + Enterprise auth

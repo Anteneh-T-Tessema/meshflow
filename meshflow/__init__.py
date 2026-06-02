@@ -443,7 +443,7 @@ from meshflow.batch.anthropic_batch import (
     AnthropicBatchClient, BatchRequest, BatchResult, BatchJob, batch_agent_tasks,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.7.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",

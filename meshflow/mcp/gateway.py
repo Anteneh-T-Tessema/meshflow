@@ -58,11 +58,13 @@ class MCPGateway:
         self,
         budget_usd_per_turn: float = 0.05,
         on_trace: Callable[[MCPToolCall], Awaitable[None]] | None = None,
+        tool_call_interceptor: Any = None,
     ) -> None:
         self._manifests: dict[str, ToolManifest] = {}
         self._rate_limiters: dict[str, RateLimiterState] = {}  # agent_id:tool_name
         self._budget_per_turn = budget_usd_per_turn
         self._on_trace = on_trace
+        self._interceptor = tool_call_interceptor  # ToolCallInterceptor | None
         self._blocked: list[MCPToolCall] = []
         self._total_calls = 0
         self._total_cost = 0.0
@@ -144,7 +146,29 @@ class MCPGateway:
                 await self._on_trace(call)
             return call
 
-        # 5. Execute
+        # 5. ToolCallInterceptor — semantic policy check before execution
+        if self._interceptor is not None:
+            from meshflow.core.tool_intercept import ToolCallEvent
+            event = ToolCallEvent(
+                tool_name=tool_name,
+                args=params,
+                agent_id=agent_id,
+                source="mcp",
+                run_id=trace_id,
+                node_id=agent_id,
+            )
+            intercept_decision = await self._interceptor.before_call(event)
+            if not intercept_decision.allowed:
+                call.blocked = True
+                call.block_reason = f"interceptor:{intercept_decision.block_reason}"
+                self._blocked.append(call)
+                if self._on_trace:
+                    await self._on_trace(call)
+                return call
+            if intercept_decision.modified_args is not None:
+                params = intercept_decision.modified_args
+
+        # 6. Execute
         start = time.monotonic()
         try:
             result = await handler(tool_name, params)

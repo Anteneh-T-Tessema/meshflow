@@ -319,8 +319,9 @@ class TestLedgerRecords:
             asyncio.run(runtime.run(_node(f"e{i}", NodeKind.PYTHON, "x"), NodeInput(task="x"), {}))
         raw = asyncio.run(ledger.export_run("export-test"))
         parsed = json.loads(raw)
-        assert parsed["run_id"] == "export-test"
-        assert len(parsed["steps"]) == 2
+        assert isinstance(parsed, list)
+        assert len(parsed) == 2
+        assert parsed[0]["run_id"] == "export-test"
 
 
 # ── 5. WorkflowResult correctness ─────────────────────────────────────────────

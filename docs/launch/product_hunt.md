@@ -5,7 +5,7 @@
 - **Product Name**: MeshFlow
 - **Tagline**: 7 lines to a production-safe multi-agent workflow — the Stripe of agent infrastructure
 - **Topics**: Developer Tools, Artificial Intelligence, Open Source
-- **Keywords**: AI Agents, LLM Orchestration, Multi-Agent, HIPAA, SOC 2, Prompt Caching, Governance
+- **Keywords**: AI Agents, LLM Orchestration, Multi-Agent, HIPAA, SOC 2, ISO 27001, EU AI Act, Zero Trust, Governance
 
 ---
 
@@ -28,7 +28,8 @@ result = wf.run('Write a competitive analysis')
 **Slide 3 — What every run gets**
 - ✅ SHA-256 tamper-evident audit chain
 - ✅ Hard cost cap (stops before overage, not after)
-- ✅ HIPAA/SOX/GDPR compliance built-in
+- ✅ HIPAA/SOX/GDPR/ISO 27001/EU AI Act compliance built-in
+- ✅ Zero Trust: cryptographic agent identity, deny-by-default RBAC
 - ✅ Crash recovery across SQLite/Redis/Postgres/S3
 - ✅ 70–85% token cost reduction
 - ✅ Zero configuration
@@ -91,7 +92,7 @@ governed = from_crewai(your_crew)          # CrewAI
 governed = from_autogen(your_agent)        # AutoGen
 ```
 
-**Apache 2.0. Self-hostable. No platform tax. 4,616 tests passing.**
+**Apache 2.0. Self-hostable. No platform tax. 4,659 tests passing.**
 
 ---
 
@@ -124,4 +125,6 @@ We'd love to know: what's blocking your team from shipping agents to production 
 
 **GitHub:** https://github.com/Anteneh-T-Tessema/meshflow
 **Docs:** https://meshflow.dev
-**PyPI:** https://pypi.org/project/meshflow/
+**PyPI:** https://pypi.org/project/meshflow/ (v1.6.0)
+**npm:** https://www.npmjs.com/package/meshflow-sdk (v1.6.0)
+**Rust:** https://crates.io/crates/meshflow-sdk (v1.6.0)

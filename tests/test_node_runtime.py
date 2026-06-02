@@ -266,8 +266,9 @@ class TestReplayLedger:
         asyncio.run(runtime.run(_echo_node("exp"), NodeInput(task="export test"), {}))
         raw = asyncio.run(ledger.export_run("run-export"))
         parsed = json.loads(raw)
-        assert parsed["run_id"] == "run-export"
-        assert len(parsed["steps"]) == 1
+        assert isinstance(parsed, list)
+        assert len(parsed) == 1
+        assert parsed[0]["run_id"] == "run-export"
 
     def test_empty_run_summary(self):
         ledger = ReplayLedger(":memory:")
