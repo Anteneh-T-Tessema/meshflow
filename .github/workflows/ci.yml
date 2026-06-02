@@ -30,13 +30,16 @@ jobs:
           pip install -e ".[dev]"
           # aiohttp + cryptography may not be in dev extras on all platforms
           pip install "aiohttp>=3.9.0" "cryptography>=42.0.0"
+          # Ensure meshflow CLI is on PATH (pip user installs go to ~/.local/bin)
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$(python -c 'import site; print(site.getusersitepackages().replace("lib/python*/site-packages","bin") if "site-packages" in site.getusersitepackages() else "")')" >> "$GITHUB_PATH" || true
 
       - name: Run tests
         env:
           MESHFLOW_MOCK: "1"
           ANTHROPIC_API_KEY: ""
         run: |
-          python -m pytest tests/ -q --tb=short \
+          python -m pytest tests/ -q --tb=long \
             --ignore=tests/test_integration.py \
             --asyncio-mode=auto \
             -x
