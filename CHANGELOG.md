@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.8.2] — 2026-06-02
+
+### Async streaming proxy
+
+**4,737 tests passing (+6 new async streaming tests).**
+
+`MeshFlowProxy.acreate(stream=True)` now fully enforced. The async path uses proper `await` on the interceptor — no thread-pool workaround.
+
+- `_AsyncEnforcedStream` — async iterator that collects all chunks, assembles tool call args from deltas, awaits the interceptor per tool call, then re-yields the filtered stream. Blocked tool call index chunks are dropped; content chunks pass through.
+- `_SyncToAsyncStream` — wraps any sync iterable so it can be used in `async for`, enabling the sync-client fallback path in async contexts.
+- `_raw_completions_astream` — returns the raw async stream from the underlying client, wrapping sync clients via `_SyncToAsyncStream`.
+
+---
+
 ## [1.8.1] — 2026-06-02
 
 ### Streaming proxy + launch content

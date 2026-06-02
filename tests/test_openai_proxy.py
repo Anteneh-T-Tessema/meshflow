@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import pytest
+from typing import Any
 from unittest.mock import MagicMock, patch
 from meshflow.proxy.openai_proxy import (
     MeshFlowProxy,
@@ -375,3 +376,100 @@ def test_enforced_stream_on_block_callback():
     list(proxy.chat.completions.create(stream=True, model="gpt-4o", messages=[]))
     assert len(fired) == 1
     assert fired[0].tool_name == "drop_db"
+
+
+# ── Async streaming ───────────────────────────────────────────────────────────
+
+from meshflow.proxy.openai_proxy import _AsyncEnforcedStream, _SyncToAsyncStream
+
+
+async def _collect_async(ait: Any) -> list:
+    result = []
+    async for item in ait:
+        result.append(item)
+    return result
+
+
+@pytest.mark.asyncio
+async def test_sync_to_async_stream_wraps_sync_iter():
+    chunks = [_stream_chunk(content="a"), _stream_chunk(content="b")]
+    stream = _SyncToAsyncStream(iter(chunks))
+    collected = await _collect_async(stream)
+    assert len(collected) == 2
+
+
+@pytest.mark.asyncio
+async def test_async_enforced_stream_passthrough_no_interceptor():
+    chunks = [_stream_chunk(content="hi"), _stream_chunk(content=" there")]
+    proxy = MeshFlowProxy(MagicMock())
+    stream = _AsyncEnforcedStream(_SyncToAsyncStream(iter(chunks)), proxy)
+    collected = await _collect_async(stream)
+    assert len(collected) == 2
+
+
+@pytest.mark.asyncio
+async def test_async_enforced_stream_allows_tool_call():
+    tc = _stream_chunk(tool_calls=[_tc_delta(0, "search", '{"q":"ok"}', "c-1")])
+    finish = _stream_chunk(finish_reason="tool_calls")
+    chunks = [tc, finish]
+
+    proxy = MeshFlowProxy(MagicMock(), tool_call_interceptor=_allow_interceptor())
+    stream = _AsyncEnforcedStream(_SyncToAsyncStream(iter(chunks)), proxy)
+    collected = await _collect_async(stream)
+
+    assert proxy.stats()["allowed_tool_calls"] == 1
+    assert len(collected) == 2
+
+
+@pytest.mark.asyncio
+async def test_async_enforced_stream_blocks_tool_call():
+    tc = _stream_chunk(tool_calls=[_tc_delta(0, "exec_shell", '{"cmd":"rm -rf /"}', "c-1")])
+    finish = _stream_chunk(finish_reason="tool_calls")
+    chunks = [tc, finish]
+
+    proxy = MeshFlowProxy(MagicMock(), tool_call_interceptor=_deny_interceptor())
+    stream = _AsyncEnforcedStream(_SyncToAsyncStream(iter(chunks)), proxy)
+    collected = await _collect_async(stream)
+
+    assert proxy.stats()["blocked_tool_calls"] == 1
+    assert len(collected) == 1  # tc dropped, only finish yielded
+
+
+@pytest.mark.asyncio
+async def test_async_enforced_stream_on_block_callback():
+    fired: list = []
+    tc = _stream_chunk(tool_calls=[_tc_delta(0, "drop_table", '{}', "c-1")])
+    chunks = [tc, _stream_chunk(finish_reason="tool_calls")]
+
+    proxy = MeshFlowProxy(
+        MagicMock(),
+        tool_call_interceptor=_deny_interceptor(),
+        on_block=fired.append,
+    )
+    stream = _AsyncEnforcedStream(_SyncToAsyncStream(iter(chunks)), proxy)
+    await _collect_async(stream)
+
+    assert len(fired) == 1
+    assert fired[0].tool_name == "drop_table"
+
+
+@pytest.mark.asyncio
+async def test_acreate_with_stream_routes_to_async_enforced_stream():
+    """acreate(stream=True) returns an _AsyncEnforcedStream."""
+    tc = _stream_chunk(tool_calls=[_tc_delta(0, "search", '{"q":"test"}', "c-1")])
+    finish = _stream_chunk(finish_reason="tool_calls")
+
+    client = MagicMock()
+    # acreate returns a coroutine that yields an async iterable
+    from unittest.mock import AsyncMock as _AM
+    client.chat.completions.acreate = _AM(
+        return_value=_SyncToAsyncStream(iter([tc, finish]))
+    )
+
+    proxy = MeshFlowProxy(client, tool_call_interceptor=_allow_interceptor())
+    stream = await proxy.chat.completions.acreate(stream=True, model="gpt-4o", messages=[])
+
+    assert isinstance(stream, _AsyncEnforcedStream)
+    collected = await _collect_async(stream)
+    assert proxy.stats()["allowed_tool_calls"] == 1
+    assert len(collected) == 2

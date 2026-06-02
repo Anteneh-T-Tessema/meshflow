@@ -458,7 +458,7 @@ from meshflow.integrations.haystack import (
 )
 from meshflow.proxy.openai_proxy import MeshFlowProxy, ProxyToolCallEvent, ProxyDecision
 
-__version__ = "1.8.1"
+__version__ = "1.8.2"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -1092,6 +1092,9 @@ __all__ = [
     "ZeroTrustOrchestrator",
     "ZeroTrustSession",
     "ZeroTrustRunResult",
+    # ── Worker pool ───────────────────────────────────────────────────────────
+    "WorkerPool",
+    "WorkerPoolConfig",
     # ── Tool-call enforcement ─────────────────────────────────────────────────
     "ToolCallEvent",
     "ToolCallDecision",

@@ -99,7 +99,14 @@ class _ProxiedCompletions:
         return self._proxy._enforce_tool_calls(response, kwargs)
 
     async def acreate(self, **kwargs: Any) -> Any:
-        """Async create — mirrors openai.chat.completions.acreate()."""
+        """Async create — mirrors openai.chat.completions.acreate().
+
+        When ``stream=True`` returns an async iterator with enforcement applied.
+        The interceptor is awaited directly — no thread-pool hack needed.
+        """
+        if kwargs.get("stream"):
+            raw_stream = await self._proxy._raw_completions_astream(**kwargs)
+            return _AsyncEnforcedStream(raw_stream, self._proxy)
         response = await self._proxy._raw_completions_acreate(**kwargs)
         return self._proxy._enforce_tool_calls(response, kwargs)
 
@@ -160,11 +167,23 @@ class MeshFlowProxy:
         client = self._get_client()
         if hasattr(client.chat.completions, "acreate"):
             return await client.chat.completions.acreate(**kwargs)
-        # Fallback: run sync in executor
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None, lambda: client.chat.completions.create(**kwargs)
         )
+
+    async def _raw_completions_astream(self, **kwargs: Any) -> Any:
+        """Return an async-iterable stream from the underlying client."""
+        client = self._get_client()
+        # openai SDK v1+ — AsyncOpenAI has async_generator via stream context manager
+        if hasattr(client.chat.completions, "acreate"):
+            return await client.chat.completions.acreate(**kwargs)
+        # Sync client fallback: run in executor and wrap in async iterator
+        loop = asyncio.get_event_loop()
+        sync_stream = await loop.run_in_executor(
+            None, lambda: client.chat.completions.create(**kwargs)
+        )
+        return _SyncToAsyncStream(sync_stream)
 
     # ── Streaming enforcement ─────────────────────────────────────────────────
 
@@ -343,6 +362,97 @@ class _EnforcedStream:
             return chunk.choices[0].delta.tool_calls[0].index
         except Exception:
             return 0
+
+
+class _SyncToAsyncStream:
+    """Wraps a sync iterable so it can be used in ``async for``."""
+
+    def __init__(self, sync_iter: Any) -> None:
+        self._iter = iter(sync_iter)
+
+    def __aiter__(self) -> "Any":
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+class _AsyncEnforcedStream:
+    """Async iterator wrapper — enforces tool calls from an async streaming response.
+
+    Mirrors ``_EnforcedStream`` but is a proper async generator so the
+    interceptor is awaited directly rather than run via a thread pool.
+    """
+
+    def __init__(self, raw_stream: Any, proxy: "MeshFlowProxy") -> None:
+        self._raw = raw_stream
+        self._proxy = proxy
+
+    def __aiter__(self) -> "Any":
+        return self._aiter_impl()
+
+    async def _aiter_impl(self) -> Any:
+        chunks: list[Any] = []
+        async for chunk in self._raw:
+            chunks.append(chunk)
+
+        blocked_indices = await self._compute_blocked_indices(chunks)
+
+        for chunk in chunks:
+            if _EnforcedStream._is_tool_call_chunk(chunk):
+                if _EnforcedStream._chunk_tc_index(chunk) in blocked_indices:
+                    continue
+            yield chunk
+
+    async def _compute_blocked_indices(self, chunks: list[Any]) -> set[int]:
+        if self._proxy._interceptor is None:
+            return set()
+
+        assembled = _assemble_tool_calls_from_chunks(chunks)
+        if not assembled:
+            return set()
+
+        blocked: set[int] = set()
+        for idx, tc in assembled.items():
+            name = tc.get("name", "")
+            args_str = tc.get("arguments", "{}")
+            import json as _json
+            try:
+                args = _json.loads(args_str)
+            except Exception:
+                args = {"_raw": args_str}
+
+            from meshflow.core.tool_intercept import ToolCallEvent
+            event = ToolCallEvent(
+                tool_name=name,
+                args=args,
+                agent_id=self._proxy._agent_id,
+                call_id=tc.get("id", str(idx)),
+                source="proxy_async_stream",
+            )
+            decision = await self._proxy._interceptor.before_call(event)
+
+            proxy_event = ProxyToolCallEvent(
+                tool_name=name,
+                args=args,
+                call_id=tc.get("id", str(idx)),
+                agent_id=self._proxy._agent_id,
+            )
+            if decision.allowed:
+                self._proxy._allowed.append(proxy_event)
+            else:
+                self._proxy._blocked.append(proxy_event)
+                blocked.add(idx)
+                if self._proxy._on_block:
+                    try:
+                        self._proxy._on_block(proxy_event)
+                    except Exception:
+                        pass
+
+        return blocked
 
 
 class _ProxiedResponse:
