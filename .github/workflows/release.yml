@@ -28,8 +28,7 @@ jobs:
           MESHFLOW_MOCK: "1"
         run: |
           python -m pytest tests/ --tb=short -q \
-            --ignore=tests/test_integration.py \
-            --asyncio-mode=auto
+            --ignore=tests/test_integration.py
 
       - name: Verify version matches tag
         run: |

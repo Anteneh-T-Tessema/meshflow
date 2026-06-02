@@ -38,22 +38,21 @@ jobs:
         run: |
           python --version
           which meshflow || echo "meshflow not in PATH"
-          python -c "import meshflow; print('meshflow OK', meshflow.__version__)" 2>&1
-          python -c "import pytest_asyncio; print('pytest_asyncio', pytest_asyncio.__version__)" 2>&1
-          # Test collection only to surface import errors
+          python -c "import meshflow; print('meshflow OK', meshflow.__version__)"
+          python -c "import pytest_asyncio; print('pytest_asyncio', pytest_asyncio.__version__)"
+          # Validate test collection (no asyncio-mode flag - let pyproject.toml handle it)
           MESHFLOW_MOCK=1 python -m pytest tests/ --collect-only -q \
-            --ignore=tests/test_integration.py \
-            --asyncio-mode=auto 2>&1 | tail -20
+            --ignore=tests/test_integration.py 2>&1 | tail -5
 
       - name: Run tests
         env:
           MESHFLOW_MOCK: "1"
           ANTHROPIC_API_KEY: ""
         run: |
+          set -o pipefail
           python -m pytest tests/ --tb=long \
             --ignore=tests/test_integration.py \
-            --asyncio-mode=auto \
-            -x 2>&1 | tee /tmp/test_out.txt; true
+            -x 2>&1 | tee /tmp/test_out.txt
 
       - name: Upload test output
         if: failure()
