@@ -59,9 +59,13 @@ jobs:
         run: |
           echo "## Test Failure Output (Python ${{ matrix.python-version }})" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          tail -200 /tmp/test_out.txt >> "$GITHUB_STEP_SUMMARY" || echo "no test output file" >> "$GITHUB_STEP_SUMMARY"
+          tail -100 /tmp/test_out.txt >> "$GITHUB_STEP_SUMMARY" || echo "no test output file" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          tail -200 /tmp/test_out.txt || echo "no test output file"
+          # Emit ::error annotations so they appear in PR checks
+          grep -E "^FAILED" /tmp/test_out.txt | while IFS= read -r line; do
+            echo "::error::$line"
+          done || true
+          tail -100 /tmp/test_out.txt || echo "no test output file"
 
       - name: Save test tail on failure
         if: failure()
