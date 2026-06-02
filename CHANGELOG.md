@@ -5,6 +5,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.9.3] — 2026-06-02
+
+### Extended thinking + always-on prompt caching + cache metrics
+
+**4,720+ tests passing.**
+
+#### Extended thinking — `Agent(thinking=True, thinking_budget=N)`
+
+Claude's extended thinking is now a first-class feature. Enable it per-agent:
+
+```python
+agent = Agent(
+    name="reasoner",
+    model="claude-opus-4-8",
+    thinking=True,
+    thinking_budget=8000,   # tokens Claude can spend on internal reasoning
+)
+result = await agent.run("Prove why prompt caching saves 70-85% on token costs")
+# result["thinking_summary"] — concise synopsis of Claude's chain of thought
+# result["thinking_tokens"] — tokens consumed by the thinking block
+```
+
+- Thinking tokens are tracked in `StepRecord.metadata["thinking_tokens"]`
+- Governed by the same cost-cap and budget controls as regular tokens
+- Falls back gracefully when the model doesn't support thinking
+
+#### Always-on prompt caching
+
+Prompt caching now applies automatically for all Anthropic calls — no
+`OptimizationTracker` required. Cache breakpoints are inserted whenever the
+system prompt exceeds 1 024 tokens (the minimum cacheable unit).
+
+#### Cache hit-rate metrics
+
+`StepRecord.metadata` now carries `cache_creation_tokens` and
+`cache_read_tokens` from every Anthropic response. The cloud reporter's
+previously-TODO `cache_hit_rate` field is now computed from actual step data.
+
+```python
+from meshflow.cloud.reporter import CloudReporter
+report = CloudReporter().report(run_id="run-xyz")
+print(report["cache_hit_rate"])   # e.g. 0.83
+```
+
+#### CI / runtime fixes (backported to this release)
+
+- `cryptography>=42.0.0` promoted to runtime dependency (was missing from `dependencies`)
+- `opentelemetry-api/sdk` added to `[dev]` extras so telemetry tests run without the optional `[otel]` install
+- `JWKSCache._fetched_at` sentinel changed from `0.0` to `float("-inf")` — fixes OIDC TTL check on fresh CI runners with low `time.monotonic()` values
+- Zero Trust Gate rewired to use local repo code; Cost Regression Gate `.venv/bin/python` replaced with `python`
+
+---
+
 ## [1.9.2] — 2026-06-02
 
 ### Publishing infrastructure — Smithery, Docker, README, checklist

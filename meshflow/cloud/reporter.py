@@ -44,6 +44,14 @@ if TYPE_CHECKING:
 _DEFAULT_ENDPOINT = "https://meshflow.dev/api/ingest/run"
 
 
+def _cache_hit_rate(result: "RunResult") -> float:
+    """Fraction of input tokens served from the Anthropic prompt cache."""
+    read = getattr(result, "cache_read_tokens", 0) or 0
+    created = getattr(result, "cache_creation_tokens", 0) or 0
+    total = read + created
+    return round(read / total, 4) if total else 0.0
+
+
 def _zt_status_payload() -> dict[str, Any]:
     """Snapshot the current Zero Trust posture for telemetry."""
     try:
@@ -115,7 +123,7 @@ def report_run(
         "agent_count":              agent_count,
         "total_cost_usd":           round(result.total_cost_usd, 6),
         "total_tokens":             result.total_tokens,
-        "cache_hit_rate":           0.0,   # TODO: wire when StepRuntime tracks cache reads
+        "cache_hit_rate":           _cache_hit_rate(result),
         "policy":                   policy_mode,
         "compliance":               compliance,
         "status":                   status_str,

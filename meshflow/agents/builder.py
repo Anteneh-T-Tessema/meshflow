@@ -112,6 +112,8 @@ class _BuiltAgent(BaseAgent):
         self._output_stack = GuardrailStack(output_guardrails or [], mode="strict")
         self._model_router: Any = None    # set by Agent._build() when model_router= is given
         self._context_pruner: Any = None  # set by Agent._build() when context_pruner= is given
+        self._thinking: bool = False      # set by Agent._build() when thinking= is given
+        self._thinking_budget: int = 2000
         if knowledge:
             from meshflow.intelligence.knowledge import AgentKnowledge
             self._knowledge: Any = AgentKnowledge(knowledge)
@@ -139,6 +141,23 @@ class _BuiltAgent(BaseAgent):
     def recall(self, query: str, top_k: int = 3) -> list[str]:
         """Retrieve relevant memories by semantic similarity."""
         return self._memory.recall(query, top_k=top_k)
+
+    async def _think_extended(
+        self,
+        messages: list[dict[str, Any]],
+        model_override: str | None = None,
+    ) -> tuple[str, int, float, str, int]:
+        """Call AnthropicProvider.complete_with_thinking(); fall back to think() for other providers."""
+        from meshflow.agents.base import AnthropicProvider
+        model = model_override or self.config.model
+        sys = self.config.system_prompt
+        if isinstance(self._provider, AnthropicProvider):
+            return await self._provider.complete_with_thinking(
+                model, messages, sys, self.config.max_tokens, self._thinking_budget
+            )
+        # Non-Anthropic provider: fall back to regular think()
+        content, tokens, cost = await self.think(messages, model_override=model_override)
+        return content, tokens, cost, "", 0
 
     async def run_typed(
         self,
@@ -269,6 +288,9 @@ class _BuiltAgent(BaseAgent):
             except Exception:
                 pass  # best-effort
 
+        thinking_summary = ""
+        thinking_tokens = 0
+
         if self._tools:
             tool_schemas = [_build_tool_schema(t) for t in self._tools if hasattr(t, "name")]
             tool_fns = {
@@ -277,8 +299,15 @@ class _BuiltAgent(BaseAgent):
             content, tokens, cost = await self.think_with_tools(
                 messages, tool_schemas, tool_fns, model_override=model_override
             )
+        elif self._thinking:
+            content, tokens, cost, thinking_summary, thinking_tokens = (
+                await self._think_extended(messages, model_override=model_override)
+            )
         else:
             content, tokens, cost = await self.think(messages, model_override=model_override)
+
+        from meshflow.agents.base import get_cache_stats
+        cache_stats = get_cache_stats()
 
         confidence, content = _extract_confidence(content)
 
@@ -305,7 +334,7 @@ class _BuiltAgent(BaseAgent):
             self._memory.add(content, metadata={"task": task[:100], "confidence": confidence})
             self._persist_memory()
 
-        return {
+        result: dict[str, Any] = {
             "result": content,
             "agent_name": self.config.agent_id,
             "role": self.config.role.value,
@@ -315,6 +344,13 @@ class _BuiltAgent(BaseAgent):
             "blocked": False,
             "guardrail_results": guardrail_results,
         }
+        if thinking_summary:
+            result["thinking_summary"] = thinking_summary
+            result["thinking_tokens"] = thinking_tokens
+        if cache_stats:
+            result["cache_creation_tokens"] = cache_stats.get("cache_creation_tokens", 0)
+            result["cache_read_tokens"] = cache_stats.get("cache_read_tokens", 0)
+        return result
 
 
 @dataclass
@@ -390,6 +426,8 @@ class Agent:
     provider: Any = None         # low-level escape hatch; prefer llm=
     model_router: Any = None     # ModelRouter — auto-selects model tier per task
     context_pruner: Any = None   # SlidingWindowPruner | SummaryPruner — auto-prunes context
+    thinking: bool = False        # enable Claude extended thinking
+    thinking_budget: int = 2000   # max tokens Claude may spend on internal reasoning
     mode: str = "production"
     _prebuilt_node: Any = field(default=None, init=False, repr=False)
 
@@ -506,9 +544,11 @@ class Agent:
             memory_backend=self._resolve_memory_backend(),
             memory_session_id=self.memory_session_id or self.name,
         )
-        # Attach optional model router and context pruner
+        # Attach optional model router, context pruner, and thinking config
         built._model_router = self.model_router
         built._context_pruner = self.context_pruner
+        built._thinking = self.thinking
+        built._thinking_budget = self.thinking_budget
 
         # Wrap the fully-resolved provider with cache AFTER BaseAgent.__init__ sets it
         if self.cache is not None and self.cache is not False:

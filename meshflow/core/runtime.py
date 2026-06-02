@@ -186,6 +186,8 @@ class StepRuntime:
         self._zero_trust = zero_trust  # ZeroTrustOrchestrator | None
         self.tool_call_interceptor = tool_call_interceptor  # ToolCallInterceptor | None
         self._prev_hash = ""  # grows with each committed record
+        self._cache_read_tokens: int = 0       # accumulated across all steps in the run
+        self._cache_creation_tokens: int = 0   # accumulated across all steps in the run
         # SIEM streamer — lazy-loaded when ZT Advanced siem_streaming is active
         self._siem: Any = None
         if zero_trust is not None:
@@ -518,6 +520,30 @@ class StepRuntime:
         ):
             _step_tool_calls = self.tool_call_interceptor.audit_log()[_tool_log_cursor:]
 
+        # Collect cache stats from the Anthropic provider (no-op for other providers)
+        try:
+            from meshflow.agents.base import get_cache_stats, reset_cache_stats
+            _cache = get_cache_stats()
+            reset_cache_stats()
+        except Exception:
+            _cache = {}
+
+        _meta: dict[str, Any] = {}
+        if _step_tool_calls:
+            _meta["tool_calls"] = _step_tool_calls
+        _cr = _cache.get("cache_read_tokens", 0)
+        _cc = _cache.get("cache_creation_tokens", 0)
+        if _cc:
+            _meta["cache_creation_tokens"] = _cc
+            self._cache_creation_tokens += _cc
+        if _cr:
+            _meta["cache_read_tokens"] = _cr
+            self._cache_read_tokens += _cr
+        # Thinking tokens forwarded from NodeOutput.metadata
+        _think_tok = output.metadata.get("thinking_tokens", 0)
+        if _think_tok:
+            _meta["thinking_tokens"] = _think_tok
+
         record = StepRecord(
             run_id=self._run_id,
             step_id=step_id,
@@ -535,7 +561,7 @@ class StepRuntime:
             duration_ms=duration_ms,
             timestamp=_now_iso(),
             prev_hash=self._prev_hash,
-            metadata={"tool_calls": _step_tool_calls} if _step_tool_calls else {},
+            metadata=_meta,
         )
         # Advance the chain pointer for the next record
         self._prev_hash = record.entry_hash

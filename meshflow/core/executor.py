@@ -62,6 +62,8 @@ class StepOutcome:
     human_context: dict[str, Any] | None = None
     dasc_verdict: str = "commit"
     collusion_alerts: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
 
 class GovernedStepExecutor:
@@ -319,6 +321,8 @@ class GovernedStepExecutor:
             paused_for_human=paused,
             human_context=human_ctx,
             dasc_verdict=dasc_verdict,
+            cache_read_tokens=int(result.get("cache_read_tokens") or 0),
+            cache_creation_tokens=int(result.get("cache_creation_tokens") or 0),
         )
 
     def _record_telemetry(

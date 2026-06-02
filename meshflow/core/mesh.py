@@ -314,6 +314,8 @@ class Mesh:
         checkpoint_ids: list[str] = []
         total_tokens = 0
         total_cost = 0.0
+        total_cache_read = 0
+        total_cache_creation = 0
         all_outcomes: list[StepOutcome] = []
 
         # Define the governed pipeline order
@@ -328,6 +330,8 @@ class Mesh:
             event_type = "step_complete" if outcome.ok else "step_blocked"
             total_tokens += outcome.tokens
             total_cost += outcome.cost_usd
+            total_cache_read += outcome.cache_read_tokens
+            total_cache_creation += outcome.cache_creation_tokens
 
             yield MeshEvent(
                 event_type=event_type,
@@ -426,6 +430,8 @@ class Mesh:
             error=error,
             collusion_alerts=len(collusion_alerts),
             drift_alerts=0,
+            cache_read_tokens=total_cache_read,
+            cache_creation_tokens=total_cache_creation,
         )
 
         yield MeshEvent(

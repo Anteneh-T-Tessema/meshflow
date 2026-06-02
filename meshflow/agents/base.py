@@ -122,12 +122,66 @@ def _require_anthropic() -> Any:
         ) from exc
 
 
+_CACHE_MIN_CHARS = 1024  # Anthropic requires ≥1 024 tokens to cache; rough char proxy
+
+# ContextVar that accumulates cache token stats for the current step
+_cache_stats: contextvars.ContextVar[dict[str, int]] = contextvars.ContextVar(
+    "_cache_stats", default={}
+)
+
+
+def _record_cache_usage(usage: Any) -> None:
+    """Pull cache token counts from the Anthropic usage object into the ContextVar."""
+    try:
+        created = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        if created or read:
+            try:
+                stats = dict(_cache_stats.get())
+            except LookupError:
+                stats = {}
+            stats["cache_creation_tokens"] = stats.get("cache_creation_tokens", 0) + created
+            stats["cache_read_tokens"] = stats.get("cache_read_tokens", 0) + read
+            _cache_stats.set(stats)
+    except Exception:
+        pass
+
+
+def get_cache_stats() -> dict[str, int]:
+    """Return accumulated cache token counts for the current context."""
+    try:
+        return dict(_cache_stats.get())
+    except LookupError:
+        return {}
+
+
+def reset_cache_stats() -> contextvars.Token[dict[str, int]]:
+    """Reset cache stats and return a token to restore the previous value."""
+    return _cache_stats.set({})
+
+
 class AnthropicProvider(LLMProvider):
-    """Default provider — uses the Anthropic Python SDK with real tool dispatch."""
+    """Default provider — uses the Anthropic Python SDK with real tool dispatch.
+
+    Prompt caching is always enabled for system prompts longer than
+    ``_CACHE_MIN_CHARS`` characters. Cache hit/creation token counts are
+    accumulated in the ``_cache_stats`` ContextVar so the caller can read
+    them via ``get_cache_stats()``.
+    """
 
     def __init__(self) -> None:
         anthropic = _require_anthropic()
         self._client = anthropic.AsyncAnthropic()
+
+    @staticmethod
+    def _cache_system(system: str) -> tuple[Any, dict[str, str]]:
+        """Return (system_param, extra_headers) with cache_control when system is long enough."""
+        if len(system) >= _CACHE_MIN_CHARS:
+            return (
+                [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                {"anthropic-beta": "prompt-caching-2024-07-31"},
+            )
+        return system, {}
 
     async def complete(
         self,
@@ -140,30 +194,27 @@ class AnthropicProvider(LLMProvider):
         if response_format == "json":
             system = (system + "\n\nRespond with valid JSON only. No prose before or after the JSON.").strip()
 
-        system_param: Any = system
-        extra_headers = None
+        system_param, extra_headers = self._cache_system(system)
 
         from meshflow.optimization.tracker import active_tracker
         tracker = active_tracker.get()
-        if tracker is not None and system:
-            system_param = [
-                {
-                    "type": "text",
-                    "text": system,
-                    "cache_control": {"type": "ephemeral"}
-                }
-            ]
-            extra_headers = {"anthropic-beta": "prompt-caching-2024-07-31"}
+        if tracker is not None:
+            sys_str, msgs = tracker.compress_prompt(
+                system if isinstance(system_param, str) else system, messages
+            )
+            if isinstance(system_param, str) and sys_str != system:
+                system_param, extra_headers = self._cache_system(sys_str)
 
         response = await self._client.messages.create(
             model=model,
             max_tokens=max_tokens,
             system=system_param,
             messages=cast(Any, messages),
-            extra_headers=extra_headers,
+            extra_headers=extra_headers or None,
         )
         first = cast(Any, response.content[0]) if response.content else None
         content = str(getattr(first, "text", "")) if first else ""
+        _record_cache_usage(response.usage)
         cost = _cost_usd(model, response.usage.input_tokens, response.usage.output_tokens)
         total = response.usage.input_tokens + response.usage.output_tokens
         return content, total, cost
@@ -181,25 +232,11 @@ class AnthropicProvider(LLMProvider):
         total_in = total_out = 0
         max_rounds = 10
 
-        system_param: Any = system
-        extra_headers = None
+        system_param, extra_headers = self._cache_system(system)
         current_tool_schemas = tool_schemas
-
-        from meshflow.optimization.tracker import active_tracker
-        tracker = active_tracker.get()
-        if tracker is not None:
-            extra_headers = {"anthropic-beta": "prompt-caching-2024-07-31"}
-            if system:
-                system_param = [
-                    {
-                        "type": "text",
-                        "text": system,
-                        "cache_control": {"type": "ephemeral"}
-                    }
-                ]
-            if tool_schemas:
-                current_tool_schemas = [dict(t) for t in tool_schemas]
-                current_tool_schemas[-1]["cache_control"] = {"type": "ephemeral"}
+        if tool_schemas and extra_headers:
+            current_tool_schemas = [dict(t) for t in tool_schemas]
+            current_tool_schemas[-1]["cache_control"] = {"type": "ephemeral"}
 
         for _ in range(max_rounds):
             response = await self._client.messages.create(
@@ -208,10 +245,11 @@ class AnthropicProvider(LLMProvider):
                 system=system_param,
                 messages=cast(Any, msgs),
                 tools=cast(Any, current_tool_schemas),
-                extra_headers=extra_headers,
+                extra_headers=extra_headers or None,
             )
             total_in += response.usage.input_tokens
             total_out += response.usage.output_tokens
+            _record_cache_usage(response.usage)
 
             # Cast the entire content list to Any so mypy doesn't complain about
             # union-attr on the specific block subtypes we've already filtered.
@@ -256,6 +294,60 @@ class AnthropicProvider(LLMProvider):
             total_in + total_out,
             _cost_usd(model, total_in, total_out),
         )
+
+    async def complete_with_thinking(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        thinking_budget: int,
+    ) -> tuple[str, int, float, str, int]:
+        """Run the model with extended thinking enabled.
+
+        Returns (content, total_tokens, cost_usd, thinking_summary, thinking_tokens).
+        Falls back to regular complete() when the model does not support thinking.
+        """
+        system_param, extra_headers = self._cache_system(system)
+        # Extended thinking requires a separate beta header
+        headers = {"anthropic-beta": "interleaved-thinking-2025-05-14"}
+        if extra_headers:
+            headers.update(extra_headers)
+
+        try:
+            response = await self._client.messages.create(
+                model=model,
+                max_tokens=max(max_tokens, thinking_budget + 1024),
+                system=system_param,
+                messages=cast(Any, messages),
+                thinking={"type": "enabled", "budget_tokens": thinking_budget},
+                extra_headers=headers,
+            )
+        except Exception:
+            # Fallback: model doesn't support thinking or API error
+            content, tokens, cost = await self.complete(
+                model, messages, system, max_tokens
+            )
+            return content, tokens, cost, "", 0
+
+        _record_cache_usage(response.usage)
+        content_blocks: list[Any] = cast(Any, response.content)
+        thinking_text = ""
+        thinking_tokens = 0
+        final_text = ""
+        for block in content_blocks:
+            btype = getattr(block, "type", "")
+            if btype == "thinking":
+                thinking_text = getattr(block, "thinking", "") or ""
+                thinking_tokens += len(thinking_text.split())  # approx
+            elif btype == "text":
+                final_text += getattr(block, "text", "")
+
+        total = response.usage.input_tokens + response.usage.output_tokens
+        cost = _cost_usd(model, response.usage.input_tokens, response.usage.output_tokens)
+        # Condense thinking to first 300 chars for the summary field
+        thinking_summary = thinking_text[:300].strip()
+        return final_text, total, cost, thinking_summary, thinking_tokens
 
     async def stream_complete(
         self,

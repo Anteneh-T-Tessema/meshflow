@@ -265,6 +265,8 @@ class RunResult:
     human_approvals_required: int = 0
     collusion_alerts: int = 0
     drift_alerts: int = 0
+    cache_read_tokens: int = 0       # tokens served from Anthropic prompt cache
+    cache_creation_tokens: int = 0   # tokens written to Anthropic prompt cache
 
 
 # ── Policy ────────────────────────────────────────────────────────────────────
