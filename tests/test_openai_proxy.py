@@ -228,3 +228,150 @@ def test_proxied_response_forwards_unknown_attrs():
 def test_proxy_importable_from_meshflow():
     from meshflow import MeshFlowProxy as _P
     assert _P is MeshFlowProxy
+
+
+# ── Streaming ─────────────────────────────────────────────────────────────────
+
+from meshflow.proxy.openai_proxy import _EnforcedStream, _assemble_tool_calls_from_chunks
+
+
+def _stream_chunk(content: str | None = None, tool_calls: list | None = None,
+                  finish_reason: str | None = None) -> MagicMock:
+    """Build a mock streaming chunk."""
+    chunk = MagicMock()
+    delta = MagicMock()
+    delta.content = content
+    delta.tool_calls = tool_calls
+    choice = MagicMock()
+    choice.delta = delta
+    choice.finish_reason = finish_reason
+    chunk.choices = [choice]
+    return chunk
+
+
+def _tc_delta(index: int, name: str = "", args_fragment: str = "",
+              call_id: str = "") -> MagicMock:
+    """Build a mock tool call delta."""
+    tc = MagicMock()
+    tc.index = index
+    tc.id = call_id
+    fn = MagicMock()
+    fn.name = name
+    fn.arguments = args_fragment
+    tc.function = fn
+    return tc
+
+
+def test_assemble_tool_calls_single_call():
+    chunks = [
+        _stream_chunk(tool_calls=[_tc_delta(0, "search", '{"q":', "call-1")]),
+        _stream_chunk(tool_calls=[_tc_delta(0, "", '"hello"}')]),
+        _stream_chunk(finish_reason="tool_calls"),
+    ]
+    assembled = _assemble_tool_calls_from_chunks(chunks)
+    assert assembled[0]["name"] == "search"
+    assert assembled[0]["id"] == "call-1"
+    assert assembled[0]["arguments"] == '{"q":"hello"}'
+
+
+def test_assemble_tool_calls_two_parallel_calls():
+    chunks = [
+        _stream_chunk(tool_calls=[_tc_delta(0, "search", '{"q":', "c-1"),
+                                   _tc_delta(1, "read", '{"p":', "c-2")]),
+        _stream_chunk(tool_calls=[_tc_delta(0, "", '"hi"}'),
+                                   _tc_delta(1, "", '"/tmp"}')]),
+    ]
+    assembled = _assemble_tool_calls_from_chunks(chunks)
+    assert assembled[0]["name"] == "search"
+    assert assembled[1]["name"] == "read"
+    assert assembled[1]["arguments"] == '{"p":"/tmp"}'
+
+
+def test_assemble_ignores_content_chunks():
+    chunks = [
+        _stream_chunk(content="Hello"),
+        _stream_chunk(content=" world"),
+        _stream_chunk(finish_reason="stop"),
+    ]
+    assembled = _assemble_tool_calls_from_chunks(chunks)
+    assert assembled == {}
+
+
+def test_enforced_stream_passthrough_no_interceptor():
+    chunks = [
+        _stream_chunk(content="hi"),
+        _stream_chunk(content=" there"),
+    ]
+    proxy = MeshFlowProxy(MagicMock())
+    stream = _EnforcedStream(iter(chunks), proxy)
+    yielded = list(stream)
+    assert len(yielded) == 2
+
+
+def test_enforced_stream_allows_tool_call():
+    tc_chunk = _stream_chunk(tool_calls=[_tc_delta(0, "search", '{"q":"ok"}', "c-1")])
+    finish = _stream_chunk(finish_reason="tool_calls")
+    chunks = [tc_chunk, finish]
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = iter(chunks)
+    proxy = MeshFlowProxy(client, tool_call_interceptor=_allow_interceptor())
+
+    yielded = list(proxy.chat.completions.create(stream=True, model="gpt-4o", messages=[]))
+    assert proxy.stats()["allowed_tool_calls"] == 1
+    assert proxy.stats()["blocked_tool_calls"] == 0
+    # Both chunks (tc + finish) should be yielded
+    assert len(yielded) == 2
+
+
+def test_enforced_stream_blocks_tool_call():
+    tc_chunk = _stream_chunk(tool_calls=[_tc_delta(0, "exec_shell", '{"cmd":"rm -rf /"}', "c-1")])
+    finish = _stream_chunk(finish_reason="tool_calls")
+    chunks = [tc_chunk, finish]
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = iter(chunks)
+    proxy = MeshFlowProxy(client, tool_call_interceptor=_deny_interceptor())
+
+    yielded = list(proxy.chat.completions.create(stream=True, model="gpt-4o", messages=[]))
+    assert proxy.stats()["blocked_tool_calls"] == 1
+    # Tool call chunk dropped; only finish chunk yielded
+    assert len(yielded) == 1
+
+
+def test_enforced_stream_mixed_content_and_tool_calls():
+    """Content chunks pass through; blocked tool call chunk is dropped."""
+    text1 = _stream_chunk(content="I'll search for")
+    text2 = _stream_chunk(content=" that.")
+    tc_block = _stream_chunk(tool_calls=[_tc_delta(0, "exec_shell", '{}', "c-bad")])
+    tc_allow = _stream_chunk(tool_calls=[_tc_delta(1, "search", '{"q":"safe"}', "c-ok")])
+    finish = _stream_chunk(finish_reason="tool_calls")
+    chunks = [text1, text2, tc_block, tc_allow, finish]
+
+    interceptor = AllowListInterceptor(["search"])
+    client = MagicMock()
+    client.chat.completions.create.return_value = iter(chunks)
+    proxy = MeshFlowProxy(client, tool_call_interceptor=interceptor)
+
+    yielded = list(proxy.chat.completions.create(stream=True, model="gpt-4o", messages=[]))
+    assert proxy.stats()["blocked_tool_calls"] == 1
+    assert proxy.stats()["allowed_tool_calls"] == 1
+    # text1, text2, tc_allow, finish — tc_block dropped
+    assert len(yielded) == 4
+
+
+def test_enforced_stream_on_block_callback():
+    fired: list = []
+    tc_chunk = _stream_chunk(tool_calls=[_tc_delta(0, "drop_db", '{}', "c-1")])
+    chunks = [tc_chunk, _stream_chunk(finish_reason="tool_calls")]
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = iter(chunks)
+    proxy = MeshFlowProxy(
+        client,
+        tool_call_interceptor=_deny_interceptor(),
+        on_block=fired.append,
+    )
+    list(proxy.chat.completions.create(stream=True, model="gpt-4o", messages=[]))
+    assert len(fired) == 1
+    assert fired[0].tool_name == "drop_db"

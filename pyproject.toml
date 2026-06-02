@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meshflow"
-version = "1.8.0"
+version = "1.8.1"
 description = "The production-safe infrastructure layer for multi-agent systems — Zero Trust built in, HIPAA/SOX/GDPR compliance, SHA-256 audit chain, hard cost caps, 70-85% token savings. 7 lines to ship."
 readme = "README.md"
 requires-python = ">=3.11"

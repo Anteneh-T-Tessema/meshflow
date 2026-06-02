@@ -5,6 +5,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.8.1] — 2026-06-02
+
+### Streaming proxy + launch content
+
+**4,731 tests passing (+8 new streaming tests).**
+
+#### MeshFlowProxy streaming support
+
+`MeshFlowProxy` now intercepts `stream=True` completions.
+
+```python
+# Streaming works — tool call enforcement applies to streamed responses too
+for chunk in client.chat.completions.create(stream=True, model="gpt-4o", messages=[...]):
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+Strategy: buffer all chunks, assemble complete tool call args from deltas (partial fragments can't be enforced reliably), run interceptor, re-yield — passing content chunks through immediately and dropping chunks belonging to blocked tool call indices. The `on_block` callback fires for blocked streaming tool calls exactly as it does for non-streaming.
+
+`_assemble_tool_calls_from_chunks` — helper that reconstructs `{index: {id, name, arguments}}` from delta fragments across multiple chunks. Handles parallel tool calls (multiple indices), fragmented argument strings, and chunks without tool call data.
+
+#### Launch content
+
+- `docs/launch/twitter_thread.md` — 9-tweet launch thread, ready to post
+- `docs/community/discord_announcement.md` — #announcements pin, #general conversation starter, #showcase seeds, #roadmap-feedback discussion prompts, week-1 daily tip schedule
+
+---
+
 ## [1.8.0] — 2026-06-02
 
 ### Wire-level proxy, ModelRouter for all frameworks, launch

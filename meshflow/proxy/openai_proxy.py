@@ -85,7 +85,16 @@ class _ProxiedCompletions:
         self._proxy = proxy
 
     def create(self, **kwargs: Any) -> Any:
-        """Synchronous create — mirrors openai.chat.completions.create()."""
+        """Synchronous create — mirrors openai.chat.completions.create().
+
+        When ``stream=True`` the proxy buffers all chunks, assembles tool calls,
+        enforces policy, then re-yields the filtered stream.  Text content
+        chunks are passed through unmodified; tool call chunks for blocked
+        calls are silently dropped.
+        """
+        if kwargs.get("stream"):
+            raw_stream = self._proxy._raw_completions_create(**kwargs)
+            return self._proxy._enforce_stream(raw_stream)
         response = self._proxy._raw_completions_create(**kwargs)
         return self._proxy._enforce_tool_calls(response, kwargs)
 
@@ -156,6 +165,22 @@ class MeshFlowProxy:
         return await loop.run_in_executor(
             None, lambda: client.chat.completions.create(**kwargs)
         )
+
+    # ── Streaming enforcement ─────────────────────────────────────────────────
+
+    def _enforce_stream(self, raw_stream: Any) -> "_EnforcedStream":
+        """Buffer a streaming response, enforce tool calls, return filtered stream.
+
+        Strategy: collect every chunk; when the stream ends, assemble complete
+        tool calls from deltas, run the interceptor, then re-yield chunks —
+        passing content chunks through and dropping chunks that belong to
+        blocked tool call indices.
+
+        This preserves the streaming interface the caller expects while
+        guaranteeing enforcement happens on complete, assembled tool call args
+        (not on partial delta fragments where enforcement would be unreliable).
+        """
+        return _EnforcedStream(raw_stream, self)
 
     # ── Enforcement ───────────────────────────────────────────────────────────
 
@@ -235,6 +260,91 @@ class MeshFlowProxy:
 
 # ── Response wrapper ──────────────────────────────────────────────────────────
 
+class _EnforcedStream:
+    """Iterator wrapper that buffers a streaming response, enforces tool calls,
+    then re-yields only allowed chunks.
+
+    Content (text) chunks are passed through immediately.
+    Tool call delta chunks are buffered until the stream ends; the assembled
+    tool calls are then evaluated by the interceptor and only allowed ones
+    are re-yielded.
+    """
+
+    def __init__(self, raw_stream: Any, proxy: "MeshFlowProxy") -> None:
+        self._raw = raw_stream
+        self._proxy = proxy
+        self._chunks: list[Any] = []
+        self._blocked_indices: set[int] = set()
+        self._consumed = False
+
+    def __iter__(self) -> "Any":
+        chunks = list(self._raw)
+        self._chunks = chunks
+        blocked_indices = self._compute_blocked_indices(chunks)
+        for chunk in chunks:
+            if self._is_tool_call_chunk(chunk):
+                tc_index = self._chunk_tc_index(chunk)
+                if tc_index in blocked_indices:
+                    continue  # drop this chunk
+            yield chunk
+
+    def __next__(self) -> Any:
+        raise StopIteration
+
+    def _compute_blocked_indices(self, chunks: list[Any]) -> set[int]:
+        """Assemble full tool calls from deltas; run interceptor; return blocked indices."""
+        if self._proxy._interceptor is None:
+            return set()
+
+        assembled = _assemble_tool_calls_from_chunks(chunks)
+        if not assembled:
+            return set()
+
+        blocked: set[int] = set()
+        for idx, tc in assembled.items():
+            name = tc.get("name", "")
+            args_str = tc.get("arguments", "{}")
+            import json as _json
+            try:
+                args = _json.loads(args_str)
+            except Exception:
+                args = {"_raw": args_str}
+
+            event = ProxyToolCallEvent(
+                tool_name=name,
+                args=args,
+                call_id=tc.get("id", str(idx)),
+                agent_id=self._proxy._agent_id,
+            )
+            decision = _run_interceptor_sync(self._proxy._interceptor, event)
+            if decision.allowed:
+                self._proxy._allowed.append(event)
+            else:
+                self._proxy._blocked.append(event)
+                blocked.add(idx)
+                if self._proxy._on_block:
+                    try:
+                        self._proxy._on_block(event)
+                    except Exception:
+                        pass
+        return blocked
+
+    @staticmethod
+    def _is_tool_call_chunk(chunk: Any) -> bool:
+        try:
+            delta = chunk.choices[0].delta
+            return bool(getattr(delta, "tool_calls", None))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _chunk_tc_index(chunk: Any) -> int:
+        try:
+            return chunk.choices[0].delta.tool_calls[0].index
+        except Exception:
+            return 0
+
+
 class _ProxiedResponse:
     """Wraps an OpenAI ChatCompletion, exposing only allowed tool calls."""
 
@@ -298,6 +408,36 @@ class _MessageWrapper:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _assemble_tool_calls_from_chunks(chunks: list[Any]) -> dict[int, dict[str, Any]]:
+    """Assemble complete tool calls from streaming delta chunks.
+
+    Returns a dict keyed by tool call index::
+
+        {0: {"id": "call_abc", "name": "search", "arguments": '{"q":"test"}'}}
+    """
+    assembled: dict[int, dict[str, Any]] = {}
+    for chunk in chunks:
+        try:
+            delta = chunk.choices[0].delta
+            tcs = getattr(delta, "tool_calls", None)
+            if not tcs:
+                continue
+            for tc_delta in tcs:
+                idx = getattr(tc_delta, "index", 0)
+                entry = assembled.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                if getattr(tc_delta, "id", None):
+                    entry["id"] = tc_delta.id
+                fn = getattr(tc_delta, "function", None)
+                if fn:
+                    if getattr(fn, "name", None):
+                        entry["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        entry["arguments"] += fn.arguments
+        except Exception:
+            continue
+    return assembled
+
 
 def _extract_tool_calls(response: Any) -> list[Any]:
     try:
