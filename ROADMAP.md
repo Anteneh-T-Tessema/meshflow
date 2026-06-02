@@ -46,12 +46,39 @@ This is the public roadmap. It is a living document — priorities shift based o
 
 ---
 
-## Later — v1.3+ (Q3–Q4 2026)
+## Shipped — v1.1 / v1.2 / v1.3 (June 2026)
+
+**Theme: Zero Trust + Enterprise ops**
+
+- ✅ Zero Trust for AI Agents — Foundation/Enterprise/Advanced tiers, SpotlightingGuardrail, JIT privileges, AI-BOM, ContinuousAuth (v1.1)
+- ✅ `MESHFLOW_ZT_TIER` / `MESHFLOW_ZT_REGULATION` env vars — ops-friendly tier config (v1.2)
+- ✅ GitHub Actions ZT gate — reusable composite action with PR step summary (v1.2)
+- ✅ MeshFlow Cloud GA — ZT posture telemetry, `/api/zt-status`, Cloud dashboard page (v1.2)
+- ✅ SIEM streaming — Splunk HEC, Datadog Logs, generic HTTP (v1.3)
+- ✅ Red-team testing — 22 probes, 6 OWASP categories, `meshflow red-team` CLI (v1.3)
+- ✅ Blue/green deployments — `BlueGreenRouter`, `meshflow blue-green` CLI (v1.3)
+- ✅ GitHub Releases for all three versions with full changelogs (v1.3)
+
+---
+
+## Next — v1.4 (June–July 2026)
+
+**Theme: Multi-language ecosystem + Enterprise auth**
+
+- ✅ Go SDK — `go get meshflow.dev/go-sdk` (in progress)
+- ✅ OIDC/SSO middleware — Okta, Auth0, Azure AD, Google Workspace (in progress)
+- [ ] Show HN launch — `docs/launch/show_hn.md` ready to post
+- [ ] Product Hunt launch — `docs/launch/product_hunt.md` ready to post
+- [ ] Discord community launch — `docs/community/discord_setup.md` ready
+
+---
+
+## Later — v1.5+ (Q3–Q4 2026)
 
 **Theme: Market leadership**
 
 - [ ] SOC 2 Type II report issued and published
-- ✅ MeshFlow Cloud GA — ModelRouter analytics dashboard + API (`GET /api/analytics/model-router`), cost regression CI gate (`meshflow/eval/ci_gate.py`), cross-session memory analytics
+- ✅ MeshFlow Cloud GA — ModelRouter analytics, cost regression CI gate, cross-session memory analytics
 - [ ] MeshFlow Sessions — annual developer event
 - ✅ Analyst briefing kit in docs/analyst_briefing/
 - [ ] Fundraising process (if required)

@@ -135,14 +135,51 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         return headers.get("X-API-Key", "") or headers.get("x-api-key", "")
 
     def _get_principal(request: Any) -> KeyRecord | None:
-        """Return the authenticated KeyRecord or None.  Open mode returns a synthetic admin."""
+        """Return the authenticated principal or None.
+
+        Resolution order:
+        1. OIDC Bearer token (if OIDCMiddleware is configured)
+        2. API key via KeyStore (DB-backed + static env keys)
+        3. Legacy api_keys set / open mode
+        """
+        # 1. OIDC Bearer token path
+        try:
+            from meshflow.security.oidc import get_oidc_middleware, OIDCPrincipal
+            oidc_mw = get_oidc_middleware()
+            if oidc_mw is not None:
+                oidc_principal = oidc_mw.get_principal(request.headers)
+                if oidc_principal is not None:
+                    # Wrap OIDCPrincipal in a KeyRecord-compatible shim so the
+                    # rest of the server code (role checks, tenant routing) works
+                    # unchanged — they only read .role, .tenant_id, .key_id.
+                    return KeyRecord(
+                        key_id=f"oidc:{oidc_principal.sub}",
+                        name=oidc_principal.email or oidc_principal.sub,
+                        role=oidc_principal.role,
+                        tenant_id=oidc_principal.tenant_id,
+                        created_at="",
+                        last_used_at="",
+                        revoked=False,
+                    )
+                # Bearer header was present but OIDC validation failed → bubble
+                # up as unauthenticated (don't fall through to API-key path,
+                # because the client explicitly presented a Bearer token).
+                auth = (
+                    request.headers.get("Authorization", "")
+                    or request.headers.get("authorization", "")
+                )
+                if auth.startswith("Bearer "):
+                    return None
+        except Exception:
+            pass  # If oidc module fails for any reason, fall through
+
+        # 2. API-key path (KeyStore DB + static env keys)
         raw_key = _extract_raw_key(request.headers)
-        # Try KeyStore first (DB-backed + static keys from env)
         if raw_key:
             principal = key_store.verify(raw_key)
             if principal:
                 return principal
-        # Fall back to the api_keys set passed directly to _build_app / serve()
+        # 3. Fall back to the api_keys set passed directly to _build_app / serve()
         if _check_auth(request.headers, api_keys):
             if api_keys:
                 # A specific set of keys is configured and the request matched

@@ -5,6 +5,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.4.0] — 2026-06-01
+
+### Multi-language ecosystem + Enterprise auth
+
+**4,583 tests passing (+43 new OIDC tests).**
+
+#### Go SDK (`sdks/go/`)
+- `meshflow.NewClient(baseURL, apiKey)` — stdlib-only, no external deps
+- `RunAgent(ctx, task, opts...)` — POST /run with functional options
+- `Stream(ctx, task, opts...)` — SSE streaming via channel (`<-chan StreamEvent`)
+- `GetTrace(ctx, runID)`, `ApproveHITL`, `RejectHITL`, `ZTStatus`, `Health`
+- `ZTPolicy`, `FoundationPolicy()`, `EnterprisePolicy()`, `AdvancedPolicy()`, `ForRegulation()`
+- Full type coverage: `RunResult`, `StreamEvent`, `Trace`, `TraceStep`, `ZTStatus`, `HealthResponse`
+
+#### OIDC/SSO (`meshflow/security/oidc.py`)
+- `OIDCConfig` — config dataclass with `from_env()`, `MESHFLOW_OIDC_*` env vars
+- `JWKSCache` — thread-safe JWKS fetching with configurable TTL (default 1 hr)
+- `OIDCValidator` — stdlib JWT validation (RS256/ES256), signature + expiry + audience + issuer
+- `OIDCPrincipal` — sub, email, role (admin/operator/viewer), raw claims
+- `OIDCMiddleware` — wraps existing HTTP handler, falls back to API key auth when no Bearer
+
+#### SSO Provider helpers (`meshflow/security/sso_providers.py`)
+Pre-configured `OIDCConfig` for five platforms:
+- `OktaConfig(domain, audience)` → `https://{domain}/oauth2/default`
+- `Auth0Config(domain, audience)` → `https://{domain}/`
+- `AzureADConfig(tenant_id, client_id)` → Microsoft Entra ID v2.0 endpoint
+- `GoogleWorkspaceConfig(client_id)` → `https://accounts.google.com`
+- `KeycloakConfig(base_url, realm, client_id=...)` → `{base_url}/realms/{realm}`
+
+#### CLI: `meshflow serve` OIDC flags
+```bash
+meshflow serve --oidc-issuer https://dev-abc.okta.com \
+               --oidc-audience meshflow-api \
+               --oidc-role-claim groups
+```
+
+#### GitHub Releases
+- v1.1.0, v1.2.0, v1.3.0 — full changelogs at github.com/Anteneh-T-Tessema/meshflow/releases
+
+---
+
 ## [1.3.0] — 2026-06-01
 
 ### Enterprise security operations — SIEM streaming, red-team testing, blue/green deployments

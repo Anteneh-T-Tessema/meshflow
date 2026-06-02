@@ -141,6 +141,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--policy-file", default="", dest="policy_file",
         help="Path to meshflow.policy.yaml (policy-as-code)",
     )
+    # OIDC / SSO flags
+    p_serve.add_argument(
+        "--oidc-issuer", default="", dest="oidc_issuer",
+        help="OIDC issuer URL (e.g. https://dev-abc.okta.com). "
+             "Overrides MESHFLOW_OIDC_ISSUER env var.",
+    )
+    p_serve.add_argument(
+        "--oidc-audience", default="", dest="oidc_audience",
+        help="Expected JWT audience claim (default: meshflow-api). "
+             "Overrides MESHFLOW_OIDC_AUDIENCE env var.",
+    )
+    p_serve.add_argument(
+        "--oidc-role-claim", default="", dest="oidc_role_claim",
+        help="JWT claim name containing groups/roles (default: groups). "
+             "Overrides MESHFLOW_OIDC_ROLE_CLAIM env var.",
+    )
 
     # dev
     p_dev = sub.add_parser("dev", help="Start server in dev mode with colored output")
@@ -2591,6 +2607,25 @@ def _cmd_serve(args: argparse.Namespace) -> None:
                 print(f"    - {issue}")
             sys.exit(1)
         print(f"  Policy file: {policy_file} (validated)")
+
+    # ── OIDC / SSO ────────────────────────────────────────────────────────────
+    # CLI flags take precedence over env vars; env vars are the fallback.
+    oidc_issuer = getattr(args, "oidc_issuer", "") or os.environ.get("MESHFLOW_OIDC_ISSUER", "")
+    if oidc_issuer:
+        import os as _os
+        # Propagate CLI flags back to env so OIDCConfig.from_env() picks them up
+        _os.environ["MESHFLOW_OIDC_ISSUER"] = oidc_issuer
+        if getattr(args, "oidc_audience", ""):
+            _os.environ["MESHFLOW_OIDC_AUDIENCE"] = args.oidc_audience
+        if getattr(args, "oidc_role_claim", ""):
+            _os.environ["MESHFLOW_OIDC_ROLE_CLAIM"] = args.oidc_role_claim
+        try:
+            from meshflow.security.oidc import OIDCConfig, setup_oidc_middleware
+            cfg = OIDCConfig.from_env()
+            setup_oidc_middleware(cfg)
+            print(f"  OIDC auth: enabled (issuer={cfg.issuer})")
+        except Exception as exc:
+            print(f"  Warning: OIDC setup failed: {exc}")
 
     serve(
         host=args.host,

@@ -300,6 +300,29 @@ from meshflow.security.secrets import (
     SecretScanner,
     SecretScanGuardrail,
 )
+# ── OIDC / SSO ────────────────────────────────────────────────────────────────
+from meshflow.security.oidc import (
+    OIDCConfig,
+    OIDCPrincipal,
+    OIDCValidator,
+    OIDCMiddleware,
+    OIDCError,
+    TokenExpiredError,
+    TokenAudienceMismatchError,
+    TokenIssuerMismatchError,
+    TokenSignatureError,
+    JWKSCache,
+    get_oidc_middleware,
+    setup_oidc_middleware,
+    reset_oidc_middleware,
+)
+from meshflow.security.sso_providers import (
+    OktaConfig,
+    Auth0Config,
+    AzureADConfig,
+    GoogleWorkspaceConfig,
+    KeycloakConfig,
+)
 from meshflow.intelligence.embedding import (
     EmbeddingProvider,
     HashEmbeddingProvider,
@@ -824,6 +847,25 @@ __all__ = [
     "SecretScanResult",
     "SecretScanner",
     "SecretScanGuardrail",
+    # ── OIDC / SSO ────────────────────────────────────────────────────────────
+    "OIDCConfig",
+    "OIDCPrincipal",
+    "OIDCValidator",
+    "OIDCMiddleware",
+    "OIDCError",
+    "TokenExpiredError",
+    "TokenAudienceMismatchError",
+    "TokenIssuerMismatchError",
+    "TokenSignatureError",
+    "JWKSCache",
+    "get_oidc_middleware",
+    "setup_oidc_middleware",
+    "reset_oidc_middleware",
+    "OktaConfig",
+    "Auth0Config",
+    "AzureADConfig",
+    "GoogleWorkspaceConfig",
+    "KeycloakConfig",
     # ── Semantic memory / embedding ───────────────────────────────────────────
     "EmbeddingProvider",
     "HashEmbeddingProvider",
