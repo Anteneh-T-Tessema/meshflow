@@ -307,6 +307,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_audit_export.add_argument("--db", default="meshflow_runs.db", help="Ledger path")
     p_audit_export.add_argument("--out", default="", help="Write to file instead of stdout")
 
+    p_audit_verify = p_audit_sub.add_parser("verify-chain", help="Verify the tamper-evident hash chain for a run")
+    p_audit_verify.add_argument("--run-id", required=True, dest="run_id", help="Run ID to verify")
+    p_audit_verify.add_argument("--db", default="meshflow_runs.db", help="Ledger path")
+    p_audit_verify.add_argument("--json", action="store_true", dest="as_json", help="Output result as JSON")
+
     # eval diff
     p_eval_diff = sub.add_parser("eval-diff", help="Compare two eval baseline JSON files")
     p_eval_diff.add_argument("baseline_a", help="Older baseline JSON path")
@@ -2996,6 +3001,8 @@ def _cmd_audit(args: argparse.Namespace) -> None:
     cmd = args.audit_cmd
     if cmd == "export":
         asyncio.run(_async_audit_export(args))
+    elif cmd == "verify-chain":
+        asyncio.run(_async_audit_verify_chain(args))
 
 
 async def _async_audit_export(args: argparse.Namespace) -> None:
@@ -3030,6 +3037,46 @@ async def _async_audit_export(args: argparse.Namespace) -> None:
         print(f"  Written to {out_path}")
     else:
         print(content)
+
+
+async def _async_audit_verify_chain(args: argparse.Namespace) -> None:
+    """Verify the tamper-evident SHA-256 hash chain for a run.
+
+    Exit code 0 = chain valid.  Exit code 1 = chain broken (records tampered).
+    """
+    from meshflow.core.ledger import ReplayLedger
+
+    db = getattr(args, "db", "meshflow_runs.db")
+    run_id = args.run_id.strip()
+    as_json = getattr(args, "as_json", False)
+
+    if not run_id:
+        print("  --run-id is required for verify-chain")
+        sys.exit(2)
+
+    import os as _os
+    if db != ":memory:" and not _os.path.exists(db):
+        print(f"  No ledger found at '{db}'.")
+        sys.exit(1)
+
+    ledger = ReplayLedger(db)
+    result = await ledger.verify_chain(run_id)
+
+    if as_json:
+        print(json.dumps(result, indent=2))
+    else:
+        valid = result.get("valid", False)
+        steps = result.get("steps_verified", 0)
+        errors = result.get("errors", [])
+        if valid:
+            print(f"  CHAIN VALID — {steps} step(s) verified for run '{run_id}'.")
+        else:
+            print(f"  CHAIN INVALID — {len(errors)} error(s) in run '{run_id}':")
+            for e in errors:
+                print(f"    {e}")
+
+    if not result.get("valid", False):
+        sys.exit(1)
 
 
 # ── plugins ───────────────────────────────────────────────────────────────────

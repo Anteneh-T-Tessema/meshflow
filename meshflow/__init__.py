@@ -442,6 +442,20 @@ from meshflow.core.workflow_decorator import workflow, WorkflowProxy
 from meshflow.batch.anthropic_batch import (
     AnthropicBatchClient, BatchRequest, BatchResult, BatchJob, batch_agent_tasks,
 )
+from meshflow.core.tool_intercept import (
+    ToolCallEvent,
+    ToolCallDecision,
+    ToolCallInterceptor,
+    AllowListInterceptor,
+    PiiScanInterceptor,
+    PolicyToolCallInterceptor,
+    ChainedInterceptor,
+)
+from meshflow.integrations.haystack import (
+    HaystackStepAdapter,
+    HaystackResult,
+    governed_haystack_pipeline,
+)
 
 __version__ = "1.7.0"
 __all__ = [
@@ -1077,4 +1091,16 @@ __all__ = [
     "ZeroTrustOrchestrator",
     "ZeroTrustSession",
     "ZeroTrustRunResult",
+    # ── Tool-call enforcement ─────────────────────────────────────────────────
+    "ToolCallEvent",
+    "ToolCallDecision",
+    "ToolCallInterceptor",
+    "AllowListInterceptor",
+    "PiiScanInterceptor",
+    "PolicyToolCallInterceptor",
+    "ChainedInterceptor",
+    # ── Haystack integration ──────────────────────────────────────────────────
+    "HaystackStepAdapter",
+    "HaystackResult",
+    "governed_haystack_pipeline",
 ]
