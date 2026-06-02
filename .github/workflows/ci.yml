@@ -50,7 +50,7 @@ jobs:
           ANTHROPIC_API_KEY: ""
         run: |
           set -o pipefail
-          python -m pytest tests/ --tb=long \
+          python -m pytest tests/ --tb=long -v \
             --ignore=tests/test_integration.py \
             -x 2>&1 | tee /tmp/test_out.txt
 
@@ -59,9 +59,9 @@ jobs:
         run: |
           echo "## Test Failure Output (Python ${{ matrix.python-version }})" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          cat /tmp/test_out.txt >> "$GITHUB_STEP_SUMMARY" || echo "no test output file" >> "$GITHUB_STEP_SUMMARY"
+          tail -200 /tmp/test_out.txt >> "$GITHUB_STEP_SUMMARY" || echo "no test output file" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          cat /tmp/test_out.txt || echo "no test output file"
+          tail -200 /tmp/test_out.txt || echo "no test output file"
 
       - name: Upload test output
         if: failure()
