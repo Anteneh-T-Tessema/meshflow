@@ -56,7 +56,12 @@ jobs:
 
       - name: Show test output on failure
         if: failure()
-        run: cat /tmp/test_out.txt || echo "no test output file"
+        run: |
+          echo "## Test Failure Output (Python ${{ matrix.python-version }})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/test_out.txt >> "$GITHUB_STEP_SUMMARY" || echo "no test output file" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/test_out.txt || echo "no test output file"
 
       - name: Upload test output
         if: failure()
