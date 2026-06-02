@@ -18,9 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Set version and lowercase owner
+        id: meta
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -47,10 +49,10 @@ jobs:
           file: ./Dockerfile.mcp
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/meshflow-mcp:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/meshflow-mcp:latest
+            ghcr.io/${{ steps.meta.outputs.owner }}/meshflow-mcp:${{ steps.meta.outputs.version }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/meshflow-mcp:latest
           labels: |
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=MeshFlow MCP Server — governed multi-agent orchestration
           cache-from: type=gha
@@ -64,12 +66,12 @@ jobs:
           file: ./Dockerfile.mcp
           push: true
           tags: |
-            antenehcodding/meshflow-mcp:${{ steps.version.outputs.version }}
+            antenehcodding/meshflow-mcp:${{ steps.meta.outputs.version }}
             antenehcodding/meshflow-mcp:latest
-            ghcr.io/${{ github.repository_owner }}/meshflow-mcp:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/meshflow-mcp:latest
+            ghcr.io/${{ steps.meta.outputs.owner }}/meshflow-mcp:${{ steps.meta.outputs.version }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/meshflow-mcp:latest
           labels: |
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=MeshFlow MCP Server — governed multi-agent orchestration
           cache-from: type=gha
