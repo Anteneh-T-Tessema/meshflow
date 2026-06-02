@@ -254,6 +254,23 @@ class ZeroTrustPolicy:
             return p
         if reg == "nerc":
             return cls.for_tier(ZeroTrustTier.ADVANCED)
+        if reg in ("fedramp", "fedramp-high", "fisma", "cmmc"):
+            p = cls.for_tier(ZeroTrustTier.ADVANCED)
+            p.regulation = reg
+            p.output_pii_filter = True
+            p.full_provenance = True
+            p.supply_chain_verify = True
+            p.automated_compliance = True
+            p.siem_streaming = True        # FedRAMP requires continuous monitoring
+            p.description = f"{reg.upper()}-grade Zero Trust for US federal AI agents"
+            return p
+        if reg in ("nist-800-53", "nist"):
+            p = cls.for_tier(ZeroTrustTier.ENTERPRISE)
+            p.regulation = reg
+            p.output_pii_filter = True
+            p.full_provenance = True
+            p.description = "NIST 800-53 Zero Trust baseline"
+            return p
         # Default to Enterprise
         return cls.for_tier(ZeroTrustTier.ENTERPRISE)
 

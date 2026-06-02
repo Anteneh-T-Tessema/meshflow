@@ -1269,6 +1269,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_zt.add_argument("--fail-on-gaps", action="store_true",
                       help="Exit non-zero if any controls are missing for the target tier")
 
+    # ── migrate ───────────────────────────────────────────────────────────────
+    p_migrate = sub.add_parser(
+        "migrate",
+        help="Detect and convert LangGraph, CrewAI, and AutoGen projects to MeshFlow",
+    )
+    p_migrate_sub = p_migrate.add_subparsers(dest="migrate_cmd", required=True)
+
+    p_mig_detect = p_migrate_sub.add_parser(
+        "detect", help="Scan a directory and print a detection report"
+    )
+    p_mig_detect.add_argument("--path", default=".", metavar="PATH",
+                              help="Directory to scan (default: .)")
+
+    p_mig_plan = p_migrate_sub.add_parser(
+        "plan", help="Print a migration plan with effort estimate"
+    )
+    p_mig_plan.add_argument("--path", default=".", metavar="PATH",
+                            help="Directory to scan (default: .)")
+
+    p_mig_apply = p_migrate_sub.add_parser(
+        "apply", help="Apply zero-rewrite transformations to detected files"
+    )
+    p_mig_apply.add_argument("--path", default=".", metavar="PATH",
+                             help="Directory to scan (default: .)")
+    p_mig_apply.add_argument("--dry-run", action="store_true", dest="dry_run",
+                             help="Print changes without writing files")
+
     return parser
 
 
@@ -1344,6 +1371,7 @@ def main() -> None:
         "zt-audit":      _cmd_zt_audit,
         "red-team":      _cmd_red_team,
         "blue-green":    _cmd_deploy,
+        "migrate":       _cmd_migrate,
     }
     dispatch[args.cmd](args)
 
@@ -5655,3 +5683,188 @@ def _cmd_deploy(args: argparse.Namespace) -> None:
         new_active = router.rollback()
         store.save(router)
         print(f"  Rolled back: '{prev}' → '{new_active}'")
+
+
+# ── migrate ───────────────────────────────────────────────────────────────────
+
+
+def _cmd_migrate(args: argparse.Namespace) -> None:
+    """Detect, plan, and apply migration from LangGraph / CrewAI / AutoGen to MeshFlow."""
+    from meshflow.migration.detector import ProjectDetector
+    from meshflow.migration.transformer import CodeTransformer
+
+    cmd = args.migrate_cmd
+
+    if cmd == "detect":
+        _migrate_detect(args, ProjectDetector)
+
+    elif cmd == "plan":
+        _migrate_plan(args, ProjectDetector)
+
+    elif cmd == "apply":
+        _migrate_apply(args, ProjectDetector, CodeTransformer)
+
+
+def _migrate_detect(
+    args: argparse.Namespace,
+    ProjectDetector: Any,  # type: ignore[valid-type]
+) -> None:
+    detector = ProjectDetector(args.path)
+    result = detector.detect()
+
+    fw_str = ", ".join(result.frameworks) if result.frameworks else "none detected"
+    print()
+    print(f"  MeshFlow Migration — Detection Report")
+    print(f"  {'─' * 50}")
+    print(f"  Path        : {args.path}")
+    print(f"  Frameworks  : {fw_str}")
+    print(f"  Python files: {result.file_count}")
+    print(f"  Agents found: {result.agent_count}")
+    print(f"  Tools found : {result.tool_count}")
+    print(f"  Complexity  : {result.complexity}")
+    print(f"  Mig. path   : {result.migration_path}")
+    print(f"  Est. effort : {result.estimated_effort}")
+    print()
+
+    if not result.frameworks:
+        print("  No supported frameworks detected.")
+        print("  Supported: langgraph, crewai, autogen, openai-agents")
+    else:
+        print(f"  Next step: meshflow migrate plan --path {args.path}")
+    print()
+
+
+def _migrate_plan(
+    args: argparse.Namespace,
+    ProjectDetector: Any,  # type: ignore[valid-type]
+) -> None:
+    detector = ProjectDetector(args.path)
+    result = detector.detect()
+
+    fw_str = ", ".join(result.frameworks) if result.frameworks else "none"
+    print()
+    print(f"  MeshFlow Migration Plan")
+    print(f"  {'─' * 50}")
+    print(f"  Detected    : {fw_str}")
+    print(f"  Complexity  : {result.complexity}")
+    print(f"  Path        : {result.migration_path}")
+    print(f"  Effort      : {result.estimated_effort}")
+    print()
+
+    if result.migration_path == "zero_rewrite":
+        print("  Strategy: ZERO REWRITE")
+        print("  ─────────────────────────────────────────────")
+        print("  MeshFlow ships a StateGraph-compatible shim.")
+        print("  1. Run:  meshflow migrate apply --path .")
+        print("     Replaces `from langgraph.graph import StateGraph`")
+        print("     with     `from meshflow import StateGraph`")
+        print("  2. Add governance at the entry point:")
+        print("     from meshflow.governance import govern")
+        print("     @govern()")
+        print("  3. Optionally set a cost cap:")
+        print("     policy = Policy(budget_usd=1.00)")
+        print()
+
+    elif result.migration_path == "wrapper":
+        fw = result.frameworks[0] if result.frameworks else "external"
+        fn_map = {
+            "langgraph": "from_langgraph(runnable)",
+            "crewai":    "from_crewai(crew_agent)",
+            "autogen":   "from_autogen(autogen_agent)",
+            "openai-agents": "from_callable(fn)",
+        }
+        fn_call = fn_map.get(fw, "from_callable(fn)")
+        print("  Strategy: WRAPPER")
+        print("  ─────────────────────────────────────────────")
+        print(f"  Wrap your existing {fw} agent in one line:")
+        print(f"    from meshflow.agents.adapters import {fn_call.split('(')[0]}")
+        print(f"    mf_agent = {fn_call}")
+        print()
+        print("  Then add governance:")
+        print("    from meshflow.governance import govern")
+        print("    @govern()")
+        print()
+        print("  Run: meshflow migrate apply --path . to apply import rewrites.")
+        print()
+
+    else:  # native
+        print("  Strategy: NATIVE REWRITE")
+        print("  ─────────────────────────────────────────────")
+        print("  Multi-framework or complex project detected.")
+        print("  Recommended steps:")
+        print("  1. Read:  docs/migration/ for per-framework guides")
+        print("  2. Replace agent definitions with MeshFlow BaseAgent subclasses")
+        print("  3. Wire workflows through StepRuntime or Workflow.run()")
+        print("  4. Add Policy(budget_usd=...) and @govern() at entry points")
+        print()
+        print("  Guides:")
+        print("    docs/migration/autogen-to-meshflow.md")
+        print("    docs/migration/flowise-to-meshflow.md")
+        print()
+
+    print(f"  Apply zero-rewrite transforms: meshflow migrate apply --path {args.path}")
+    print(f"  Preview only:                  meshflow migrate apply --path {args.path} --dry-run")
+    print()
+
+
+def _migrate_apply(
+    args: argparse.Namespace,
+    ProjectDetector: Any,  # type: ignore[valid-type]
+    CodeTransformer: Any,  # type: ignore[valid-type]
+) -> None:
+    import glob as _glob
+
+    detector = ProjectDetector(args.path)
+    result = detector.detect()
+
+    if not result.frameworks:
+        print("\n  No supported frameworks detected. Nothing to apply.\n")
+        return
+
+    transformer = CodeTransformer()
+    changed_files = 0
+    total_changes = 0
+
+    mode = "DRY RUN — " if args.dry_run else ""
+    print()
+    print(f"  MeshFlow Migration Apply  [{mode}path={args.path}]")
+    print(f"  {'─' * 50}")
+
+    for fpath in result.scanned_files:
+        try:
+            tr = transformer.transform(fpath)
+        except Exception as exc:
+            print(f"  ! Could not parse {fpath}: {exc}")
+            continue
+
+        if not tr.has_changes():
+            continue
+
+        changed_files += 1
+        total_changes += len(tr.suggested_changes)
+
+        print(f"\n  {fpath}")
+        for change in tr.suggested_changes:
+            loc = f"line {change.line_number}" if change.line_number else "top of file"
+            print(f"    [{change.change_type}] {loc}")
+            print(f"      {change.description}")
+            if change.original:
+                print(f"      - {change.original.strip()}")
+            print(f"      + {change.replacement.strip()}")
+
+        if not args.dry_run:
+            try:
+                tr.apply(dry_run=False)
+                print(f"    Written.")
+            except Exception as exc:
+                print(f"    ! Write failed: {exc}")
+
+    print()
+    if changed_files == 0:
+        print("  No changes needed — project may already be migrated.")
+    elif args.dry_run:
+        print(f"  DRY RUN: {total_changes} change(s) across {changed_files} file(s) — nothing written.")
+        print(f"  Re-run without --dry-run to apply.")
+    else:
+        print(f"  Applied {total_changes} change(s) across {changed_files} file(s).")
+    print()
