@@ -37,7 +37,7 @@ outputs:
     description: Comma-separated list of missing controls (empty = PASS)
     value: ${{ steps.audit.outputs.gaps }}
   passed:
-    description: "true" if no gaps detected, "false" otherwise
+    description: true if no gaps detected, false otherwise
     value: ${{ steps.audit.outputs.passed }}
 
 runs:
