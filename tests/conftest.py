@@ -125,9 +125,9 @@ def live_client(live_server_url: str):
     async def _make():
         return MeshFlowClient(live_server_url, api_key="")
 
-    client = asyncio.get_event_loop().run_until_complete(_make())
+    client = asyncio.run(_make())
     yield client
-    asyncio.get_event_loop().run_until_complete(client.close())
+    asyncio.run(client.close())
 
 
 # ── Step record factory ───────────────────────────────────────────────────────
