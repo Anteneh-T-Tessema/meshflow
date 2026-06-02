@@ -2160,16 +2160,23 @@ class Workflow:
                     model = agent._resolve_model()
                 except Exception:
                     model = getattr(agent, "model", "") or ""
-            # If a model_router is attached, ask it to route the task
+            # If a model_router is attached, ask it to route the task.
+            # _TierResult.is_local carries any explicit user override from ModelTier.
+            is_local_override: bool | None = None
             router = getattr(agent, "model_router", None)
             if router is not None:
                 try:
                     route_result = router.route(task)
                     model = getattr(route_result, "model", model) or model
+                    # Respect explicit is_local on the tier (None = fall back to detection)
+                    raw = getattr(route_result, "is_local", None)
+                    if raw is not None:
+                        is_local_override = bool(raw)
                 except Exception:
                     pass
-            cost = _cost_usd(model, input_tokens, output_tokens)
-            is_local = model_is_local(model)
+            is_local = is_local_override if is_local_override is not None else model_is_local(model)
+            force_cloud = (is_local_override is False)
+            cost = 0.0 if is_local else _cost_usd(model, input_tokens, output_tokens, force_cloud=force_cloud)
             lines.append(_AgentCostLine(agent=name, model=model, cost_usd=cost, is_local=is_local))
 
         return CostEstimate(lines=lines, task_preview=task[:80])

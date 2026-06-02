@@ -334,11 +334,25 @@ class ModelTier:
     name:       Human label (e.g. ``"fast"``, ``"smart"``, ``"large"``).
     model:      Model identifier — Ollama-style for local, provider ID for cloud.
     max_tokens: Soft cap on output tokens for this tier (advisory only).
+    is_local:   Explicit override for locality. ``True`` → zero cost, ``False``
+                → cloud pricing. Leave as ``None`` (default) to auto-detect via
+                :func:`meshflow.agents.base.model_is_local`. Set this when your
+                model name is not in the recognised local-family list (e.g. a
+                custom Ollama model, LiteLLM proxy, or private fine-tune).
+
+    Example::
+
+        # Custom Ollama fine-tune — auto-detect won't recognise "corp-llm"
+        ModelTier("fast", "corp-llm", max_tokens=512, is_local=True)
+
+        # LiteLLM proxy forwarding to a local endpoint
+        ModelTier("smart", "http://localhost:4000/v1", max_tokens=2048, is_local=True)
     """
 
     name: str
     model: str
     max_tokens: int = 2048
+    is_local: bool | None = None
 
 
 class ModelTierRouter:
@@ -425,14 +439,19 @@ class ModelTierRouter:
 
         from meshflow.agents.base import model_is_local
         import logging
-        if not model_is_local(chosen.model):
+        # Honour explicit is_local on the tier; fall back to pattern matching.
+        if chosen.is_local is not None:
+            is_local = chosen.is_local
+        else:
+            is_local = model_is_local(chosen.model)
+        if not is_local:
             logging.getLogger("meshflow.router").info(
                 "ModelTierRouter: cloud model '%s' selected for task (len=%d). "
                 "Ensure your CostCap is set.",
                 chosen.model, len(task),
             )
 
-        return _TierResult(model=chosen.model, tier=chosen.name)
+        return _TierResult(model=chosen.model, tier=chosen.name, is_local=is_local)
 
     def tiers(self) -> list[ModelTier]:
         return list(self._tiers)
@@ -445,3 +464,4 @@ class _TierResult:
     model: str
     tier: str
     cost_usd: float = 0.0
+    is_local: bool = False

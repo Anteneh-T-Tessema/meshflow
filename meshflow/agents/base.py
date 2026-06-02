@@ -75,8 +75,14 @@ def model_is_local(model: str) -> bool:
     return False
 
 
-def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-    if model_is_local(model):
+def _cost_usd(model: str, input_tokens: int, output_tokens: int, *, force_cloud: bool = False) -> float:
+    """Return estimated cost in USD.
+
+    When ``force_cloud=True`` the local-model short-circuit is skipped, which
+    lets callers honour an explicit ``is_local=False`` override on a tier whose
+    model name would otherwise match the local-family pattern.
+    """
+    if not force_cloud and model_is_local(model):
         return 0.0
     model_lower = model.lower()
     for key, (in_rate, out_rate) in _PRICING.items():

@@ -324,3 +324,87 @@ class TestEstimateBeforeRun:
         assert est.total_usd == 0.0
         assert est.cloud_agents == []
         assert set(est.local_agents) == {"planner", "writer"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# User-configurable is_local on ModelTier
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestModelTierIsLocalOverride:
+    """Users can set is_local explicitly on ModelTier for custom model names."""
+
+    def test_default_is_none(self):
+        from meshflow import ModelTier
+        t = ModelTier("fast", "llama3.2")
+        assert t.is_local is None  # auto-detect
+
+    def test_explicit_true_overrides_detection(self):
+        from meshflow import ModelTier, ModelTierRouter
+        router = ModelTierRouter(tiers=[ModelTier("fast", "corp-llm", is_local=True)])
+        assert router.route("task").is_local is True
+
+    def test_explicit_false_marks_cloud(self):
+        from meshflow import ModelTier, ModelTierRouter
+        router = ModelTierRouter(tiers=[ModelTier("fast", "llama3.2", is_local=False)])
+        assert router.route("task").is_local is False
+
+    def test_explicit_true_gives_zero_cost_in_estimate(self):
+        from meshflow import ModelTier, ModelTierRouter
+        from meshflow.core.workflow import Workflow
+
+        router = ModelTierRouter(tiers=[ModelTier("fast", "corp-llm", is_local=True)])
+        wf = Workflow()
+        agent = MagicMock()
+        agent.name = "drafter"
+        agent.model_router = router
+        agent._resolve_model.return_value = ""
+        wf.agents.append(agent)
+
+        est = wf.estimate_cost("short task")
+        assert est.total_usd == 0.0
+        assert "drafter" in est.local_agents
+
+    def test_explicit_false_incurs_cost_in_estimate(self):
+        from meshflow import ModelTier, ModelTierRouter
+        from meshflow.core.workflow import Workflow
+
+        router = ModelTierRouter(tiers=[ModelTier("smart", "llama3.2", is_local=False)])
+        wf = Workflow()
+        agent = MagicMock()
+        agent.name = "writer"
+        agent.model_router = router
+        agent._resolve_model.return_value = ""
+        wf.agents.append(agent)
+
+        est = wf.estimate_cost("task")
+        # llama3.2 normally = $0, but is_local=False → billed as cloud
+        assert est.total_usd > 0.0
+        assert "writer" in est.cloud_agents
+
+    def test_none_falls_back_to_pattern_detection_local(self):
+        from meshflow import ModelTier, ModelTierRouter
+        router = ModelTierRouter(tiers=[ModelTier("fast", "llama3.2", is_local=None)])
+        assert router.route("task").is_local is True
+
+    def test_none_falls_back_to_pattern_detection_cloud(self):
+        from meshflow import ModelTier, ModelTierRouter
+        router = ModelTierRouter(tiers=[ModelTier("fast", "gpt-4o", is_local=None)])
+        assert router.route("task").is_local is False
+
+    def test_litellm_proxy_url_as_local(self):
+        from meshflow import ModelTier, ModelTierRouter
+        from meshflow.core.workflow import Workflow
+
+        router = ModelTierRouter(
+            tiers=[ModelTier("smart", "http://localhost:4000/v1", is_local=True)]
+        )
+        wf = Workflow()
+        agent = MagicMock()
+        agent.name = "analyst"
+        agent.model_router = router
+        agent._resolve_model.return_value = ""
+        wf.agents.append(agent)
+
+        est = wf.estimate_cost("task")
+        assert est.total_usd == 0.0
+        assert "analyst" in est.local_agents
