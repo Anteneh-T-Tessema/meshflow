@@ -1096,3 +1096,220 @@ export function createAgent(config: AgentConfig): MeshFlowAgent {
 export function createTeam(config: TeamConfig): MeshFlowTeam {
   return new MeshFlowTeam(config);
 }
+
+// ── Wire-level tool call enforcement ─────────────────────────────────────────
+
+/** A single tool call event intercepted before execution. */
+export interface ToolCallEvent {
+  toolName: string;
+  args: Record<string, unknown>;
+  callId: string;
+  source: "llm" | "mcp" | "proxy";
+  runId?: string;
+}
+
+/** Enforcement decision for a tool call. */
+export interface ToolCallDecision {
+  allowed: boolean;
+  blockReason?: string;
+  modifiedArgs?: Record<string, unknown>;
+}
+
+/** Implement this interface to enforce policy on tool calls. */
+export interface ToolCallInterceptor {
+  beforeCall(event: ToolCallEvent): Promise<ToolCallDecision>;
+}
+
+/** Allow-list interceptor — blocks any tool not in the list. */
+export class AllowListInterceptor implements ToolCallInterceptor {
+  private allowed: Set<string>;
+
+  constructor(allowedTools: string[]) {
+    this.allowed = new Set(allowedTools);
+  }
+
+  async beforeCall(event: ToolCallEvent): Promise<ToolCallDecision> {
+    if (this.allowed.has(event.toolName)) {
+      return { allowed: true };
+    }
+    return { allowed: false, blockReason: `tool '${event.toolName}' not in allow-list` };
+  }
+}
+
+// OpenAI response types (minimal — works with full openai SDK response objects)
+interface OAIToolCall {
+  id?: string;
+  function?: { name?: string; arguments?: string };
+  [key: string]: unknown;
+}
+interface OAIChoice {
+  message?: { tool_calls?: OAIToolCall[] | null; [key: string]: unknown };
+  [key: string]: unknown;
+}
+interface OAIResponse {
+  choices?: OAIChoice[];
+  [key: string]: unknown;
+}
+
+interface BlockedCall {
+  toolName: string;
+  blockReason: string;
+}
+
+/**
+ * MeshFlowProxy — drop-in wrapper for any OpenAI-compatible client.
+ *
+ * Intercepts tool calls in chat completions responses, evaluates them
+ * against the interceptor, and removes blocked calls from the response.
+ *
+ * Works with the official `openai` npm package and any OpenAI-compatible client.
+ *
+ * ```typescript
+ * import OpenAI from "openai";
+ * import { MeshFlowProxy, AllowListInterceptor } from "meshflow-sdk";
+ *
+ * const client = new OpenAI();
+ * const proxy = new MeshFlowProxy(client, {
+ *   interceptor: new AllowListInterceptor(["search", "read_file"]),
+ *   onBlock: (event) => console.log("Blocked:", event.toolName),
+ * });
+ *
+ * const response = await proxy.chat.completions.create({
+ *   model: "gpt-4o",
+ *   messages: [{ role: "user", content: "Search for AI safety papers" }],
+ *   tools: [...],
+ * });
+ * ```
+ */
+export class MeshFlowProxy {
+  private _client: unknown;
+  private _interceptor: ToolCallInterceptor | null;
+  private _agentId: string;
+  private _onBlock: ((event: ToolCallEvent) => void) | null;
+  private _allowedCount = 0;
+  private _blockedCalls: BlockedCall[] = [];
+
+  readonly chat: {
+    completions: {
+      create: (params: Record<string, unknown>) => Promise<OAIResponse>;
+    };
+  };
+
+  constructor(
+    client: unknown,
+    options: {
+      interceptor?: ToolCallInterceptor;
+      agentId?: string;
+      onBlock?: (event: ToolCallEvent) => void;
+    } = {}
+  ) {
+    this._client = client;
+    this._interceptor = options.interceptor ?? null;
+    this._agentId = options.agentId ?? "meshflow-proxy";
+    this._onBlock = options.onBlock ?? null;
+
+    this.chat = {
+      completions: {
+        create: async (params: Record<string, unknown>): Promise<OAIResponse> => {
+          const rawClient = this._client as {
+            chat: { completions: { create: (p: unknown) => Promise<OAIResponse> } };
+          };
+          const response = await rawClient.chat.completions.create(params);
+          return this._enforce(response);
+        },
+      },
+    };
+  }
+
+  private async _enforce(response: OAIResponse): Promise<OAIResponse> {
+    if (!this._interceptor) return response;
+
+    const choices = response.choices ?? [];
+    for (const choice of choices) {
+      const toolCalls = choice.message?.tool_calls;
+      if (!toolCalls?.length) continue;
+
+      const allowed: OAIToolCall[] = [];
+      for (const tc of toolCalls) {
+        const name = tc.function?.name ?? "unknown";
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(tc.function?.arguments ?? "{}");
+        } catch {
+          args = { _raw: tc.function?.arguments };
+        }
+
+        const event: ToolCallEvent = {
+          toolName: name,
+          args,
+          callId: String(tc.id ?? Math.random().toString(36).slice(2)),
+          source: "proxy",
+        };
+
+        const decision = await this._interceptor.beforeCall(event);
+        if (decision.allowed) {
+          this._allowedCount++;
+          allowed.push(tc);
+        } else {
+          this._blockedCalls.push({ toolName: name, blockReason: decision.blockReason ?? "" });
+          this._onBlock?.(event);
+        }
+      }
+
+      if (choice.message) {
+        choice.message.tool_calls = allowed.length > 0 ? allowed : null;
+      }
+    }
+
+    return response;
+  }
+
+  /** Returns allow/block counts. */
+  stats(): { allowedToolCalls: number; blockedToolCalls: number } {
+    return {
+      allowedToolCalls: this._allowedCount,
+      blockedToolCalls: this._blockedCalls.length,
+    };
+  }
+
+  /** Returns all blocked tool call events. */
+  blockedCalls(): BlockedCall[] {
+    return [...this._blockedCalls];
+  }
+
+  /** Forward any other property to the underlying client. */
+  [key: string]: unknown;
+}
+
+/** Return an OpenAI tool schema for calling MeshFlow. */
+export function meshflowAsOpenAITool(options: {
+  toolName?: string;
+  description?: string;
+  includePolicyParam?: boolean;
+} = {}): Record<string, unknown> {
+  const name = options.toolName ?? "meshflow_run";
+  const desc = options.description ??
+    "Run a governed multi-agent workflow through MeshFlow. " +
+    "Every run gets: SHA-256 tamper-evident audit chain, hard cost cap, " +
+    "HIPAA/SOX/GDPR/ISO 27001 compliance, Zero Trust agent identity, and crash recovery.";
+
+  const properties: Record<string, unknown> = {
+    task: { type: "string", description: "The task to execute through the governed agent pipeline." },
+  };
+  if (options.includePolicyParam !== false) {
+    properties["policy"] = {
+      type: "string",
+      enum: ["standard", "strict", "hipaa", "sox", "gdpr", "iso27001", "dev", "sandbox"],
+      description: "Governance policy mode. Default: standard.",
+    };
+  }
+
+  return {
+    type: "function",
+    function: {
+      name,
+      description: desc,
+      parameters: { type: "object", properties, required: ["task"] },
+    },
+  };
+}

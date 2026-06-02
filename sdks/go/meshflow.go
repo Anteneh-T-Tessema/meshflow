@@ -32,7 +32,7 @@ import (
 
 const (
 	defaultTimeout = 120 * time.Second
-	sdkVersion     = "0.1.0"
+	sdkVersion     = "1.9.2"
 )
 
 // Client is the MeshFlow API client. Create one with NewClient and reuse it

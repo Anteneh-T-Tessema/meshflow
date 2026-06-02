@@ -1,6 +1,6 @@
 [package]
 name = "meshflow-sdk"
-version = "1.6.0"
+version = "1.9.2"
 edition = "2021"
 description = "Async Rust SDK for the MeshFlow multi-agent orchestration platform"
 license = "MIT"
