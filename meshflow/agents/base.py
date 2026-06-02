@@ -542,7 +542,7 @@ class SandboxProvider(EchoProvider):
         last = messages[-1].get("content", "") if messages else "task"
         if isinstance(last, list):
             last = " ".join(p.get("text", "") for p in last if isinstance(p, dict))
-        
+
         # Clean up last if it has "Prior output:"
         if "Prior output:" in last:
             last = last.split("Prior output:")[0].strip()

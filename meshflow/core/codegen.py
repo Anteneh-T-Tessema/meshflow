@@ -21,7 +21,7 @@ class SDKCodeGenerator:
         """Generate C# wrapper classes for the workflow."""
         name = self.data.get("name", "UnnamedWorkflow")
         class_name = "".join(part.capitalize() for part in name.replace("-", "_").split("_"))
-        
+
         nodes = self.data.get("nodes", [])
         edges = self.data.get("edges", [])
 
@@ -46,7 +46,7 @@ class SDKCodeGenerator:
         for n in nodes:
             node_id = n.get("id", "unnamed")
             kind = n.get("kind", "native")
-            
+
             if kind == "native":
                 agent = n.get("agent", {})
                 role = agent.get("role", "executor")
@@ -119,7 +119,7 @@ class SDKCodeGenerator:
         """Generate Java wrapper classes for the workflow."""
         name = self.data.get("name", "UnnamedWorkflow")
         class_name = "".join(part.capitalize() for part in name.replace("-", "_").split("_"))
-        
+
         nodes = self.data.get("nodes", [])
         edges = self.data.get("edges", [])
 
@@ -141,7 +141,7 @@ class SDKCodeGenerator:
         for n in nodes:
             node_id = n.get("id", "unnamed")
             kind = n.get("kind", "native")
-            
+
             if kind == "native":
                 agent = n.get("agent", {})
                 role = agent.get("role", "executor")
@@ -227,7 +227,7 @@ class SDKCodeGenerator:
         """Generate Go wrapper structs for the workflow."""
         name = self.data.get("name", "UnnamedWorkflow")
         class_name = "".join(part.capitalize() for part in name.replace("-", "_").split("_"))
-        
+
         nodes = self.data.get("nodes", [])
         edges = self.data.get("edges", [])
 
@@ -271,7 +271,7 @@ class SDKCodeGenerator:
         for n in nodes:
             node_id = n.get("id", "unnamed")
             kind = n.get("kind", "native")
-            
+
             if kind == "native":
                 agent = n.get("agent", {})
                 role = agent.get("role", "executor")

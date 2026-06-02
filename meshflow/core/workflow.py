@@ -359,12 +359,12 @@ class WorkflowDefinition:
                 continue
             if not all(p in done for p in preds):
                 continue  # still waiting on an upstream node
-            
+
             # Evaluate Fan-In rule
             node_obj = self._nodes[node_id]
             fan_in_rule = node_obj.metadata.get("fan_in_rule", "all")
             completed_preds = [p for p in preds if p in completed]
-            
+
             rule_met = False
             if fan_in_rule == "all":
                 rule_met = (len(completed_preds) == len(preds))
@@ -374,7 +374,7 @@ class WorkflowDefinition:
                 rule_met = (len(completed_preds) > len(preds) / 2)
             else:
                 rule_met = (len(completed_preds) == len(preds))
-                
+
             if not rule_met:
                 newly_skipped.append(node_id)
                 continue
@@ -473,7 +473,7 @@ class WorkflowDefinition:
                         ),
                         node_ctx,
                     )
-                
+
                 if not outcome.ok:
                     return outcome
                 if validator is None:
@@ -481,7 +481,7 @@ class WorkflowDefinition:
                 vresult = validator.validate(outcome.output.content)
                 if vresult.valid:
                     return outcome
-                
+
                 if attempt < attempt_limit - 1:
                     current_task = validator.retry_prompt(outcome.output.content, vresult.error)
                     await asyncio.sleep(1.0)
@@ -525,7 +525,7 @@ class WorkflowDefinition:
                     from meshflow.core.runtime import RuntimeOutcome as RO, StepRecord
                     import datetime
                     import uuid as _uuid
-                    
+
                     # Create a dummy failed StepRecord
                     blk_rec = StepRecord(
                         run_id=run_id,
@@ -768,7 +768,7 @@ class WorkflowDefinition:
             # Apply merge strategies for Context Bus
             for key, updates in level_updates.items():
                 strategy = self.context_bus.get("merge_strategies", {}).get(key, "overwrite")
-                
+
                 if strategy == "overwrite":
                     for node_id, val, conf in updates:
                         ctx[key] = val
@@ -838,23 +838,23 @@ class WorkflowDefinition:
                 if outcome.ok and outcome.output.structured:
                     new_yaml = outcome.output.structured.get("replanned_workflow_yaml")
                     new_dict = outcome.output.structured.get("replanned_workflow")
-                    
+
                     if new_yaml or new_dict:
                         max_replans = int(self.policy.max_replans) if hasattr(self.policy, "max_replans") else 3
                         if self._replans_count >= max_replans:
                             raise MaxIterationsError(
                                 f"Workflow replanning exceeded limit of {max_replans} replans"
                             )
-                        
+
                         self._replans_count += 1
-                        
+
                         if new_yaml:
                             new_wf = WorkflowDefinition.from_yaml_string(new_yaml, getattr(self, "_node_registry", None))
                         else:
                             import yaml as _yaml
                             yaml_str = _yaml.dump(new_dict)
                             new_wf = WorkflowDefinition.from_yaml_string(yaml_str, getattr(self, "_node_registry", None))
-                            
+
                         # Copy runners from the current workflow for any matching node IDs
                         for nid, node in new_wf._nodes.items():
                             if nid in self._nodes and node._runner is None:
@@ -864,20 +864,20 @@ class WorkflowDefinition:
                                 if not node.metadata:
                                     node.metadata = {}
                                 node.metadata.update(self._nodes[nid].metadata)
-                            
+
                         from meshflow.core.diff import workflow_diff_objects
                         diff_res = workflow_diff_objects(self, new_wf)
-                        
+
                         if diff_res.has_changes:
                             print(diff_res.summary())
-                            
+
                             await bus.emit(WorkflowEvent(
                                 kind=EventKind.STEP_COMPLETE,
                                 run_id=run_id,
                                 node_id=node_id,
                                 data={"message": f"Workflow replanned: {len(diff_res.changes)} changes", "diff": diff_res.to_dict()},
                             ))
-                            
+
                             self._nodes = new_wf._nodes
                             self._edges = new_wf._edges
                             self._loop_edges = new_wf._loop_edges
@@ -888,7 +888,7 @@ class WorkflowDefinition:
                             self.metadata = new_wf.metadata
                             replanned = True
                             break
-            
+
             if replanned:
                 ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
                 while newly_skipped:
@@ -1040,7 +1040,7 @@ class WorkflowDefinition:
                         completed.add(nd.id)
                         if outcome.output.content:
                             ctx[f"{nd.id}_output"] = outcome.output.content
-                        
+
                         if outcome.output.structured and "next_node" in outcome.output.structured:
                             next_node_id = outcome.output.structured["next_node"]
                             if next_node_id in self._nodes:
@@ -1106,23 +1106,23 @@ class WorkflowDefinition:
                     if outcome.ok and outcome.output.structured:
                         new_yaml = outcome.output.structured.get("replanned_workflow_yaml")
                         new_dict = outcome.output.structured.get("replanned_workflow")
-                        
+
                         if new_yaml or new_dict:
                             max_replans = int(self.policy.max_replans) if hasattr(self.policy, "max_replans") else 3
                             if self._replans_count >= max_replans:
                                 raise MaxIterationsError(
                                     f"Workflow replanning exceeded limit of {max_replans} replans"
                                 )
-                            
+
                             self._replans_count += 1
-                            
+
                             if new_yaml:
                                 new_wf = WorkflowDefinition.from_yaml_string(new_yaml, getattr(self, "_node_registry", None))
                             else:
                                 import yaml as _yaml
                                 yaml_str = _yaml.dump(new_dict)
                                 new_wf = WorkflowDefinition.from_yaml_string(yaml_str, getattr(self, "_node_registry", None))
-                                
+
                             # Copy runners from the current workflow for any matching node IDs
                             for nid, node in new_wf._nodes.items():
                                 if nid in self._nodes and node._runner is None:
@@ -1132,7 +1132,7 @@ class WorkflowDefinition:
                                     if not node.metadata:
                                         node.metadata = {}
                                     node.metadata.update(self._nodes[nid].metadata)
-                                
+
                             self._nodes = new_wf._nodes
                             self._edges = new_wf._edges
                             self._loop_edges = new_wf._loop_edges
@@ -1324,7 +1324,7 @@ class WorkflowDefinition:
                     completed.add(node_id)
                     if outcome.output.content:
                         ctx[f"{node_id}_output"] = outcome.output.content
-                    
+
                     if outcome.output.structured and "next_node" in outcome.output.structured:
                         next_node_id = outcome.output.structured["next_node"]
                         if next_node_id in self._nodes:
@@ -1346,7 +1346,7 @@ class WorkflowDefinition:
             # Apply merge strategies for Context Bus
             for key, updates in level_updates.items():
                 strategy = self.context_bus.get("merge_strategies", {}).get(key, "overwrite")
-                
+
                 if strategy == "overwrite":
                     for node_id, val, conf in updates:
                         ctx[key] = val
@@ -1396,23 +1396,23 @@ class WorkflowDefinition:
                 if outcome.ok and outcome.output.structured:
                     new_yaml = outcome.output.structured.get("replanned_workflow_yaml")
                     new_dict = outcome.output.structured.get("replanned_workflow")
-                    
+
                     if new_yaml or new_dict:
                         max_replans = int(self.policy.max_replans) if hasattr(self.policy, "max_replans") else 3
                         if self._replans_count >= max_replans:
                             raise MaxIterationsError(
                                 f"Workflow replanning exceeded limit of {max_replans} replans"
                             )
-                        
+
                         self._replans_count += 1
-                        
+
                         if new_yaml:
                             new_wf = WorkflowDefinition.from_yaml_string(new_yaml, getattr(self, "_node_registry", None))
                         else:
                             import yaml as _yaml
                             yaml_str = _yaml.dump(new_dict)
                             new_wf = WorkflowDefinition.from_yaml_string(yaml_str, getattr(self, "_node_registry", None))
-                            
+
                         # Copy runners from the current workflow for any matching node IDs
                         for nid, node in new_wf._nodes.items():
                             if nid in self._nodes and node._runner is None:
@@ -1422,13 +1422,13 @@ class WorkflowDefinition:
                                 if not node.metadata:
                                     node.metadata = {}
                                 node.metadata.update(self._nodes[nid].metadata)
-                            
+
                         from meshflow.core.diff import workflow_diff_objects
                         diff_res = workflow_diff_objects(self, new_wf)
-                        
+
                         if diff_res.has_changes:
                             print(diff_res.summary())
-                            
+
                             self._nodes = new_wf._nodes
                             self._edges = new_wf._edges
                             self._loop_edges = new_wf._loop_edges
@@ -1439,7 +1439,7 @@ class WorkflowDefinition:
                             self.metadata = new_wf.metadata
                             replanned = True
                             break
-            
+
             if replanned:
                 ready, newly_skipped = self._compute_ready(completed, skipped, failed, dynamic_next_nodes, nodes_with_handoff, ctx, step_outcomes)
                 while newly_skipped:

@@ -107,7 +107,7 @@ class GroupChat:
                 last_name = getattr(last_speaker, "name", None)
             elif self._history:
                 last_name = self._history[-1].sender
-            
+
             allowed_names = self.allowed_transitions.get(last_name or "") or []
             candidates = [a for a in self.agents if a.name in allowed_names]
             if candidates:

@@ -112,7 +112,7 @@ class PhoenixExporter:
         # Derive timing — Phoenix needs nanoseconds
         ts_str = step.get("timestamp", "")
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
             dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
             end_ns = int(dt.timestamp() * 1_000_000_000)
         except Exception:

@@ -40,8 +40,8 @@ jobs:
           file: ./Dockerfile.mcp
           push: true
           tags: |
-            meshflowdev/meshflow-mcp:${{ steps.version.outputs.version }}
-            meshflowdev/meshflow-mcp:latest
+            antenehcodding/meshflow-mcp:${{ steps.version.outputs.version }}
+            antenehcodding/meshflow-mcp:latest
             ghcr.io/${{ github.repository_owner }}/meshflow-mcp:${{ steps.version.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/meshflow-mcp:latest
           labels: |

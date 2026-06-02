@@ -144,7 +144,7 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         """
         # 1. OIDC Bearer token path
         try:
-            from meshflow.security.oidc import get_oidc_middleware, OIDCPrincipal
+            from meshflow.security.oidc import get_oidc_middleware
             oidc_mw = get_oidc_middleware()
             if oidc_mw is not None:
                 oidc_principal = oidc_mw.get_principal(request.headers)

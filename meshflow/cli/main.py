@@ -2768,7 +2768,7 @@ def _cmd_codegen(args: argparse.Namespace) -> None:
     if not _os.path.exists(args.yaml):
         print(f"  [codegen] YAML file not found: {args.yaml}")
         sys.exit(1)
-    
+
     gen = SDKCodeGenerator(args.yaml)
     if args.language == "dotnet":
         print(gen.generate_dotnet())
@@ -5690,7 +5690,7 @@ def _cmd_zt_audit(args: argparse.Namespace) -> None:
 def _cmd_red_team(args: argparse.Namespace) -> None:
     """Adversarial red-team testing of an agent pipeline."""
     import asyncio as _asyncio
-    from meshflow.security.red_team import RedTeamSuite, CATEGORIES
+    from meshflow.security.red_team import RedTeamSuite
 
     categories = args.categories or None
 
@@ -5928,7 +5928,6 @@ def _migrate_apply(
     ProjectDetector: Any,  # type: ignore[valid-type]
     CodeTransformer: Any,  # type: ignore[valid-type]
 ) -> None:
-    import glob as _glob
 
     detector = ProjectDetector(args.path)
     result = detector.detect()

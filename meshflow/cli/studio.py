@@ -64,7 +64,7 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Resolve to index.html under meshflow/studio/templates/
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         template_dir = os.path.join(base_dir, "studio", "templates")
-        
+
         if path == "/" or path == "/index.html":
             return os.path.join(template_dir, "index.html")
         if path in ("/templates", "/templates.html"):
@@ -75,7 +75,7 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             return os.path.join(template_dir, "graph.html")
         if path in ("/rag", "/rag.html"):
             return os.path.join(template_dir, "rag_builder.html")
-            
+
         return super().translate_path(path)
 
     def do_GET(self) -> None:
@@ -160,7 +160,7 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             shared_dir = os.path.expanduser("~/.meshflow/shared_templates")
             reg = TemplateRegistry(registry_dir=shared_dir)
             templates = [t.to_dict() for t in reg.list()]
-            
+
             # Seed community templates if empty to showcase a beautiful ecosystem
             if not templates:
                 seeds = [
@@ -198,7 +198,7 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 for s in seeds:
                     reg.publish(s)
                 templates = [t.to_dict() for t in reg.list()]
-                
+
             self.wfile.write(json.dumps(templates).encode("utf-8"))
             return
 
@@ -274,20 +274,20 @@ class StudioHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 def start_studio_server(host: str = "127.0.0.1", port: int = 8765) -> None:
     """Start the local web server and open the browser."""
     server_address = (host, port)
-    
+
     # Allow port reuse to avoid 'Address already in use' errors
     socketserver.TCPServer.allow_reuse_address = True
-    
+
     with socketserver.TCPServer(server_address, StudioHTTPRequestHandler) as httpd:
         url = f"http://{host}:{port}/"
         print(f"  [studio] Starting MeshFlow Studio UI at {url}")
         print("  [studio] Press Ctrl-C to stop.")
-        
+
         try:
             webbrowser.open(url)
         except Exception:
             pass
-            
+
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

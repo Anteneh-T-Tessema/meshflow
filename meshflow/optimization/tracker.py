@@ -32,7 +32,7 @@ class OptimizationTracker:
         self.max_cost_usd = max_cost_usd
         self.action = action
         self.fallback_model = fallback_model
-        
+
         self.consumed_tokens = 0
         self.consumed_cost = 0.0
         self.alerts_triggered: list[str] = []
@@ -78,7 +78,7 @@ class OptimizationTracker:
         # Strategy: Keep system prompt, keep first message (user query), and last two turns
         first_msg = messages[0]
         recent_turns = messages[-2:]
-        
+
         compressed_messages = [first_msg]
         # Avoid duplicating the first message if it's already in the recent turns
         if first_msg not in recent_turns:
@@ -92,10 +92,10 @@ class OptimizationTracker:
     def trim_rag_context(self, chunks: list[Any], max_allowed_tokens: int) -> list[Any]:
         """Dynamically trim the list of retrieved knowledge chunks to fit within token boundaries."""
         from meshflow.optimization.planner import TokenBudgetPlanner
-        
+
         trimmed: list[Any] = []
         current_tokens = 0
-        
+
         for chunk in chunks:
             text = getattr(chunk, "text", str(chunk))
             tok = TokenBudgetPlanner.estimate_tokens(text)
@@ -103,7 +103,7 @@ class OptimizationTracker:
                 break
             trimmed.append(chunk)
             current_tokens += tok
-            
+
         return trimmed
 
     def should_early_exit(self, confidence: float, threshold: float = 0.90) -> bool:

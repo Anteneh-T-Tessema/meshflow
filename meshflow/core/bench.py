@@ -37,7 +37,7 @@ class FrameworkBenchmark:
 
     def _build_test_workflow(self) -> WorkflowDefinition:
         wf = WorkflowDefinition(name="benchmark-workflow")
-        
+
         # Build sequential dummy nodes with zero-latency runner
         async def dummy_runner(node_input: NodeInput) -> NodeOutput:
             return NodeOutput(content=f"Processed: {node_input.task}")
@@ -84,12 +84,12 @@ class FrameworkBenchmark:
             await wf.run("test", runtime)
             t1 = time.perf_counter()
             latencies.append((t1 - t0) * 1000.0)
-        
+
         end_total = time.perf_counter()
 
         total_time_ms = (end_total - start_total) * 1000.0
         latencies.sort()
-        
+
         avg_run_time_ms = sum(latencies) / len(latencies)
         p50 = latencies[int(len(latencies) * 0.5)]
         p95 = latencies[int(len(latencies) * 0.95)]

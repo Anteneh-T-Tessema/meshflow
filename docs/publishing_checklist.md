@@ -176,8 +176,8 @@ docker run -p 8080:8080 \
   meshflow proxy --port 8080 --host 0.0.0.0
 
 # Push
-docker push meshflowdev/meshflow-mcp:1.9.1
-docker push meshflowdev/meshflow-mcp:latest
+docker push antenehcodding/meshflow-mcp:1.9.2
+docker push antenehcodding/meshflow-mcp:latest
 ```
 
 ---

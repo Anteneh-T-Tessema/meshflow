@@ -47,7 +47,7 @@ class TokenBudgetPlanner:
     ) -> dict[str, Any]:
         """Estimate the total input token requirements for a proposed agent turn."""
         sys_tokens = self.estimate_tokens(system_prompt)
-        
+
         msg_tokens = 0
         for msg in messages:
             content = msg.get("content", "")
@@ -93,7 +93,7 @@ class ModelSizingAdvisor:
     def recommend_model(self, task: str, tools: list[Any] | None = None) -> str:
         """Evaluate task and tools to recommend either a high-tier or low-tier model."""
         task_lower = task.lower()
-        
+
         # Heuristic 1: If there are tools, it requires tool calling capability
         if tools and len(tools) > 1:
             return self.HIGH_TIER
