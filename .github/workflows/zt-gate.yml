@@ -26,18 +26,42 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install local meshflow
         run: pip install -e . --quiet
 
       - name: Zero Trust Audit — ${{ matrix.tier }}
         id: zt
-        uses: ./.github/actions/zt-audit
-        with:
-          tier: ${{ matrix.tier }}
-          fail-on-gaps: ${{ matrix.fail-on-gaps }}
+        shell: bash
+        run: |
+          REPORT=$(meshflow zt-audit --tier ${{ matrix.tier }} --json 2>&1)
+          echo "$REPORT"
+
+          SCORE=$(echo "$REPORT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('score_pct',0))" 2>/dev/null || echo "0")
+          TIER=$(echo "$REPORT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tier',''))"       2>/dev/null || echo "")
+          GAPS=$(echo "$REPORT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(','.join(d.get('controls_gap',[])))" 2>/dev/null || echo "parse-error")
+
+          echo "score=$SCORE"   >> "$GITHUB_OUTPUT"
+          echo "tier=$TIER"     >> "$GITHUB_OUTPUT"
+          echo "gaps=$GAPS"     >> "$GITHUB_OUTPUT"
+          PASSED=$([ -z "$GAPS" ] && echo "true" || echo "false")
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+
+          echo "## Zero Trust Audit — ${{ matrix.tier }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Score | **${SCORE}%** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Gaps  | ${GAPS:-none} |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail on gaps
+        if: matrix.fail-on-gaps == 'true' && steps.zt.outputs.passed == 'false'
+        run: |
+          echo "::error::Zero Trust audit failed — gaps: ${{ steps.zt.outputs.gaps }}"
+          exit 1
 
       - name: Print results
+        if: always()
         run: |
           echo "Tier:   ${{ steps.zt.outputs.tier }}"
           echo "Score:  ${{ steps.zt.outputs.score }}%"
@@ -47,7 +71,6 @@ jobs:
   zt-hipaa:
     name: Zero Trust Audit (HIPAA)
     runs-on: ubuntu-latest
-    # Only run on main — HIPAA gate for release branches
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
 
     steps:
@@ -57,12 +80,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install local meshflow
         run: pip install -e . --quiet
 
       - name: Zero Trust Audit — HIPAA
-        uses: ./.github/actions/zt-audit
-        with:
-          regulation: hipaa
-          fail-on-gaps: "false"
+        shell: bash
+        run: |
+          REPORT=$(meshflow zt-audit --regulation hipaa --json 2>&1)
+          echo "$REPORT"
+          GAPS=$(echo "$REPORT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(','.join(d.get('controls_gap',[])))" 2>/dev/null || echo "parse-error")
+          echo "HIPAA gaps: ${GAPS:-none}"
+          echo "## Zero Trust Audit — HIPAA" >> "$GITHUB_STEP_SUMMARY"
+          echo "Gaps: ${GAPS:-none}" >> "$GITHUB_STEP_SUMMARY"
