@@ -2,9 +2,11 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![v1.0.0](https://img.shields.io/badge/version-1.0.0-blue.svg)](pyproject.toml)
-[![4,379 tests](https://img.shields.io/badge/tests-4%2C379%20passing-brightgreen.svg)](tests/)
+[![v1.9.1](https://img.shields.io/badge/version-1.9.1-blue.svg)](pyproject.toml)
+[![4,749 tests](https://img.shields.io/badge/tests-4%2C749%20passing-brightgreen.svg)](tests/)
 [![Production/Stable](https://img.shields.io/badge/status-Production%2FStable-brightgreen.svg)](README.md)
+[![MCP Compatible](https://img.shields.io/badge/MCP-compatible-purple.svg)](docs/integrations/mcp_clients.md)
+[![Claude Tool](https://img.shields.io/badge/Claude-tool%20ready-orange.svg)](docs/integrations/mcp_clients.md)
 
 **The production-safe infrastructure layer for multi-agent systems.**
 
@@ -296,6 +298,49 @@ Governance is a dial, not a wall:
 | Conformance certification | ❌ | ❌ | ❌ | **L0–L3 suite** |
 | Environmental cost tracking | ❌ | ❌ | ❌ | **MARLIN-style** |
 | Maturity | Production | Production | Production | **Production/Stable** |
+
+---
+
+## Use MeshFlow as an MCP tool in Claude Desktop, Cursor, or any MCP client
+
+```bash
+pip install meshflow
+```
+
+Add to `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`):
+
+```json
+{
+  "mcpServers": {
+    "meshflow": {
+      "command": "meshflow-mcp",
+      "env": { "ANTHROPIC_API_KEY": "sk-ant-YOUR_KEY" }
+    }
+  }
+}
+```
+
+Restart Claude Desktop. Three governed tools appear: `meshflow_run`, `meshflow_run_agent`, `meshflow_approve_hitl`.
+
+**No install needed (uvx):**
+```bash
+# claude_desktop_config.json — uvx variant
+{ "mcpServers": { "meshflow": { "command": "uvx", "args": ["meshflow", "mcp-stdio"] } } }
+```
+
+**As an Anthropic API tool:**
+```python
+from meshflow import meshflow_as_anthropic_tool, meshflow_tool_handler
+tool = meshflow_as_anthropic_tool()   # → pass to client.messages.create(tools=[tool])
+```
+
+**As an OpenAI tool:**
+```python
+from meshflow import meshflow_as_openai_tool
+tool = meshflow_as_openai_tool()      # → pass to client.chat.completions.create(tools=[tool])
+```
+
+**Full setup guide for Cursor, Zed, Continue.dev:** [docs/integrations/mcp_clients.md](docs/integrations/mcp_clients.md)
 
 ---
 

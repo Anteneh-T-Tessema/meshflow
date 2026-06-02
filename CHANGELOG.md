@@ -5,6 +5,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.9.2] — 2026-06-02
+
+### Publishing infrastructure — Smithery, Docker, README, checklist
+
+**4,749 tests passing.**
+
+#### Smithery MCP marketplace (`smithery.yaml`)
+
+MeshFlow is now listable on the Smithery MCP marketplace (smithery.ai).
+The manifest defines all three tools, config schema with policy enum and
+budget cap, and the `commandFunction` that translates Smithery UI config
+to env vars.
+
+```bash
+# List via Smithery CLI
+npx @smithery/cli publish --config smithery.yaml
+
+# Or connect GitHub repo at smithery.ai → "Add Server" → point to this repo
+```
+
+#### Docker image for self-hosted MCP server (`Dockerfile.mcp`)
+
+```bash
+# stdio MCP (Claude Desktop, Cursor)
+docker run -e ANTHROPIC_API_KEY=sk-ant-... meshflowdev/meshflow-mcp:1.9.2
+
+# HTTP proxy mode (any language, any process)
+docker run -p 8080:8080 -e ANTHROPIC_API_KEY=sk-ant-... \
+  meshflowdev/meshflow-mcp:1.9.2 \
+  meshflow proxy --port 8080 --host 0.0.0.0
+```
+
+GitHub Actions workflow `.github/workflows/publish-docker.yml` builds and
+pushes to Docker Hub + GitHub Container Registry on every version tag.
+
+#### README — MCP/tools section + updated badges
+
+README now shows:
+- MCP Compatible + Claude Tool badges
+- One-block Claude Desktop config snippet at the top of the Install section
+- uvx usage (no install required)
+- `meshflow_as_anthropic_tool()` and `meshflow_as_openai_tool()` one-liners
+- Updated version badge (v1.9.2) and test count badge (4,749)
+
+#### Publishing checklist (`docs/publishing_checklist.md`)
+
+Complete step-by-step publish commands for every platform: PyPI (automated),
+Claude Code skills PR, Claude Desktop, Smithery, Cursor, OpenAI GPT Actions,
+Anthropic Built with Claude, Docker Hub, npm, Rust crate, Go module, Java
+Maven, Product Hunt, Show HN, deepset outreach. Includes version bump
+procedure and post-publish verification commands.
+
+---
+
 ## [1.9.1] — 2026-06-02
 
 ### Skills publishing infrastructure — Claude, OpenAI, MCP clients

@@ -14,7 +14,10 @@
 | **GitHub** | https://github.com/Anteneh-T-Tessema/meshflow |
 | **Website** | https://meshflow.dev |
 | **License** | Apache 2.0 |
-| **Current version** | 1.0.0 (Production/Stable) |
+| **Current version** | 1.9.1 (Production/Stable) |
+| **MCP server** | `pip install meshflow && meshflow-mcp` |
+| **Claude Desktop** | `meshflow-mcp` console script (see `docs/integrations/mcp_clients.md`) |
+| **Tests passing** | 4,749 |
 | **Python requirement** | 3.11+ |
 
 ---

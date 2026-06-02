@@ -1,0 +1,138 @@
+name: meshflow
+displayName: MeshFlow
+description: >
+  Production-safe multi-agent orchestration with governance built in.
+  Run governed agent workflows, enforce tool call policy at the wire level,
+  maintain SHA-256 tamper-evident audit chains, and apply HIPAA/SOX/GDPR/
+  ISO 27001/EU AI Act compliance — zero configuration required.
+
+  Every tool call returns: SHA-256 hash-chained audit entry, cost accounting,
+  Zero Trust agent identity verification, and compliance profile enforcement.
+version: 1.9.1
+license: Apache-2.0
+homepage: https://meshflow.dev
+repository: https://github.com/Anteneh-T-Tessema/meshflow
+author:
+  name: Anteneh Tessema
+  email: anteneh@yayasystems.com
+
+categories:
+  - developer-tools
+  - ai-agents
+  - compliance
+  - security
+
+keywords:
+  - agents
+  - multi-agent
+  - llm-orchestration
+  - governance
+  - hipaa
+  - gdpr
+  - sox
+  - iso-27001
+  - zero-trust
+  - audit-trail
+  - mcp
+  - compliance
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      anthropicApiKey:
+        type: string
+        description: Anthropic API key (or set ANTHROPIC_API_KEY env var). Leave blank to use MESHFLOW_MOCK=1 for testing.
+        default: ""
+      policy:
+        type: string
+        description: "Default governance policy: standard | strict | hipaa | sox | gdpr | iso27001 | dev | sandbox"
+        default: standard
+        enum:
+          - standard
+          - strict
+          - hipaa
+          - sox
+          - gdpr
+          - iso27001
+          - ccpa
+          - dora
+          - eu_ai_act
+          - dev
+          - sandbox
+      budgetUsd:
+        type: number
+        description: Hard cost cap in USD per run. Execution stops before reaching this limit.
+        default: 5.0
+      mockMode:
+        type: boolean
+        description: Run in sandbox mode — no API key needed, deterministic outputs for testing.
+        default: false
+    required: []
+  commandFunction: |-
+    (config) => ({
+      command: "meshflow-mcp",
+      args: [],
+      env: {
+        ANTHROPIC_API_KEY: config.anthropicApiKey || "",
+        MESHFLOW_DEFAULT_POLICY: config.policy || "standard",
+        MESHFLOW_DEFAULT_BUDGET_USD: String(config.budgetUsd || 5.0),
+        MESHFLOW_MOCK: config.mockMode ? "1" : "0",
+      }
+    })
+
+tools:
+  - name: meshflow_run
+    description: >
+      Run any task through a governed multi-agent pipeline.
+      Every run gets: SHA-256 tamper-evident audit chain, hard cost cap,
+      HIPAA/SOX/GDPR/ISO 27001 compliance, Zero Trust agent identity,
+      and durable crash recovery. Returns result + run_id for audit.
+    inputSchema:
+      type: object
+      properties:
+        task:
+          type: string
+          description: The task to execute through the governed agent pipeline.
+        policy:
+          type: string
+          description: "Governance policy: standard | strict | hipaa | sox | gdpr | dev | sandbox"
+          enum: [standard, strict, hipaa, sox, gdpr, iso27001, ccpa, dora, eu_ai_act, dev, sandbox]
+        budget_usd:
+          type: number
+          description: Hard cost cap in USD. Execution stops before reaching this limit.
+      required: [task]
+
+  - name: meshflow_run_agent
+    description: >
+      Call a specific registered MeshFlow agent by name.
+      Returns the agent's output plus governance receipt.
+    inputSchema:
+      type: object
+      properties:
+        agent_name:
+          type: string
+          description: Name of the registered agent.
+        task:
+          type: string
+          description: The task to pass to the agent.
+      required: [agent_name, task]
+
+  - name: meshflow_approve_hitl
+    description: >
+      Approve or reject a paused human-in-the-loop checkpoint.
+      Use when meshflow_run returns status='paused' and you have reviewed the output.
+    inputSchema:
+      type: object
+      properties:
+        run_id:
+          type: string
+          description: The run_id returned by the paused workflow.
+        approved:
+          type: boolean
+          description: true to approve, false to reject.
+        comment:
+          type: string
+          description: Optional comment for the audit trail.
+      required: [run_id, approved]

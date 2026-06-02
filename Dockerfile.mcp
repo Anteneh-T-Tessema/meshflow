@@ -1,0 +1,34 @@
+FROM python:3.12-slim
+
+LABEL maintainer="anteneh@yayasystems.com"
+LABEL description="MeshFlow MCP Server — governed multi-agent orchestration as an MCP tool"
+LABEL version="1.9.1"
+
+# Minimal system deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install MeshFlow
+RUN pip install --no-cache-dir "meshflow==1.9.1"
+
+# Non-root user for security
+RUN useradd -m -u 1000 meshflow
+USER meshflow
+WORKDIR /home/meshflow
+
+# Runtime env defaults — override at docker run time
+ENV MESHFLOW_MOCK=0
+ENV MESHFLOW_DEFAULT_POLICY=standard
+ENV MESHFLOW_DEFAULT_BUDGET_USD=5.0
+
+# Expose nothing — stdio MCP server communicates via stdin/stdout
+# HTTP proxy mode: EXPOSE 8080
+EXPOSE 8080
+
+COPY --chown=meshflow:meshflow entrypoint.sh /home/meshflow/entrypoint.sh
+RUN chmod +x /home/meshflow/entrypoint.sh 2>/dev/null || true
+
+# Default: stdio MCP server (for Claude Desktop, Cursor, etc.)
+# Override CMD for HTTP proxy mode: CMD ["meshflow", "proxy", "--port", "8080", "--host", "0.0.0.0"]
+CMD ["meshflow-mcp"]
