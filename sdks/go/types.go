@@ -65,11 +65,15 @@ type StreamEvent struct {
 	Timestamp          float64 `json:"timestamp,omitempty"`
 
 	// v1.10.0 — model routing context
-	ModelUsed          string  `json:"model_used,omitempty"`
-	TierUsed           string  `json:"tier_used,omitempty"`
-	IsLocalModel       bool    `json:"is_local_model,omitempty"`
-	CascadeEscalations int     `json:"cascade_escalations,omitempty"`
-	StatedConfidence   float64 `json:"stated_confidence,omitempty"`
+	ModelUsed          string                 `json:"model_used,omitempty"`
+	TierUsed           string                 `json:"tier_used,omitempty"`
+	IsLocalModel       bool                   `json:"is_local_model,omitempty"`
+	CascadeEscalations int                    `json:"cascade_escalations,omitempty"`
+	StatedConfidence   float64                `json:"stated_confidence,omitempty"`
+	// Metadata carries arbitrary key-value data from routing events and node_end events.
+	// For routing events: model, tier, is_local, cascade_escalation, reason.
+	// For node_end events: tokens, cost_usd.
+	Metadata           map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // TraceStep is a single ledger record within a run trace.
