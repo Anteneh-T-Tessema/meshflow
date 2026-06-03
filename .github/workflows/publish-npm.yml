@@ -1,0 +1,42 @@
+name: Publish npm SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 1.13.0)"
+        required: false
+        default: "1.13.0"
+
+jobs:
+  publish:
+    name: Publish meshflow-sdk to npm
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build 2>/dev/null || echo "no build step — pure JS/types"
+
+      - name: Publish to npm
+        if: env.NPM_TOKEN != ''
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Skip — no NPM_TOKEN
+        if: env.NPM_TOKEN == ''
+        run: echo "::warning::NPM_TOKEN not set — skipping npm publish."

@@ -1,0 +1,36 @@
+name: Publish Rust SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 1.13.0)"
+        required: false
+        default: "1.13.0"
+
+jobs:
+  publish:
+    name: Publish meshflow-sdk to crates.io
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    defaults:
+      run:
+        working-directory: sdks/rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Publish to crates.io
+        if: env.CARGO_REGISTRY_TOKEN != ''
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Skip — no CARGO_REGISTRY_TOKEN
+        if: env.CARGO_REGISTRY_TOKEN == ''
+        run: echo "::warning::CARGO_REGISTRY_TOKEN not set — skipping crates.io publish."
