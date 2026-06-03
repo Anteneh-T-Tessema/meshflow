@@ -80,17 +80,38 @@ This is the public roadmap. It is a living document — priorities shift based o
 - ✅ **`meshflow routing-report`** — CLI: tier distribution, cost savings vs. always-large, adaptation history; `--state`, `--export`, `--json` flags
 - ✅ **4,963 tests passing** — 81–85 sprints; CI green on Python 3.11 + 3.12
 
+## Shipped — v1.10–v1.13.0 (June 2026)
+
+**Theme: Claude ecosystem parity + Forensic audit + Competitive positioning**
+
+- ✅ **AdvisorAgent + AdvisorRouter** — Anthropic advisor-tool pattern; high-intelligence advisor + cost-efficient executor; complexity-based routing
+- ✅ **BudgetConfig / ThinkingBudget / EffortBudget** — fine-grained token and effort budgets enforced in StepRuntime; `BudgetViolation` on cap breach
+- ✅ **DynamicWorkflow + DynamicCoordinator** — runtime agent spawning; coordinator watches step output and spawns specialists on keyword match
+- ✅ **ContextCompactor** — Claude-native, sliding-window, and summary compaction strategies; `compact()` returns `(messages, CompactionStats)`
+- ✅ **Tool streaming** — `ToolStreamEvent` hierarchy in `meshflow.streaming.tool_stream`; `stream_tool_calls()` async generator; SSE helpers
+- ✅ **meshflow-forensic** — standalone pip package (`pip install meshflow-forensic`); `DascGate`, `AuditLedger`, `ForensicReport`, `EUAIActChecker`, `TaintGraph`; zero runtime deps
+- ✅ **SOC2Checker** — programmatic SOC 2 Type II controls check; 18 controls across all 5 TSC categories; `to_json()` + `print_summary()`
+- ✅ **CostRegressionGate** — `CostRegressionError` raised in CI when per-run cost exceeds baseline; `record()` + `check()` API
+- ✅ **Competitive benchmarks** — `benchmarks/competitive_bench.py`; MeshFlow vs LangGraph / CrewAI / AutoGen on RPS, latency, governance overhead
+- ✅ **AutoGen 0.4+ parity** — `AssistantAgent`, `UserProxyAgent`, `SocietyOfMind`, `MagenticOne`, `AgentRuntime`, topic pub/sub, termination conditions
+- ✅ **OpenAI Agents SDK parity** — `Agent`, `Runner`, `handoff`, `AgentHooks`, `guardrails`, `FunctionTool`, `as_tool()`
+- ✅ **5,711 tests passing** — CI green on Python 3.11 + 3.12
+- ✅ **Multi-platform publish** — PyPI `meshflow==1.13.0`, PyPI `meshflow-forensic==1.0.0`, npm `meshflow-sdk@1.13.0`, GHCR `meshflow-mcp:1.13.0`, Go `sdks/go/v1.13.0`
+
+---
+
 ## Next — v1.4 (June–July 2026)
 
-**Theme: Multi-language ecosystem + Enterprise auth + Observability**
+**Theme: Launch + ecosystem growth**
 
-- ✅ Go SDK — `go get meshflow.dev/go-sdk` (in progress)
-- ✅ OIDC/SSO middleware — Okta, Auth0, Azure AD, Google Workspace (in progress)
-- ✅ Show HN launch — `docs/launch/show_hn.md` ready to post (v1.10.0 cascade router story)
-- ✅ Product Hunt launch — `docs/launch/product_hunt.md` ready to post (v1.10.0)
-- ✅ `RedisMemoryBackend` — TTL, key prefix, multi-tenant; `pip install redis`
-- ✅ `FileMemoryBackend` — zero-dep JSON files, atomic writes, path-traversal-safe
-- ✅ Discord community launch — `docs/community/discord_setup.md` ready (v1.10.0, includes discord.py bot script, GH Actions webhook, launch checklist)
+- [ ] Show HN post — `docs/launch/show_hn.md` ready
+- [ ] Product Hunt post — `docs/launch/product_hunt.md` ready
+- [ ] Discord server live — `docs/community/discord_setup.md` + launch checklist ready
+- [ ] Smithery listing — `smithery.yaml` at v1.13.0, submit at smithery.ai
+- [ ] Rust SDK on crates.io — `CARGO_REGISTRY_TOKEN` needed
+- ✅ `RedisMemoryBackend` — TTL, key prefix, multi-tenant
+- ✅ `FileMemoryBackend` — zero-dep JSON files, atomic writes
+- ✅ Go SDK — `go get github.com/Anteneh-T-Tessema/meshflow/sdks/go@v1.13.0`
 
 ---
 

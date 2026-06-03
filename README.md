@@ -2,8 +2,8 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![v1.9.1](https://img.shields.io/badge/version-1.9.1-blue.svg)](pyproject.toml)
-[![4,749 tests](https://img.shields.io/badge/tests-4%2C749%20passing-brightgreen.svg)](tests/)
+[![v1.13.0](https://img.shields.io/badge/version-1.13.0-blue.svg)](pyproject.toml)
+[![5,711 tests](https://img.shields.io/badge/tests-5%2C711%20passing-brightgreen.svg)](tests/)
 [![Production/Stable](https://img.shields.io/badge/status-Production%2FStable-brightgreen.svg)](README.md)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-purple.svg)](docs/integrations/mcp_clients.md)
 [![Claude Tool](https://img.shields.io/badge/Claude-tool%20ready-orange.svg)](docs/integrations/mcp_clients.md)
@@ -28,7 +28,7 @@ pip install meshflow
 
 ## Zero Trust for AI Agents — built in, on by default
 
-MeshFlow v1.1.0 is the first agentic framework to implement the [Anthropic Zero Trust for AI Agents framework](https://www.anthropic.com/research/zero-trust-ai-agents). Foundation tier is active on every `Mesh.run()` and `Workflow.run()` call. No configuration required.
+MeshFlow is the first agentic framework to implement the [Anthropic Zero Trust for AI Agents framework](https://www.anthropic.com/research/zero-trust-ai-agents). Foundation tier is active on every `Mesh.run()` and `Workflow.run()` call. No configuration required.
 
 **Foundation controls active on every run (zero config):**
 
@@ -86,7 +86,7 @@ built in, always on, never bolted on.
 | Secret vault | ✅ | ✗ | ✗ | ✗ |
 | Tenant isolation | ✅ | ✗ | ✗ | ✗ |
 | MCP server auto-generation | ✅ | ✗ | ✗ | ✗ |
-| 4,379 passing tests | ✅ | — | — | — |
+| 5,711 passing tests | ✅ | — | — | — |
 
 ---
 
@@ -947,7 +947,7 @@ cd meshflow
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-make test                 # run all 157 tests
+make test                 # run all 5,711 tests
 make check                # lint + typecheck + tests
 make run-quickstart       # simulated run, no API key needed
 make run-live             # real LLM run — requires ANTHROPIC_API_KEY in .env
