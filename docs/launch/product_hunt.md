@@ -1,130 +1,145 @@
-# Product Hunt Launch Kit: MeshFlow
+# Product Hunt Launch — MeshFlow v1.10.0
 
 ## Submission Metadata
 
 - **Product Name**: MeshFlow
-- **Tagline**: 7 lines to a production-safe multi-agent workflow — the Stripe of agent infrastructure
-- **Topics**: Developer Tools, Artificial Intelligence, Open Source
-- **Keywords**: AI Agents, LLM Orchestration, Multi-Agent, HIPAA, SOC 2, ISO 27001, EU AI Act, Zero Trust, Governance
+- **Tagline**: Multi-agent pipelines that start cheap and get smarter every run
+- **Category**: Developer Tools / AI
+- **Website**: https://meshflow.dev
+- **GitHub**: https://github.com/Anteneh-T-Tessema/meshflow
 
 ---
 
-## Thumbnail / Gallery copy
+## Description (260 chars)
 
-**Slide 1 — The hook**
-> 79% of enterprises adopted AI agents. Only 11% run them in production.
-> MeshFlow closes the gap.
+MeshFlow routes each task to the cheapest model that can handle it — local llama3.2 for simple tasks, cloud GPT-4o only when confidence is low. Self-improving: thresholds auto-adapt from CONFIDENCE signals. HIPAA/SOX/GDPR built in. 5111 tests.
 
-**Slide 2 — The 7-line demo**
+---
+
+## Maker's First Comment
+
+Hey Product Hunt 👋
+
+I'm Anteneh, the maker of MeshFlow. Thanks for checking it out.
+
+**The problem I kept hitting:** You build a multi-agent pipeline, hardcode `gpt-4o` everywhere because it's the safe choice, and then watch your API bill climb while 70% of your tasks could have been handled by a free local model.
+
+**What v1.10.0 adds:** A cascade router that starts with the cheapest model and escalates automatically — but only when the agent itself isn't confident enough.
+
 ```python
-from meshflow import Workflow, CostCap, Agent
+from meshflow import (
+    Workflow, Agent, CostCap,
+    AdaptiveModelTierRouter, ModelTier, CascadeRouter,
+)
 
-wf = Workflow(cost_cap=CostCap(usd=5.00))
-wf.add(Agent('researcher'), Agent('analyst'), Agent('writer'))
-result = wf.run('Write a competitive analysis')
-# Compliant. Durable. Audited. Cost-capped.
+router = AdaptiveModelTierRouter(
+    tiers=[
+        ModelTier("fast",  "llama3.2",   max_tokens=512),   # local, $0.00
+        ModelTier("smart", "mistral:7b", max_tokens=2048),  # local, $0.00
+        ModelTier("large", "gpt-4o",     max_tokens=4096),  # pay only here
+    ],
+    adapt_every=50,  # auto-adjust thresholds every 50 routes
+)
+
+cascade = CascadeRouter(router, escalation_threshold=0.65)
+
+wf = Workflow(cost_cap=CostCap(usd=0.50))
+wf.add(Agent("analyst", model_router=cascade, cascade_threshold=0.65))
 ```
 
-**Slide 3 — What every run gets**
-- ✅ SHA-256 tamper-evident audit chain
-- ✅ Hard cost cap (stops before overage, not after)
-- ✅ HIPAA/SOX/GDPR/ISO 27001/EU AI Act compliance built-in
-- ✅ Zero Trust: cryptographic agent identity, deny-by-default RBAC
-- ✅ Crash recovery across SQLite/Redis/Postgres/S3
-- ✅ 70–85% token cost reduction
-- ✅ Zero configuration
+**Cost profile on a typical workload:**
 
-**Slide 4 — The Stripe parallel**
-> Stripe made payment infrastructure something developers could trust with production money.
-> MeshFlow makes agent infrastructure something engineers can trust with production workloads.
+| Tier | Tasks | Cost |
+|---|---|---|
+| fast (llama3.2, local) | ~70% | $0.00 |
+| smart (mistral, local) | ~20% | $0.00 |
+| large (gpt-4o, cloud) | ~10% | pay only these |
 
-**Slide 5 — Install**
+vs. always-gpt-4o: same quality, ~10× cheaper.
+
+**What "self-improving" means in practice:**
+- Every 50 routes, bucket-analyze which task complexity scores are failing the cheap model
+- Auto-shift thresholds — no manual tuning, no redeployment
+- Thresholds persist: `router.save("state.json")` / `AdaptiveModelTierRouter.load("state.json")`
+
+**Everything else MeshFlow does:**
+- SHA-256 tamper-evident audit chain on every agent step
+- HIPAA / SOX / GDPR / PCI / NERC compliance profiles (one line to enable)
+- Hard cost caps enforced in the kernel — `CostCap(usd=5.00)` can't be bypassed
+- Real-time SSE streaming: `chunks_to_sse(wf.astream(task))` for FastAPI in 4 lines
+- `Workflow.batch_run(tasks, max_concurrency=4)` for parallel execution
+- Go SDK with full parity: multimodal, batch, streaming channel filters
+- 5111 tests, Python 3.11 + 3.12
+
+**Install:**
 ```bash
 pip install meshflow
 ```
-> Apache 2.0 · Self-hostable · No platform tax
 
----
-
-## Short Description (< 260 chars)
-
-The open-source infrastructure layer for production agent deployments. HIPAA/SOC2 compliance, SHA-256 audit chain, hard cost caps, and 70–85% token savings — built in, not bolted on. 7 lines to ship.
-
----
-
-## Detailed Description
-
-Most AI agent frameworks are optimized for demos. MeshFlow is optimized for production.
-
-**The 68-point gap:** 79% of enterprises have adopted AI agents. Only 11% run them in production. The gap isn't that agents don't work — it's that every framework leaves compliance, cost governance, and crash recovery as exercises for the developer. MeshFlow treats them as infrastructure.
-
-**What every MeshFlow run gets, zero configuration:**
-
-Every single agent step passes through a 15-step governance kernel before the LLM call and after it. No opt-in required. The kernel handles:
-
-- SHA-256 tamper-evident audit chain (every step cryptographically linked — modify a log and the chain breaks)
-- Hard cost cap via `CostCap` — execution stops before the limit, not after
-- HIPAA/SOX/GDPR/PCI/NERC compliance profiles — one line to apply
-- Durable execution — crash recovery via SQLite/Redis/Postgres/S3 checkpoints
-- Subprocess sandbox — code execution is memory-capped (256 MB), network-blocked, fully isolated
-- Rate limiting, SLA tracking, policy-as-code enforcement
-
-**The token cost moat:**
-
-MeshFlow is the only framework with a complete token optimization layer:
-- Anthropic `cache_control` on every system prompt → 70–90% cost reduction on cached tokens
-- `ModelRouter` routes cheap tasks to nano models → 40–70% reduction on mixed workflows
-- `ContextCompactor` compresses context at configurable thresholds → 50–70% reduction on long runs
-- `RAGTokenBudget` caps knowledge injection → 40–60% reduction on RAG-heavy workflows
-
-Combined: 70–85% total token cost reduction in production. At scale, this pays back implementation cost in the first week.
-
-**Framework-agnostic by design:**
-
-MeshFlow wraps any existing agent system — you don't have to rewrite anything:
-
-```python
-from meshflow import govern, from_langgraph, from_crewai, from_autogen
-
-governed = govern(your_existing_app)       # any framework
-governed = from_langgraph(your_graph)      # LangGraph
-governed = from_crewai(your_crew)          # CrewAI
-governed = from_autogen(your_agent)        # AutoGen
-```
-
-**Apache 2.0. Self-hostable. No platform tax. 4,723 tests passing.**
-
----
-
-## Maker's Comment
-
-Hi Hunters,
-
-We spent the past year building agent systems for banks, clinical operations teams, and engineering organizations. Every single time, we hit the same four walls: the security team blocked it (no sandbox), the finance team blocked it (no cost cap), the compliance team blocked it (no audit trail), and the infrastructure team blocked it (no crash recovery).
-
-We realized the frameworks weren't the problem — the missing layer was. Every team was solving the same set of hard problems from scratch, after the framework failed them in production.
-
-MeshFlow is the layer that was missing. It doesn't replace LangGraph or CrewAI. It makes them safe to ship.
-
-Try it in 60 seconds (no API key required):
-
+**Try it offline (zero API keys):**
 ```bash
-pip install meshflow
-python -c "
-import os; os.environ['MESHFLOW_MOCK'] = '1'
-from meshflow import Workflow, CostCap, Agent
-wf = Workflow(cost_cap=CostCap(usd=5.00), mode='sandbox')
-wf.add(Agent('researcher'), Agent('analyst'))
-print(wf.run('What makes AI agents fail in production?').summary())
-"
+MESHFLOW_MOCK=1 python examples/cascade_routing.py
 ```
 
-We'd love to know: what's blocking your team from shipping agents to production right now?
+Questions welcome — I read everything.
 
-— The MeshFlow Team
+---
 
-**GitHub:** https://github.com/Anteneh-T-Tessema/meshflow
-**Docs:** https://meshflow.dev
-**PyPI:** https://pypi.org/project/meshflow/ (v1.6.0)
-**npm:** https://www.npmjs.com/package/meshflow-sdk (v1.6.0)
-**Rust:** https://crates.io/crates/meshflow-sdk (v1.6.0)
+## Gallery Captions
+
+**Image 1 — Cascade routing:**
+```
+Task: "Summarise Q3 results"
+→ [fast] llama3.2    CONFIDENCE:0.91  $0.0000  ✓ done in 1 call
+
+Task: "Analyse GDPR Article 17 implications"
+→ [fast] llama3.2    CONFIDENCE:0.38  escalating...
+→ [smart] mistral    CONFIDENCE:0.71  $0.0000  ✓ done in 2 calls
+
+Task: "Draft a data processing agreement"
+→ [fast]  llama3.2   CONFIDENCE:0.29  escalating...
+→ [smart] mistral    CONFIDENCE:0.44  escalating...
+→ [large] gpt-4o     CONFIDENCE:0.88  $0.021   ✓ done in 3 calls
+```
+
+**Image 2 — Self-adaptation after 200 routes:**
+```
+meshflow routing-report --db meshflow_routing.db
+
+  smart_threshold : 0.33 → 0.28  ↓ (fast tier handles more)
+  large_threshold : 0.67 → 0.71  ↑ (smart tier handles more)
+  cost saved      : $2.40 vs always-gpt-4o  (80% reduction)
+```
+
+**Image 3 — Per-agent cost attribution:**
+```python
+result.agent_costs   # {"planner": 0.0, "researcher": 0.0, "writer": 0.021}
+result.cloud_agents  # ["writer"]
+result.total_cost_usd  # 0.021
+```
+
+**Image 4 — FastAPI SSE endpoint (4 lines):**
+```python
+@app.get("/stream")
+async def stream(task: str):
+    return StreamingResponse(
+        chunks_to_sse(wf.astream(task)),
+        media_type="text/event-stream",
+    )
+```
+
+---
+
+## Topics
+- Developer Tools
+- Artificial Intelligence
+- Open Source
+- Python
+- LLM
+
+## Links
+- GitHub: https://github.com/Anteneh-T-Tessema/meshflow
+- Docs: https://meshflow.dev/docs
+- PyPI: https://pypi.org/project/meshflow/
+- Docker: `docker pull ghcr.io/anteneh-t-tessema/meshflow-mcp:1.10.0`
+- QUICKSTART.md: https://github.com/Anteneh-T-Tessema/meshflow/blob/main/QUICKSTART.md

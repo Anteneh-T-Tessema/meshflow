@@ -86,8 +86,10 @@ This is the public roadmap. It is a living document — priorities shift based o
 
 - ✅ Go SDK — `go get meshflow.dev/go-sdk` (in progress)
 - ✅ OIDC/SSO middleware — Okta, Auth0, Azure AD, Google Workspace (in progress)
-- [ ] Show HN launch — `docs/launch/show_hn.md` ready to post
-- [ ] Product Hunt launch — `docs/launch/product_hunt.md` ready to post
+- ✅ Show HN launch — `docs/launch/show_hn.md` ready to post (v1.10.0 cascade router story)
+- ✅ Product Hunt launch — `docs/launch/product_hunt.md` ready to post (v1.10.0)
+- ✅ `RedisMemoryBackend` — TTL, key prefix, multi-tenant; `pip install redis`
+- ✅ `FileMemoryBackend` — zero-dep JSON files, atomic writes, path-traversal-safe
 - [ ] Discord community launch — `docs/community/discord_setup.md` ready
 
 ---

@@ -233,6 +233,8 @@ from meshflow.intelligence.memory_backends import (
     InMemoryBackend,
     SQLiteMemoryBackend,
     PostgresMemoryBackend,
+    RedisMemoryBackend,
+    FileMemoryBackend,
     snapshot_from_memory,
     restore_memory,
 )
@@ -762,6 +764,8 @@ __all__ = [
     "InMemoryBackend",
     "SQLiteMemoryBackend",
     "PostgresMemoryBackend",
+    "RedisMemoryBackend",
+    "FileMemoryBackend",
     "snapshot_from_memory",
     "restore_memory",
     # ── LLM response cache ────────────────────────────────────────────────────

@@ -277,6 +277,175 @@ class PostgresMemoryBackend(MemoryBackend):
         return [r[0] for r in rows]
 
 
+# ── Redis backend ─────────────────────────────────────────────────────────────
+
+class RedisMemoryBackend(MemoryBackend):
+    """Persist agent memory snapshots in Redis.
+
+    Zero-copy JSON serialisation; each session is a single Redis STRING key.
+    Supports optional TTL for automatic expiry and a key prefix for
+    multi-tenant isolation.
+
+    Requires ``redis`` (``pip install redis``).
+
+    Parameters
+    ----------
+    url:        Redis connection URL, e.g. ``"redis://localhost:6379/0"`` or
+                ``"rediss://user:pass@host:6380/1"`` for TLS.
+    ttl:        Time-to-live in seconds.  ``None`` (default) keeps keys forever.
+    prefix:     Key prefix applied to every session ID.  Useful for namespacing
+                multiple applications on the same Redis instance.
+                Default: ``"meshflow:memory:"``
+
+    Usage::
+
+        from meshflow import Agent
+        from meshflow.intelligence.memory_backends import RedisMemoryBackend
+
+        backend = RedisMemoryBackend("redis://localhost:6379/0", ttl=86400)
+        agent = Agent("analyst", memory=True, memory_backend=backend)
+
+        result = agent.run("Summarise Q3 results")   # memory saved to Redis
+        # --- process restart ---
+        agent2 = Agent("analyst", memory=True, memory_backend=backend)
+        result2 = agent2.run("Compare with Q2")      # memory loaded from Redis
+    """
+
+    def __init__(
+        self,
+        url: str = "redis://localhost:6379/0",
+        *,
+        ttl: int | None = None,
+        prefix: str = "meshflow:memory:",
+    ) -> None:
+        self.url = url
+        self.ttl = ttl
+        self.prefix = prefix
+        self._client: Any = None
+        self._lock = threading.Lock()
+
+    def _conn(self) -> Any:
+        if self._client is None:
+            with self._lock:
+                if self._client is None:
+                    try:
+                        import redis as _redis  # type: ignore[import]
+                    except ImportError as exc:
+                        raise ImportError(
+                            "RedisMemoryBackend requires the redis package: "
+                            "pip install redis"
+                        ) from exc
+                    self._client = _redis.from_url(
+                        self.url,
+                        decode_responses=True,
+                        socket_connect_timeout=5,
+                        socket_timeout=5,
+                    )
+        return self._client
+
+    def _key(self, session_id: str) -> str:
+        return f"{self.prefix}{session_id}"
+
+    def save(self, session_id: str, snapshot: dict[str, Any]) -> None:
+        payload = json.dumps(snapshot)
+        key = self._key(session_id)
+        r = self._conn()
+        if self.ttl is not None:
+            r.setex(key, self.ttl, payload)
+        else:
+            r.set(key, payload)
+
+    def load(self, session_id: str) -> dict[str, Any] | None:
+        raw = self._conn().get(self._key(session_id))
+        if raw is None:
+            return None
+        return json.loads(raw)
+
+    def delete(self, session_id: str) -> None:
+        self._conn().delete(self._key(session_id))
+
+    def list_sessions(self) -> list[str]:
+        pattern = f"{self.prefix}*"
+        keys = self._conn().keys(pattern)
+        prefix_len = len(self.prefix)
+        return [k[prefix_len:] for k in keys]
+
+    def refresh_ttl(self, session_id: str) -> bool:
+        """Reset the TTL for an existing session.  Returns True if the key existed."""
+        if self.ttl is None:
+            return False
+        return bool(self._conn().expire(self._key(session_id), self.ttl))
+
+
+# ── File backend ───────────────────────────────────────────────────────────────
+
+class FileMemoryBackend(MemoryBackend):
+    """Persist agent memory snapshots as JSON files in a local directory.
+
+    Zero external dependencies.  Each session is stored as
+    ``{directory}/{session_id}.json``.  Suitable for local development,
+    single-node deployments, and CI pipelines where Redis or Postgres are
+    not available.
+
+    Parameters
+    ----------
+    directory:  Path to the directory where snapshot files are stored.
+                Created automatically if it does not exist.
+
+    Usage::
+
+        from meshflow.intelligence.memory_backends import FileMemoryBackend
+
+        backend = FileMemoryBackend("~/.meshflow/memory")
+        agent = Agent("writer", memory=True, memory_backend=backend)
+    """
+
+    def __init__(self, directory: str = "meshflow_memory") -> None:
+        import os as _os
+        self.directory = _os.path.expanduser(directory)
+        _os.makedirs(self.directory, exist_ok=True)
+        self._lock = threading.Lock()
+
+    def _path(self, session_id: str) -> str:
+        import os as _os
+        # Sanitise session_id — allow alnum + hyphen + underscore only.
+        # Dots are excluded so that ".." cannot appear in filenames.
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)
+        return _os.path.join(self.directory, f"{safe}.json")
+
+    def save(self, session_id: str, snapshot: dict[str, Any]) -> None:
+        path = self._path(session_id)
+        tmp = path + ".tmp"
+        payload = json.dumps(snapshot, indent=2)
+        with self._lock:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(payload)
+            import os as _os
+            _os.replace(tmp, path)
+
+    def load(self, session_id: str) -> dict[str, Any] | None:
+        path = self._path(session_id)
+        try:
+            with self._lock, open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+
+    def delete(self, session_id: str) -> None:
+        import os as _os
+        with self._lock:
+            try:
+                _os.remove(self._path(session_id))
+            except FileNotFoundError:
+                pass
+
+    def list_sessions(self) -> list[str]:
+        import os as _os
+        with self._lock:
+            files = _os.listdir(self.directory)
+        return [f[:-5] for f in files if f.endswith(".json")]
+
+
 # ── Snapshot helpers ──────────────────────────────────────────────────────────
 
 def snapshot_from_memory(memory: Any) -> dict[str, Any]:
