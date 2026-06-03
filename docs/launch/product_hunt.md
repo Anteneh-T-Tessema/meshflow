@@ -1,9 +1,9 @@
-# Product Hunt Launch — MeshFlow v1.10.0
+# Product Hunt Launch — MeshFlow v1.12.0
 
 ## Submission Metadata
 
 - **Product Name**: MeshFlow
-- **Tagline**: Multi-agent pipelines that start cheap and get smarter every run
+- **Tagline**: Open-source multi-agent orchestration with governance, evals, and durable workers built in
 - **Category**: Developer Tools / AI
 - **Website**: https://meshflow.dev
 - **GitHub**: https://github.com/Anteneh-T-Tessema/meshflow
@@ -12,7 +12,7 @@
 
 ## Description (260 chars)
 
-MeshFlow routes each task to the cheapest model that can handle it — local llama3.2 for simple tasks, cloud GPT-4o only when confidence is low. Self-improving: thresholds auto-adapt from CONFIDENCE signals. HIPAA/SOX/GDPR built in. 5111 tests.
+MeshFlow is a governed agent runtime for regulated industries — HIPAA/SOX/GDPR compliance, SHA-256 audit chain, cost caps, and StructuredJudge evals baked into the kernel. LangGraph/CrewAI/AutoGen parity. 5,500+ tests.
 
 ---
 
@@ -24,27 +24,52 @@ I'm Anteneh, the maker of MeshFlow. Thanks for checking it out.
 
 **The problem I kept hitting:** You build a multi-agent pipeline, hardcode `gpt-4o` everywhere because it's the safe choice, and then watch your API bill climb while 70% of your tasks could have been handled by a free local model.
 
-**What v1.10.0 adds:** A cascade router that starts with the cheapest model and escalates automatically — but only when the agent itself isn't confident enough.
+**What v1.12.0 adds** (sprints 97–99):
 
 ```python
-from meshflow import (
-    Workflow, Agent, CostCap,
-    AdaptiveModelTierRouter, ModelTier, CascadeRouter,
-)
+# 1. Functional API (@task / @entrypoint — LangGraph-style)
+from meshflow import task, entrypoint
 
-router = AdaptiveModelTierRouter(
-    tiers=[
-        ModelTier("fast",  "llama3.2",   max_tokens=512),   # local, $0.00
-        ModelTier("smart", "mistral:7b", max_tokens=2048),  # local, $0.00
-        ModelTier("large", "gpt-4o",     max_tokens=4096),  # pay only here
-    ],
-    adapt_every=50,  # auto-adjust thresholds every 50 routes
-)
+@task
+async def analyse(text: str) -> str:
+    return f"analysis of: {text}"
 
-cascade = CascadeRouter(router, escalation_threshold=0.65)
+# 2. SpawnableAgent — specialised child agents spawned at runtime
+from meshflow.agents.spawnable import SpawnableAgent, SpawnConfig, SpawnRule
 
-wf = Workflow(cost_cap=CostCap(usd=0.50))
-wf.add(Agent("analyst", model_router=cascade, cascade_threshold=0.65))
+agent = SpawnableAgent("orchestrator", spawn_config=SpawnConfig(rules=[
+    SpawnRule("code",     keywords=["code", "function"], role="executor"),
+    SpawnRule("research", keywords=["find", "analyse"],  role="researcher"),
+], parallel=True))
+result = agent.run("Write a Python function and analyse its complexity.")
+
+# 3. StructuredJudge evals with CI regression gate
+from meshflow.eval.judge_v2 import StructuredJudge, EvalCI, RubricCriterion
+
+judge = StructuredJudge(criteria=[
+    RubricCriterion("accuracy",  weight=0.6),
+    RubricCriterion("conciseness", weight=0.4),
+])
+ci = EvalCI(judge=judge, baseline_pass_rate=0.85, raise_on_regression=True)
+
+# 4. @traceable + LangfuseExporter
+from meshflow.observability.traceable import traceable, LangfuseExporter
+traceable.set_exporter(LangfuseExporter(public_key="pk-...", secret_key="sk-..."))
+
+@traceable(run_type="chain")
+async def my_pipeline(task: str) -> str:
+    return await wf.run_async(task)
+
+# 5. Durable Workers with SQLite persistence
+from meshflow.workers import durable_task, WorkerDaemon, CronTrigger
+
+@durable_task(max_retries=3)
+async def process_report(report_id: str) -> str:
+    return f"processed {report_id}"
+
+daemon = WorkerDaemon()
+daemon.register(process_report)
+CronTrigger(cron="0 9 * * *").add(process_report, report_id="daily")
 ```
 
 **Cost profile on a typical workload:**
@@ -57,19 +82,28 @@ wf.add(Agent("analyst", model_router=cascade, cascade_threshold=0.65))
 
 vs. always-gpt-4o: same quality, ~10× cheaper.
 
-**What "self-improving" means in practice:**
-- Every 50 routes, bucket-analyze which task complexity scores are failing the cheap model
-- Auto-shift thresholds — no manual tuning, no redeployment
-- Thresholds persist: `router.save("state.json")` / `AdaptiveModelTierRouter.load("state.json")`
+**New in v1.12.0:**
+- `SpawnableAgent` — runtime specialised child agent spawning
+- `StructuredJudge` / `TrajectoryEval` / `RAGEval` / `EvalCI` regression gate
+- `@traceable` + `LangfuseExporter` for distributed tracing
+- `MCPRouter` multi-server MCP with per-server authorization
+- `@durable_task` / `WorkerDaemon` / `CronTrigger` with SQLite job persistence
+- `Workflow.astream_model(task, Report)` — yields real Pydantic instances as tokens arrive
+- `MeshFlowCloud` SDK — one `.instrument()` call ships telemetry to dashboard
+- `BaseStore` / `SQLiteStore` wired into `Agent(memory_store=...)` for cross-session facts
 
-**Everything else MeshFlow does:**
+**The full stack:**
 - SHA-256 tamper-evident audit chain on every agent step
 - HIPAA / SOX / GDPR / PCI / NERC compliance profiles (one line to enable)
 - Hard cost caps enforced in the kernel — `CostCap(usd=5.00)` can't be bypassed
+- Self-improving `AdaptiveModelTierRouter` — llama3.2 → mistral → gpt-4o, pay only when needed
 - Real-time SSE streaming: `chunks_to_sse(wf.astream(task))` for FastAPI in 4 lines
 - `Workflow.batch_run(tasks, max_concurrency=4)` for parallel execution
-- Go SDK with full parity: multimodal, batch, streaming channel filters
-- 5111 tests, Python 3.11 + 3.12
+- `Crew.from_yaml()` / `Crew.train()` / `Crew.replay()` (CrewAI full parity)
+- A2A agent-to-agent protocol with `/.well-known/agent-card` discovery
+- Code interpreter (sandboxed subprocess, module allow-list)
+- Multi-modal: image, document, audio
+- 5,500+ tests, Python 3.11 + 3.12
 
 **Install:**
 ```bash
@@ -78,7 +112,7 @@ pip install meshflow
 
 **Try it offline (zero API keys):**
 ```bash
-MESHFLOW_MOCK=1 python examples/cascade_routing.py
+MESHFLOW_MOCK=1 python examples/sprint95_features_demo.py
 ```
 
 Questions welcome — I read everything.
@@ -141,5 +175,5 @@ async def stream(task: str):
 - GitHub: https://github.com/Anteneh-T-Tessema/meshflow
 - Docs: https://meshflow.dev/docs
 - PyPI: https://pypi.org/project/meshflow/
-- Docker: `docker pull ghcr.io/anteneh-t-tessema/meshflow-mcp:1.10.0`
+- Docker: `docker pull ghcr.io/anteneh-t-tessema/meshflow-mcp:1.12.0`
 - QUICKSTART.md: https://github.com/Anteneh-T-Tessema/meshflow/blob/main/QUICKSTART.md

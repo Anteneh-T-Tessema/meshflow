@@ -2151,12 +2151,24 @@ class Workflow:
                 raise TypeError("initial_state must be a dict or a Pydantic model instance.")
         elif initial_state is not None:
             self.state = initial_state
+        self._next_step_idx = 0
+        self._interrupts_before = set()
+        self._interrupts_after = set()
+        self._paused = False
+        self._resume_task: str = ""
+        self._resume_accumulated: str = ""
+        self._resume_total_cost: float = 0.0
+        self._resume_total_tokens: int = 0
+        self._resume_blocked_nodes: list[str] = []
+        self._reducers: dict[Any, Any] = {}
 
     def add(
         self,
         *agents: Any,
         input_map: Any = None,
         output_map: Any = None,
+        interrupt_before: bool = False,
+        interrupt_after: bool = False,
     ) -> "Workflow":
         """Add one or more agents to the sequential workflow. Supports chaining."""
         self.agents.extend(agents)
@@ -2165,6 +2177,10 @@ class Workflow:
                 self._input_maps[agent.name] = input_map
             if output_map:
                 self._output_maps[agent.name] = output_map
+            if interrupt_before:
+                self._interrupts_before.add(agent.name)
+            if interrupt_after:
+                self._interrupts_after.add(agent.name)
         return self
 
     def add_parallel(
@@ -2172,8 +2188,20 @@ class Workflow:
         *agents: Any,
         input_map: Any = None,
         output_map: Any = None,
+        interrupt_before: bool = False,
+        interrupt_after: bool = False,
+        reducer: Any = None,
     ) -> "Workflow":
-        """Add parallel execution step with multiple agents. Supports chaining."""
+        """Add parallel execution step with multiple agents. Supports chaining.
+
+        Parameters
+        ----------
+        reducer:
+            Optional ``Callable[[dict[str, Any]], str]`` that receives a dict
+            of ``{agent_name: result}`` and returns the merged output string.
+            When omitted, the default ``[Agent name]:\noutput`` concatenation
+            is used.
+        """
         if not agents:
             raise ValueError("Must provide at least one agent for parallel execution.")
         self.agents.append(list(agents))
@@ -2182,15 +2210,33 @@ class Workflow:
             self._input_maps[block_key] = input_map
         if output_map:
             self._output_maps[block_key] = output_map
+        if interrupt_before:
+            self._interrupts_before.add(block_key)
+        if interrupt_after:
+            self._interrupts_after.add(block_key)
+        if reducer is not None:
+            self._reducers[block_key] = reducer
         return self
 
-    def add_conditional(self, condition: Any, branches: dict[str, Any]) -> "Workflow":
+    def add_conditional(
+        self,
+        condition: Any,
+        branches: dict[str, Any],
+        interrupt_before: bool = False,
+        interrupt_after: bool = False,
+    ) -> "Workflow":
         """Add a conditional branch step based on a state condition. Supports chaining."""
         if not callable(condition):
             raise TypeError("condition must be a callable.")
         if not isinstance(branches, dict):
             raise TypeError("branches must be a dictionary.")
-        self.agents.append(_ConditionalBranch(condition, branches))
+        cb = _ConditionalBranch(condition, branches)
+        self.agents.append(cb)
+        block_key = id(cb)
+        if interrupt_before:
+            self._interrupts_before.add(block_key)
+        if interrupt_after:
+            self._interrupts_after.add(block_key)
         return self
 
     def estimate_cost(self, task: str = "") -> "CostEstimate":
@@ -2717,7 +2763,8 @@ class Workflow:
 
             has_parallel = any(isinstance(a, (list, tuple)) for a in self.agents)
             has_conditional = any(isinstance(a, _ConditionalBranch) for a in self.agents)
-            if has_parallel or has_conditional or self.state is not None:
+            has_breakpoints = bool(self._interrupts_before or self._interrupts_after)
+            if has_parallel or has_conditional or self.state is not None or has_breakpoints:
                 return run_sync(self._run_async(task))
 
             budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
@@ -2734,7 +2781,7 @@ class Workflow:
         finally:
             sandbox_mode_var.reset(token)
 
-    async def _run_async(self, task: str) -> WorkflowResult:
+    async def _run_async(self, task: str, _resuming: bool = False) -> WorkflowResult:
         from meshflow.core.workflow import WorkflowResult
         import time as _time
         import asyncio
@@ -2742,14 +2789,30 @@ class Workflow:
         import json
 
         start_time = _time.monotonic()
-        total_cost = 0.0
-        total_tokens = 0
-        current_task = task
-        accumulated = ""
+
+        # On resume, restore accumulated state; otherwise start fresh
+        if _resuming and self._paused:
+            total_cost = self._resume_total_cost
+            total_tokens = self._resume_total_tokens
+            current_task = self._resume_task or task
+            accumulated = self._resume_accumulated
+            blocked_nodes = list(self._resume_blocked_nodes)
+            self._paused = False
+        else:
+            total_cost = 0.0
+            total_tokens = 0
+            current_task = task
+            accumulated = ""
+            blocked_nodes = []
+            self._next_step_idx = 0
+
         limit = self.cost_cap.usd if self.cost_cap else None
-        blocked_nodes = []
 
         for i, agent_item in enumerate(self.agents):
+            # Skip steps before the resume point
+            if i < self._next_step_idx:
+                continue
+
             if limit is not None and total_cost > limit:
                 if isinstance(agent_item, (list, tuple)):
                     blocked_nodes.extend(a.name for a in agent_item)
@@ -2757,12 +2820,41 @@ class Workflow:
                     blocked_nodes.append(agent_item.name)
                 continue
 
+            # Determine block_key matching the registration in add/add_parallel/add_conditional
             if isinstance(agent_item, _ConditionalBranch):
-                block_key = "__conditional__"
+                block_key = id(agent_item)
             elif isinstance(agent_item, (list, tuple)):
                 block_key = tuple(a.name for a in agent_item)
             else:
                 block_key = agent_item.name
+
+            # ── Interrupt BEFORE step ──────────────────────────────────────
+            if block_key in self._interrupts_before:
+                # Only pause if we are NOT resuming into this exact step
+                if not (_resuming and i == self._next_step_idx):
+                    self._paused = True
+                    self._next_step_idx = i
+                    self._resume_task = current_task
+                    self._resume_accumulated = accumulated
+                    self._resume_total_cost = total_cost
+                    self._resume_total_tokens = total_tokens
+                    self._resume_blocked_nodes = blocked_nodes
+                    return WorkflowResult(
+                        run_id="",
+                        workflow_name="simple_workflow_team",
+                        completed=False,
+                        output=accumulated,
+                        steps=[],
+                        total_cost_usd=round(total_cost, 6),
+                        total_tokens=total_tokens,
+                        total_carbon_gco2=0.0,
+                        duration_s=round(_time.monotonic() - start_time, 2),
+                        blocked_nodes=blocked_nodes,
+                        paused_nodes=[str(block_key)],
+                        skipped_nodes=[],
+                        ledger_db="",
+                        state=self.state,
+                    )
 
             # Map inputs if state exists
             context = {"state": self.state} if self.state is not None else {}
@@ -2876,6 +2968,12 @@ class Workflow:
 
                 accumulated = "\n\n".join(merged_parts)
 
+                # Apply custom reducer if registered
+                custom_reducer = self._reducers.get(block_key)
+                if custom_reducer is not None:
+                    reducer_input = {name: res for name, _, _, _, res in results}
+                    accumulated = custom_reducer(reducer_input)
+
                 if self.state is not None:
                     block_output_map = self._output_maps.get(block_key)
                     if block_output_map:
@@ -2905,11 +3003,41 @@ class Workflow:
             if i < len(self.agents) - 1:
                 current_task = f"{task}\n\nPrior output:\n{accumulated}"
 
+            # ── Interrupt AFTER step ───────────────────────────────────────
+            if block_key in self._interrupts_after:
+                self._paused = True
+                self._next_step_idx = i + 1
+                self._resume_task = current_task
+                self._resume_accumulated = accumulated
+                self._resume_total_cost = total_cost
+                self._resume_total_tokens = total_tokens
+                self._resume_blocked_nodes = blocked_nodes
+                return WorkflowResult(
+                    run_id="",
+                    workflow_name="simple_workflow_team",
+                    completed=False,
+                    output=accumulated,
+                    steps=[],
+                    total_cost_usd=round(total_cost, 6),
+                    total_tokens=total_tokens,
+                    total_carbon_gco2=0.0,
+                    duration_s=round(_time.monotonic() - start_time, 2),
+                    blocked_nodes=blocked_nodes,
+                    paused_nodes=[str(block_key)],
+                    skipped_nodes=[],
+                    ledger_db="",
+                    state=self.state,
+                )
+
             if limit is not None and total_cost > limit:
                 if isinstance(agent_item, (list, tuple)):
                     blocked_nodes.extend(a.name for a in agent_item)
                 else:
                     blocked_nodes.append(agent_item.name)
+
+        # Successful completion — reset step index
+        self._next_step_idx = 0
+        self._paused = False
 
         is_completed = True
         if limit is not None and total_cost > limit:
@@ -2976,6 +3104,61 @@ class Workflow:
                         break
                     except Exception:
                         pass
+
+    # ── Human-in-the-Loop Resume ──────────────────────────────────────────
+
+    def resume(self, task: str = "", human_input: str | None = None) -> WorkflowResult:
+        """Resume a paused workflow from its breakpoint.
+
+        Parameters
+        ----------
+        task:         The original task string (used only if no saved task exists).
+        human_input:  Optional human feedback to inject into the workflow state
+                      and/or prepend to the next agent's task context.
+
+        Returns
+        -------
+        WorkflowResult with ``completed=True`` if the workflow finishes, or
+        ``completed=False`` with a new ``paused_nodes`` if another breakpoint is hit.
+
+        Example::
+
+            wf = Workflow()
+            wf.add(agent_a, interrupt_after=True)
+            wf.add(agent_b)
+
+            result = wf.run("analyse data")
+            assert result.completed is False  # paused after agent_a
+
+            result = wf.resume("analyse data", human_input="focus on costs")
+            assert result.completed is True   # agent_b ran with the feedback
+        """
+        from meshflow.integrations._utils import run_sync
+        return run_sync(self._resume_async(task, human_input=human_input))
+
+    async def _resume_async(self, task: str = "", human_input: str | None = None) -> WorkflowResult:
+        """Async backbone for :meth:`resume`."""
+        if not self._paused:
+            raise RuntimeError("Workflow is not paused — call run() first.")
+
+        # Inject human_input into state and/or task
+        if human_input is not None:
+            # Update matching state fields
+            if self.state is not None:
+                for field_name in ("human_input", "feedback", "user_feedback"):
+                    if hasattr(self.state, field_name):
+                        try:
+                            setattr(self.state, field_name, human_input)
+                        except Exception:
+                            pass
+
+            # Prepend human feedback to the resume task so the next agent sees it
+            if self._resume_task:
+                self._resume_task = f"{self._resume_task}\n\nHuman Feedback:\n{human_input}"
+            elif task:
+                self._resume_task = f"{task}\n\nHuman Feedback:\n{human_input}"
+
+        return await self._run_async(task or self._resume_task, _resuming=True)
 
     def run_multimodal(self, task: str, inputs: list[Any]) -> WorkflowResult:
         """Run the workflow with multi-modal inputs (images, documents, audio).
@@ -3300,6 +3483,226 @@ class Workflow:
                 return await team.run(task)
             finally:
                 sandbox_mode_var.reset(token)
+
+    # ── Sprint 96: BestOfN sampling ───────────────────────────────────────────
+
+    def run_best_of(
+        self,
+        task: str,
+        n: int = 3,
+        scorer: Any = None,
+    ) -> WorkflowResult:
+        """Run the workflow *n* times concurrently and return the best result.
+
+        Parameters
+        ----------
+        task:
+            The task to run.
+        n:
+            Number of parallel trials (default 3).
+        scorer:
+            Optional ``Callable[[WorkflowResult], float]`` that assigns a score
+            to each result.  Higher = better.  When omitted, the confidence
+            extracted from the output is used as the score.
+        """
+        from meshflow.integrations._utils import run_sync
+        return run_sync(self._run_best_of_async(task, n, scorer))
+
+    async def _run_best_of_async(
+        self, task: str, n: int, scorer: Any
+    ) -> WorkflowResult:
+        import asyncio
+        import time as _time
+
+        start = _time.monotonic()
+        tasks = [self._run_workflow_once(task) for _ in range(n)]
+        results: list[WorkflowResult] = await asyncio.gather(*tasks)
+
+        def _default_score(r: WorkflowResult) -> float:
+            from meshflow.agents.team import _parse_confidence
+            conf = _parse_confidence(r.output or "")
+            return conf if r.completed else 0.0
+
+        def _score(r: WorkflowResult) -> float:
+            if callable(scorer):
+                return float(scorer(r))  # type: ignore[arg-type]
+            return _default_score(r)
+
+        best = max(results, key=_score)
+
+        # Accumulate total cost/tokens across all trials
+        total_cost = sum(r.total_cost_usd for r in results)
+        total_tokens = sum(r.total_tokens for r in results)
+
+        return WorkflowResult(
+            run_id=best.run_id,
+            workflow_name=best.workflow_name,
+            completed=best.completed,
+            output=best.output,
+            steps=best.steps,
+            total_cost_usd=round(total_cost, 6),
+            total_tokens=total_tokens,
+            total_carbon_gco2=sum(r.total_carbon_gco2 for r in results),
+            duration_s=round(_time.monotonic() - start, 2),
+            blocked_nodes=best.blocked_nodes,
+            paused_nodes=best.paused_nodes,
+            skipped_nodes=best.skipped_nodes,
+            ledger_db=best.ledger_db,
+            state=self.state,
+        )
+
+    # ── Sprint 96: ConsensusVote ──────────────────────────────────────────────
+
+    def add_consensus(
+        self,
+        agents: list[Any],
+        method: str = "majority",
+        weights: list[float] | None = None,
+    ) -> "Workflow":
+        """Add a consensus-vote step: *agents* run in parallel and vote on output.
+
+        Parameters
+        ----------
+        agents:
+            List of agents that each independently solve the task.
+        method:
+            ``"majority"`` — pick the output that appears most often (token-level
+            similarity used when outputs are not identical).
+            ``"weighted"`` — weight each agent's vote; requires *weights*.
+            ``"best"`` — pick the output with the highest confidence score.
+        weights:
+            Per-agent weights for ``method="weighted"``.  Must have the same
+            length as *agents*.  Normalised internally.
+        """
+        if not agents:
+            raise ValueError("add_consensus requires at least one agent.")
+        if method == "weighted" and (
+            weights is None or len(weights) != len(agents)
+        ):
+            raise ValueError(
+                "add_consensus method='weighted' requires weights of same length as agents."
+            )
+
+        def _extract_output(res: Any) -> str:
+            """Pull the output string out of a result dict or raw value."""
+            if isinstance(res, dict):
+                return str(res.get("result", next(iter(res.values()), "")))
+            return str(res)
+
+        def _get_confidence(res: Any) -> float:
+            """Extract confidence from structured result or fall back to text parsing."""
+            if isinstance(res, dict):
+                sc = res.get("stated_confidence")
+                if sc is not None:
+                    return float(sc)
+                from meshflow.agents.team import _parse_confidence
+                return _parse_confidence(_extract_output(res))
+            from meshflow.agents.team import _parse_confidence
+            return _parse_confidence(str(res))
+
+        def _consensus_reducer(results: dict[str, Any]) -> str:
+            outputs = [_extract_output(v) for v in results.values()]
+            if method == "best":
+                best_key = max(results.keys(), key=lambda k: _get_confidence(results[k]))
+                out = _extract_output(results[best_key])
+                # Fall back to first non-empty output if best's content was stripped
+                return out or next((o for o in outputs if o), best_key)
+            elif method == "weighted":
+                w = weights or [1.0] * len(agents)
+                total_w = sum(w) or 1.0
+                names = list(results.keys())
+                scores: dict[str, float] = {}
+                for i, name in enumerate(names):
+                    out = _extract_output(results[name])
+                    scores[out] = scores.get(out, 0.0) + w[i] / total_w
+                return max(scores, key=lambda k: scores[k])
+            else:
+                # majority: count identical outputs first
+                from collections import Counter
+                counts: Counter[str] = Counter(outputs)
+                if counts:
+                    return counts.most_common(1)[0][0]
+                return outputs[0] if outputs else ""
+
+        return self.add_parallel(*agents, reducer=_consensus_reducer)
+
+    # ── Sprint 96: WorkflowRetry ──────────────────────────────────────────────
+
+    def run_with_retry(
+        self,
+        task: str,
+        max_retries: int = 3,
+        confidence_floor: float = 0.0,
+        backoff_s: float = 0.0,
+    ) -> WorkflowResult:
+        """Run the workflow, retrying on failure or low-confidence output.
+
+        Parameters
+        ----------
+        task:
+            The task to run.
+        max_retries:
+            Maximum number of attempts including the first (default 3).
+        confidence_floor:
+            Minimum confidence score to accept as success.  0.0 (default)
+            only retries on ``completed=False``.
+        backoff_s:
+            Seconds to wait between retries (default 0 — no sleep).
+        """
+        from meshflow.integrations._utils import run_sync
+        return run_sync(
+            self._run_with_retry_async(task, max_retries, confidence_floor, backoff_s)
+        )
+
+    async def _run_with_retry_async(
+        self,
+        task: str,
+        max_retries: int,
+        confidence_floor: float,
+        backoff_s: float,
+    ) -> WorkflowResult:
+        import asyncio
+        import time as _time
+
+        start = _time.monotonic()
+        last: WorkflowResult | None = None
+        total_cost = 0.0
+        total_tokens = 0
+
+        for attempt in range(1, max_retries + 1):
+            if backoff_s > 0 and attempt > 1:
+                await asyncio.sleep(backoff_s * (attempt - 1))
+
+            result = await self._run_workflow_once(task)
+            total_cost += result.total_cost_usd
+            total_tokens += result.total_tokens
+            last = result
+
+            # Accept if completed and confidence is sufficient
+            if result.completed:
+                if confidence_floor <= 0.0:
+                    break
+                from meshflow.agents.team import _parse_confidence
+                if _parse_confidence(result.output or "") >= confidence_floor:
+                    break
+
+        assert last is not None
+        return WorkflowResult(
+            run_id=last.run_id,
+            workflow_name=last.workflow_name,
+            completed=last.completed,
+            output=last.output,
+            steps=last.steps,
+            total_cost_usd=round(total_cost, 6),
+            total_tokens=total_tokens,
+            total_carbon_gco2=last.total_carbon_gco2,
+            duration_s=round(_time.monotonic() - start, 2),
+            blocked_nodes=last.blocked_nodes,
+            paused_nodes=last.paused_nodes,
+            skipped_nodes=last.skipped_nodes,
+            ledger_db=last.ledger_db,
+            state=self.state,
+        )
 
     def _eval_loop_condition(self, result: WorkflowResult, condition: Any) -> bool:
         if condition is None:

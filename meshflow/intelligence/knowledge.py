@@ -296,6 +296,120 @@ class KnowledgeSource:
         return len(self._get_store())
 
 
+# ── Typed knowledge source subclasses ────────────────────────────────────────
+
+@dataclass
+class StringKnowledgeSource(KnowledgeSource):
+    """Knowledge source created from a plain text string."""
+
+    source: str = ""   # overrides parent required field
+    content: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.source and self.content:
+            self.source = self.content
+        elif not self.content and self.source:
+            self.content = self.source
+
+
+@dataclass
+class PDFKnowledgeSource(KnowledgeSource):
+    """Knowledge source loaded from a PDF file (requires ``pypdf``)."""
+
+    source: str = ""   # overrides parent required field
+    file_path: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.source and self.file_path:
+            self.source = self.file_path
+
+
+@dataclass
+class CSVKnowledgeSource(KnowledgeSource):
+    """Knowledge source loaded from a CSV file."""
+
+    source: str = ""   # overrides parent required field
+    file_path: str = ""
+    delimiter: str = ","
+
+    def __post_init__(self) -> None:
+        if self.file_path and not self.source:
+            self.source = self._load_csv()
+
+    def _load_csv(self) -> str:
+        try:
+            import csv as _csv
+            rows: list[str] = []
+            with open(self.file_path, encoding="utf-8", newline="") as f:
+                reader = _csv.DictReader(f, delimiter=self.delimiter)
+                for row in reader:
+                    rows.append(", ".join(f"{k}={v}" for k, v in row.items()))
+            return "\n".join(rows)
+        except Exception as exc:
+            return f"[CSV load error: {exc}]"
+
+
+@dataclass
+class JSONKnowledgeSource(KnowledgeSource):
+    """Knowledge source loaded from a JSON or JSONL file."""
+
+    source: str = ""   # overrides parent required field
+    file_path: str = ""
+
+    def __post_init__(self) -> None:
+        if self.file_path and not self.source:
+            self.source = self._load_json()
+
+    def _load_json(self) -> str:
+        import json as _json
+        try:
+            with open(self.file_path, encoding="utf-8") as f:
+                raw = f.read().strip()
+            if raw.startswith("{") and "\n" in raw:
+                lines = [_json.dumps(_json.loads(line)) for line in raw.splitlines() if line.strip()]
+                return "\n".join(lines)
+            obj = _json.loads(raw)
+            if isinstance(obj, list):
+                return "\n".join(_json.dumps(item) for item in obj)
+            return _json.dumps(obj, indent=2)
+        except Exception as exc:
+            return f"[JSON load error: {exc}]"
+
+
+@dataclass
+class ExcelKnowledgeSource(KnowledgeSource):
+    """Knowledge source loaded from an Excel file (requires ``openpyxl``)."""
+
+    source: str = ""   # overrides parent required field
+    file_path: str = ""
+    sheet_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.file_path and not self.source:
+            self.source = self._load_excel()
+
+    def _load_excel(self) -> str:
+        try:
+            import openpyxl as _xl  # type: ignore[import]
+            wb = _xl.load_workbook(self.file_path, read_only=True, data_only=True)
+            ws = wb[self.sheet_name] if self.sheet_name else wb.active
+            if ws is None:
+                return "[Excel: no active sheet]"
+            rows: list[str] = []
+            headers: list[str] = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                cells = [str(c) if c is not None else "" for c in row]
+                if i == 0:
+                    headers = cells
+                else:
+                    rows.append(", ".join(f"{h}={v}" for h, v in zip(headers, cells)))
+            return "\n".join(rows)
+        except ImportError:
+            return "[Excel: install openpyxl — pip install openpyxl]"
+        except Exception as exc:
+            return f"[Excel load error: {exc}]"
+
+
 # ── AgentKnowledge (aggregates multiple sources) ──────────────────────────────
 
 class AgentKnowledge:

@@ -1,123 +1,101 @@
-# Show HN: MeshFlow — multi-agent pipelines that get cheaper every run
+# Show HN: MeshFlow — production multi-agent orchestration for regulated industries
 
-**HN title:** Show HN: MeshFlow – agents that start with the cheapest model and escalate only when they're not confident enough
+**HN title:** Show HN: MeshFlow – open-source agent orchestration with HIPAA/SOX/GDPR built in, 5,500+ tests
 
 ---
 
 Hi HN,
 
-I built MeshFlow because every multi-agent framework I tried had the same problem: you hardcode `model="gpt-4o"` everywhere, pay cloud prices for every task, and have no idea which agent is responsible for which cost.
+I've been building MeshFlow for the past year. It started as "I want a multi-agent framework that doesn't explode my API bill" and turned into something bigger: a governed agent runtime designed for the kinds of problems where audit trails, compliance profiles, and cost predictability actually matter.
 
-Today I'm launching v1.10.0, which adds a self-improving routing system. The core idea is simple:
+**What it is:**
 
-**Start with the cheapest model. Escalate only when confidence is too low.**
+A Python framework for building multi-agent pipelines that run through a governed execution kernel on every step — cost caps, PII blocking, SHA-256 tamper-evident audit chain, and HIPAA/SOX/GDPR compliance profiles built in at the runtime level rather than bolted on after.
 
 ```python
-from meshflow import (
-    Workflow, Agent,
-    AdaptiveModelTierRouter, ModelTier,
-    CascadeRouter,
-)
-
-router = AdaptiveModelTierRouter(
-    tiers=[
-        ModelTier("fast",  "llama3.2",   max_tokens=512),   # local, $0.00
-        ModelTier("smart", "mistral:7b", max_tokens=2048),  # local, $0.00
-        ModelTier("large", "gpt-4o",     max_tokens=4096),  # cloud, pay only when needed
-    ],
-    adapt_every=50,        # auto-adjust routing thresholds every 50 runs
-    exploration_rate=0.10, # epsilon-greedy exploration to gather data
-)
-
-cascade = CascadeRouter(router, escalation_threshold=0.65, max_escalations=2)
+import os; os.environ["MESHFLOW_MOCK"] = "1"   # offline demo, no keys needed
+from meshflow import Workflow, Agent, CostCap
 
 wf = Workflow(cost_cap=CostCap(usd=0.50))
-wf.add(Agent("analyst", model_router=cascade, cascade_threshold=0.65))
-
-result = wf.run("Summarise the quarterly report")
-# → llama3.2 answers CONFIDENCE:0.90 → done, $0.00
-# → if CONFIDENCE:0.40 → retries with mistral → $0.00
-# → if still low → retries with gpt-4o → pay only now
+wf.add(Agent("researcher", role="researcher"))
+wf.add(Agent("writer",     role="executor"))
+result = wf.run("Write a short market analysis of the EV sector.")
+print(result.output)
 ```
 
-**What "self-improving" actually means:**
+**What's different from LangGraph / CrewAI / AutoGen:**
 
-Agents already emit `CONFIDENCE:0.XX` markers on their last line (this existed before — I reused it). After each step:
+1. **Governance is the kernel, not a plugin.** Every step goes through `StepRuntime` which enforces policy gates, budget tracking, and PII blocking before the LLM call returns. You can't bypass it.
 
-1. The router records (task, model, tier, confidence, latency, cost)
-2. Every 50 routes, a `ThresholdOptimizer` runs bucket analysis on recent outcomes
-3. If llama3.2 is consistently scoring < 0.5 confidence for tasks scoring 0.3-0.4 on a 5-factor complexity scale, the router raises the threshold so those tasks route to mistral automatically
-4. The thresholds survive process restarts — `router.save("state.json")` / `AdaptiveModelTierRouter.load("state.json")`
+2. **Self-improving cost routing.** `AdaptiveModelTierRouter` starts with the cheapest model (local llama3.2, $0.00) and escalates only when agent confidence is too low. Thresholds adapt automatically every 50 routes based on actual outcomes — no training data required.
 
-No training data required. No external ML service. Pure Python, stdlib only.
+3. **Framework parity, not lock-in.** The same governance kernel wraps LangGraph graphs, CrewAI Crews, and AutoGen conversations. You can migrate incrementally.
 
-**The 5-factor task scorer** replaces raw character count with a composite 0-1 score:
+**Sprint 97/98 highlights (recent additions):**
 
-```
-composite = (
-    0.35 × length_score            # chars / 2000
-  + 0.20 × question_density        # ambiguity signal
-  + 0.20 × conjunction_density     # nuance signal ("however", "whereas")
-  + 0.15 × technical_term_density  # domain keywords
-  + 0.10 × tool_pressure           # tool count
-) × task_type_multiplier           # code=1.2, analysis=1.1, summary=0.85
-```
+- **Functional API** — `@task` / `@entrypoint` decorators (LangGraph-style), `@traceable` for LangSmith-compatible distributed tracing with `LangfuseExporter`
+- **BestOfN + ConsensusVote** — `workflow.run_best_of(task, n=3)` runs N trials and picks the best scoring output; `ConsensusVote` aggregates across models
+- **StructuredJudge / TrajectoryEval / RAGEval / EvalCI** — rubric-based eval with weighted criteria, reasoning trajectory scoring, RAG faithfulness/relevance/recall, and a CI regression gate that raises `EvalRegressionError`
+- **MCPRouter** — multi-server MCP routing with per-server allow/deny authorization policies
+- **Durable Workers** — `@durable_task`, `WorkerDaemon`, `CronTrigger`, SQLite-backed job store that survives restarts
+- **SpawnableAgent** — dynamically spawns specialised child agents at runtime based on task content (Google Gemini "agent system" pattern)
+- **Typed structured streaming** — `workflow.astream_model(task, Report)` yields real Pydantic instances as tokens arrive, with SSE and NDJSON helpers
+- **MeshFlow Cloud SDK** — `from meshflow.cloud import MeshFlowCloud` ships run telemetry to the dashboard with one `.instrument()` call
 
-A 150-char SQL query scores higher than a 500-char pleasantry.
+**The rest of the stack:**
 
-**The rest of the stack** (unchanged, but worth knowing):
+- 4-tier agent memory (Working → Episodic → BM25 semantic → Procedural)
+- HITL human approval checkpoints with `interrupt()` / `Command`
+- SQLite / Postgres / S3 durable checkpoint/resume
+- `Workflow.stream()` / `wf.astream()` / SSE helpers for FastAPI
+- `Crew.train()` / `Crew.replay()` / `Crew.from_yaml()` (CrewAI parity)
+- `Pipeline` — chain multiple Crews with typed handoffs
+- Agent-to-Agent (A2A) protocol with `/.well-known/agent-card` discovery
+- Code interpreter (sandboxed subprocess, module allow-list)
+- Multi-modal: image, document, audio inputs
+- BaseStore / SQLiteStore cross-session shared memory (LangGraph parity)
+- 5,500+ tests, CI green on Python 3.11 + 3.12
 
-- SHA-256 tamper-evident audit chain on every step
-- HIPAA / SOX / GDPR / PCI / NERC compliance profiles
-- Hard cost caps: `CostCap(usd=5.00)` — never exceed, ever
-- SQLite/Redis/Postgres/S3 durable checkpoints
-- `Workflow.stream()` / `wf.astream()` / `chunks_to_sse()` for FastAPI SSE
-- `Workflow.batch_run(tasks, max_concurrency=4)`
-- Go SDK with full parity (multimodal, batch, streaming channel filters)
-- 5111 tests, CI green on Python 3.11 + 3.12
-
-**Cost profile on a typical workload:**
+**Cost profile on a typical workload with the cascade router:**
 
 | Tier | % of tasks | Cost |
 |------|-----------|------|
-| fast (llama3.2) | ~70% | $0.00 |
-| smart (mistral) | ~20% | $0.00 |
-| large (gpt-4o) | ~10% | pay only these |
+| fast (llama3.2, local) | ~70% | $0.00 |
+| smart (mistral, local) | ~20% | $0.00 |
+| large (gpt-4o, cloud) | ~10% | pay only these |
 
-vs. always-gpt-4o: pay 10× more for the same quality.
+vs. always-gpt-4o: same quality, ~10× cheaper.
 
 ---
 
-**Try it:**
+**Try it (offline, no API keys):**
 
 ```bash
 pip install meshflow
 ```
 
 ```python
-# Offline demo (no API keys)
 import os; os.environ["MESHFLOW_MOCK"] = "1"
 from meshflow import Workflow, Agent
 wf = Workflow()
 wf.add(Agent("demo"))
-print(wf.run("Hello").output)
+print(wf.run("Hello, world!").output)
 ```
 
 **Links:**
 - GitHub: https://github.com/Anteneh-T-Tessema/meshflow
 - Docs: https://meshflow.dev/docs
 - QUICKSTART.md in the repo
-- `examples/adaptive_routing.py` — full working example with the cascade router
-- `examples/cascade_routing.py` — cost savings simulation
+- `examples/` — 30+ working examples
 
 ---
 
 What I'd love feedback on:
 
-1. **The CONFIDENCE marker approach** — agents emit `CONFIDENCE:0.XX` on their last line, and the router uses that as a quality signal. Does this feel too fragile? The alternative is an LLM-judge (extra call, extra cost).
+1. **SpawnableAgent pattern** — spawning specialized child agents based on keyword matching feels powerful but also like it could get unruly fast. Has anyone found a principled way to design spawn rule sets that don't explode in production?
 
-2. **The composite scoring formula** — the 5 weights (0.35 / 0.20 / 0.20 / 0.15 / 0.10) were tuned manually. Has anyone done principled work on task complexity scoring for routing?
+2. **EvalCI regression gate** — the `EvalCI` class raises `EvalRegressionError` in CI when pass-rate drops below the baseline. But what's the right baseline drift threshold? 2%? 5%? We're defaulting to 5% but it feels arbitrary.
 
-3. **Epsilon-greedy with annealing** — I chose this over UCB1 because it requires no prior distribution. The exploration rate decays as `ε × 200 / (n + 200)`. Is there a better schedule for cold-start?
+3. **The governance-as-kernel trade-off** — making StepRuntime mandatory means every step has overhead (hash chain, policy check, budget tick). On benchmarks this is ~0.8ms per step. Is that acceptable for your use case, or is it a dealbreaker?
 
 Thanks for reading.

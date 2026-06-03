@@ -110,6 +110,47 @@ class _BM25Index:
         return scores[:top_k]
 
 
+# ── Tier-3b Vector index (optional embedding-based recall) ────────────────────
+
+class _VectorIndex:
+    """Lightweight cosine-similarity vector index — zero numpy dependency.
+
+    When an ``embed_fn`` is provided to AgentMemory, all content is embedded
+    and stored here for semantic vector recall.  Pure-Python math is used by
+    default; numpy accelerates the search when available.
+
+    O(n) linear scan — sufficient for < 10k entries per agent session.
+    """
+
+    def __init__(self) -> None:
+        self._docs: list[str] = []
+        self._vecs: list[list[float]] = []
+
+    def add(self, content: str, embedding: list[float]) -> None:
+        self._docs.append(content)
+        self._vecs.append(embedding)
+
+    @staticmethod
+    def _cosine_sim(a: list[float], b: list[float]) -> float:
+        """Cosine similarity between two equal-length float lists."""
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a)) or 1e-9
+        norm_b = math.sqrt(sum(x * x for x in b)) or 1e-9
+        return dot / (norm_a * norm_b)
+
+    def search(self, query_embedding: list[float], top_k: int = 5) -> list[tuple[str, float]]:
+        """Return top_k documents by cosine similarity to query_embedding."""
+        if not self._docs:
+            return []
+        scores: list[tuple[str, float]] = []
+        for doc, vec in zip(self._docs, self._vecs):
+            sim = self._cosine_sim(query_embedding, vec)
+            if sim > 0:
+                scores.append((doc, sim))
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return scores[:top_k]
+
+
 # ── AgentMemory ───────────────────────────────────────────────────────────────
 
 class AgentMemory:
@@ -125,6 +166,11 @@ class AgentMemory:
         Maximum episodic summaries before oldest are dropped.
     enabled:
         False → all operations are no-ops (disabled state).
+    embed_fn:
+        Optional callable ``(str) -> list[float]`` that embeds text into a
+        vector.  When provided, all content added via :meth:`add` is also
+        embedded and stored in a vector index for cosine-similarity recall.
+        This enables hybrid BM25 + vector semantic search.
     """
 
     def __init__(
@@ -135,6 +181,7 @@ class AgentMemory:
         enabled: bool = True,
         auto_consolidate: bool = True,
         consolidate_at_chars: int = 20_000,
+        embed_fn: Any = None,
     ) -> None:
         """
         Parameters
@@ -146,6 +193,8 @@ class AgentMemory:
             (scored by recency + content length) and drops the rest.
         consolidate_at_chars:
             Character budget that triggers auto-consolidation (default 20 000).
+        embed_fn:
+            Optional ``Callable[[str], list[float]]`` for vector embeddings.
         """
         self._agent_id = agent_id
         self._enabled = enabled
@@ -153,13 +202,16 @@ class AgentMemory:
         self._max_episodic = max_episodic
         self._auto_consolidate = auto_consolidate
         self._consolidate_at_chars = consolidate_at_chars
+        self._embed_fn = embed_fn
 
         # Tier 1 — working (deque for O(1) append/evict)
         self._working: deque[MemoryItem] = deque(maxlen=max_working)
         # Tier 2 — episodic (summaries of evicted working entries)
         self._episodic: list[MemoryItem] = []
-        # Tier 3 — semantic index (BM25 over all content ever added)
+        # Tier 3a — semantic index (BM25 over all content ever added)
         self._index = _BM25Index()
+        # Tier 3b — vector index (cosine similarity, when embed_fn is provided)
+        self._vector_index = _VectorIndex() if embed_fn is not None else None
         # Tier 4 — procedural (verifier/outcome records from ledger)
         self._procedural: list[MemoryItem] = []
 
@@ -197,6 +249,13 @@ class AgentMemory:
         # All non-procedural content goes into the semantic index
         if tier_hint != "procedural":
             self._index.add(content)
+            # Also embed into vector index when embed_fn is available
+            if self._embed_fn is not None and self._vector_index is not None:
+                try:
+                    embedding = self._embed_fn(content)
+                    self._vector_index.add(content, embedding)
+                except Exception:
+                    pass  # embedding errors are non-fatal
 
         # Auto-consolidate when total char footprint exceeds budget
         if self._auto_consolidate and self._enabled:
@@ -266,7 +325,11 @@ class AgentMemory:
     # ── Read ──────────────────────────────────────────────────────────────────
 
     def recall(self, query: str, top_k: int = 3) -> list[str]:
-        """Return the most relevant memories by BM25 score with a recency bonus.
+        """Return the most relevant memories by hybrid BM25 + vector scoring.
+
+        When ``embed_fn`` was provided at construction time, recall uses a
+        weighted combination of BM25 (40%) and cosine similarity (60%) for
+        ranking.  Otherwise falls back to pure BM25 with a recency bonus.
 
         Recency bonus: working-memory items get +0.5 added to their BM25 score so
         that recent context beats slightly less-relevant older entries, but a highly
@@ -281,18 +344,53 @@ class AgentMemory:
         # BM25 search over all indexed content
         bm25_hits: list[tuple[str, float]] = self._index.search(query, top_k=top_k * 3)
 
-        # Boost working-memory hits and de-duplicate
+        # Vector search (when available)
+        vector_scores: dict[str, float] = {}
+        if self._embed_fn is not None and self._vector_index is not None:
+            try:
+                query_embedding = self._embed_fn(query)
+                vec_hits = self._vector_index.search(query_embedding, top_k=top_k * 3)
+                for content, score in vec_hits:
+                    h = hashlib.md5(content.encode()).hexdigest()[:12]
+                    vector_scores[h] = score
+            except Exception:
+                pass  # embedding errors → fall back to BM25 only
+
+        # Combine BM25 + vector scores with hybrid weighting
+        use_hybrid = bool(vector_scores)
+        bm25_weight = 0.4 if use_hybrid else 1.0
+        vector_weight = 0.6 if use_hybrid else 0.0
+
+        # Normalise BM25 scores to [0, 1] range
+        max_bm25 = max((s for _, s in bm25_hits), default=1.0) or 1.0
+
         seen: set[str] = set()
         scored: list[tuple[float, str]] = []
-        for content, score in bm25_hits:
+        for content, bm25_score in bm25_hits:
             h = hashlib.md5(content.encode()).hexdigest()[:12]
             if h in seen:
                 continue
             seen.add(h)
+            norm_bm25 = bm25_score / max_bm25
+            vec_score = vector_scores.get(h, 0.0)
+            combined = bm25_weight * norm_bm25 + vector_weight * vec_score
             bonus = 0.5 if h in working_keys else 0.0
-            scored.append((score + bonus, content))
+            scored.append((combined + bonus, content))
 
-        # Include any working items the BM25 didn't surface (edge case: very small corpus)
+        # Include vector-only hits not in BM25 results
+        if use_hybrid:
+            for content, vec_score in self._vector_index.search(
+                self._embed_fn(query), top_k=top_k * 3  # type: ignore[misc]
+            ):
+                h = hashlib.md5(content.encode()).hexdigest()[:12]
+                if h in seen:
+                    continue
+                seen.add(h)
+                combined = vector_weight * vec_score
+                bonus = 0.5 if h in working_keys else 0.0
+                scored.append((combined + bonus, content))
+
+        # Include any working items neither index surfaced
         for item in reversed(self._working):
             if item.key not in seen:
                 seen.add(item.key)
@@ -300,6 +398,22 @@ class AgentMemory:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [content for _, content in scored[:top_k]]
+
+    def recall_semantic(self, query: str, top_k: int = 3) -> list[str]:
+        """Return the most relevant memories by vector similarity only.
+
+        Requires ``embed_fn`` to have been provided at construction time.
+        Raises ``RuntimeError`` if no embedding function is available.
+        """
+        if not self._enabled:
+            return []
+        if self._embed_fn is None or self._vector_index is None:
+            raise RuntimeError(
+                "recall_semantic requires embed_fn — pass embed_fn to AgentMemory constructor."
+            )
+        query_embedding = self._embed_fn(query)
+        hits = self._vector_index.search(query_embedding, top_k=top_k)
+        return [content for content, _score in hits]
 
     def recent(self, n: int = 5) -> list[str]:
         """Return the most recent *n* working-memory entries."""

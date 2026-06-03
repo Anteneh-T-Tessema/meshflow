@@ -92,6 +92,7 @@ class _BuiltAgent(BaseAgent):
         memory_backend: Any = None,
         memory_session_id: str = "",
         memory_compress_threshold: int = 8000,
+        memory_store: Any = None,
     ) -> None:
         super().__init__(config, policy)
         self._tools = tools
@@ -117,11 +118,34 @@ class _BuiltAgent(BaseAgent):
         self._context_pruner: Any = None        # set by Agent._build() when context_pruner= is given
         self._thinking: bool = False            # set by Agent._build() when thinking= is given
         self._thinking_budget: int = 2000
+        self._rate_limiter: Any = None          # set by Agent._build() when rpm= or tpm= is given
+        self._memory_store: Any = memory_store  # BaseStore for cross-session shared facts
         if knowledge:
             from meshflow.intelligence.knowledge import AgentKnowledge
             self._knowledge: Any = AgentKnowledge(knowledge)
         else:
             self._knowledge = None
+
+    # ── BaseStore helpers ─────────────────────────────────────────────────────
+
+    def store_put(self, namespace: tuple[str, ...], key: str, value: Any) -> None:
+        """Write a value to the cross-session shared store."""
+        if self._memory_store is None:
+            raise RuntimeError("No memory_store configured on this agent.")
+        self._memory_store.put(namespace, key, value)
+
+    def store_get(self, namespace: tuple[str, ...], key: str) -> Any:
+        """Read a value from the cross-session shared store.  Returns None if absent."""
+        if self._memory_store is None:
+            return None
+        item = self._memory_store.get(namespace, key)
+        return item.value if item is not None else None
+
+    def store_search(self, namespace: tuple[str, ...], query: str = "") -> list[Any]:
+        """Search the shared store within *namespace*."""
+        if self._memory_store is None:
+            return []
+        return self._memory_store.search(namespace, query=query)
 
     async def _maybe_compress_memory(self) -> None:
         if not self._memory_enabled or not self._memory:
@@ -334,6 +358,12 @@ class _BuiltAgent(BaseAgent):
         thinking_summary = ""
         thinking_tokens = 0
 
+        # ── Rate limiter: throttle before LLM call ────────────────────────────
+        if self._rate_limiter is not None:
+            # Estimate tokens from the prompt length (rough: chars / 4)
+            est_tokens = max(len(str(_user_content)) // 4, 50)
+            await self._rate_limiter.acquire(tokens=est_tokens)
+
         if self._tools:
             tool_schemas = [_build_tool_schema(t) for t in self._tools if hasattr(t, "name")]
             tool_fns = {
@@ -523,6 +553,9 @@ class Agent:
     context_pruner: Any = None   # SlidingWindowPruner | SummaryPruner — auto-prunes context
     thinking: bool = False        # enable Claude extended thinking
     thinking_budget: int = 2000   # max tokens Claude may spend on internal reasoning
+    rpm: int | None = None        # max requests per minute (rate limiting)
+    tpm: int | None = None        # max tokens per minute (rate limiting)
+    memory_store: Any = None      # BaseStore instance for cross-session shared facts
     mode: str = "production"
     _prebuilt_node: Any = field(default=None, init=False, repr=False)
 
@@ -639,6 +672,7 @@ class Agent:
             memory_backend=self._resolve_memory_backend(),
             memory_session_id=self.memory_session_id or self.name,
             memory_compress_threshold=self.memory_compress_threshold,
+            memory_store=self.memory_store,
         )
         # Attach optional model router, context pruner, and thinking config
         built._model_router = self.model_router
@@ -646,6 +680,11 @@ class Agent:
         built._context_pruner = self.context_pruner
         built._thinking = self.thinking
         built._thinking_budget = self.thinking_budget
+
+        # Attach rate limiter when rpm or tpm is set
+        if self.rpm is not None or self.tpm is not None:
+            from meshflow.core.rate_limiter import RateLimiter
+            built._rate_limiter = RateLimiter(rpm=self.rpm, tpm=self.tpm)
 
         # Wrap the fully-resolved provider with cache AFTER BaseAgent.__init__ sets it
         if self.cache is not None and self.cache is not False:

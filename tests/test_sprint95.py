@@ -482,6 +482,318 @@ class TestWorkflowConditionalRouting:
         result_write = wf.run("Write an essay")
         assert "Essay written" in result_write.output
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. Human-in-the-Loop Breakpoints
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class HitlState(BaseModel):
+    query: str = ""
+    research_notes: str = ""
+    feedback: str = ""
+    refined_output: str = ""
 
 
+class TestWorkflowBreakpoints:
+    def test_interrupt_before_pauses_before_step(self):
+        """Workflow pauses before agent_b runs, agent_a output is preserved."""
+        a1 = Agent(name="agent_a", provider=MockProvider(["Alpha output"]))
+        a2 = Agent(name="agent_b", provider=MockProvider(["Beta output"]))
+        a3 = Agent(name="agent_c", provider=MockProvider(["Gamma output"]))
 
+        wf = Workflow()
+        wf.add(a1)
+        wf.add(a2, interrupt_before=True)
+        wf.add(a3)
+
+        result = wf.run("test task")
+        assert result.completed is False
+        assert "agent_b" in result.paused_nodes
+        assert "Alpha output" in result.output
+        assert "Beta output" not in result.output
+
+    def test_resume_completes_after_interrupt_before(self):
+        """After pausing before agent_b, resume() runs agent_b and agent_c."""
+        a1 = Agent(name="agent_a", provider=MockProvider(["Alpha output"]))
+        a2 = Agent(name="agent_b", provider=MockProvider(["Beta output"]))
+        a3 = Agent(name="agent_c", provider=MockProvider(["Gamma output"]))
+
+        wf = Workflow()
+        wf.add(a1)
+        wf.add(a2, interrupt_before=True)
+        wf.add(a3)
+
+        result = wf.run("test task")
+        assert result.completed is False
+
+        result2 = wf.resume("test task")
+        assert result2.completed is True
+        assert "Gamma output" in result2.output
+
+    def test_interrupt_after_pauses_after_step(self):
+        """Workflow pauses after agent_a runs, before agent_b."""
+        a1 = Agent(name="agent_a", provider=MockProvider(["Alpha output"]))
+        a2 = Agent(name="agent_b", provider=MockProvider(["Beta output"]))
+
+        wf = Workflow()
+        wf.add(a1, interrupt_after=True)
+        wf.add(a2)
+
+        result = wf.run("test task")
+        assert result.completed is False
+        assert "agent_a" in result.paused_nodes
+        assert "Alpha output" in result.output
+        assert "Beta output" not in result.output
+
+    def test_resume_completes_after_interrupt_after(self):
+        """After pausing after agent_a, resume() runs agent_b."""
+        a1 = Agent(name="agent_a", provider=MockProvider(["Alpha output"]))
+        a2 = Agent(name="agent_b", provider=MockProvider(["Beta output"]))
+
+        wf = Workflow()
+        wf.add(a1, interrupt_after=True)
+        wf.add(a2)
+
+        result = wf.run("test task")
+        assert result.completed is False
+
+        result2 = wf.resume("test task")
+        assert result2.completed is True
+        assert "Beta output" in result2.output
+
+    def test_human_input_propagated_to_state(self):
+        """Resume with human_input injects feedback into state 'feedback' field."""
+        a1 = Agent(name="agent_a", provider=MockProvider(['{"research_notes": "initial notes"}']))
+        a2 = Agent(name="agent_b", provider=MockProvider(['{"refined_output": "final result"}']))
+
+        wf = Workflow(state_schema=HitlState, initial_state={"query": "test"})
+        wf.add(a1, interrupt_after=True)
+        wf.add(a2)
+
+        result = wf.run("research")
+        assert result.completed is False
+        assert wf.state.research_notes == "initial notes"
+
+        result2 = wf.resume("research", human_input="focus on cost analysis")
+        assert result2.completed is True
+        assert wf.state.feedback == "focus on cost analysis"
+        assert wf.state.refined_output == "final result"
+
+    def test_resume_without_pause_raises(self):
+        """Calling resume() when the workflow is not paused raises RuntimeError."""
+        wf = Workflow()
+        a1 = Agent(name="agent_a", provider=MockProvider(["output"]))
+        wf.add(a1)
+
+        with pytest.raises(RuntimeError, match="not paused"):
+            wf.resume("task")
+
+    def test_interrupt_before_parallel(self):
+        """Workflow pauses before a parallel step."""
+        a1 = Agent(name="agent_a", provider=MockProvider(["Alpha output"]))
+        a2 = Agent(name="p1", provider=MockProvider(["P1 output"]))
+        a3 = Agent(name="p2", provider=MockProvider(["P2 output"]))
+        a4 = Agent(name="agent_b", provider=MockProvider(["Final output"]))
+
+        wf = Workflow()
+        wf.add(a1)
+        wf.add_parallel(a2, a3, interrupt_before=True)
+        wf.add(a4)
+
+        result = wf.run("task")
+        assert result.completed is False
+        assert "Alpha output" in result.output
+        assert "P1 output" not in result.output
+
+        result2 = wf.resume("task")
+        assert result2.completed is True
+        assert "Final output" in result2.output
+
+    def test_multiple_breakpoints(self):
+        """Workflow pauses at each breakpoint sequentially."""
+        a1 = Agent(name="a1", provider=MockProvider(["Output 1"]))
+        a2 = Agent(name="a2", provider=MockProvider(["Output 2"]))
+        a3 = Agent(name="a3", provider=MockProvider(["Output 3"]))
+
+        wf = Workflow()
+        wf.add(a1, interrupt_after=True)
+        wf.add(a2, interrupt_after=True)
+        wf.add(a3)
+
+        # First run pauses after a1
+        result1 = wf.run("task")
+        assert result1.completed is False
+        assert "a1" in result1.paused_nodes
+
+        # First resume runs a2, then pauses after a2
+        result2 = wf.resume("task")
+        assert result2.completed is False
+        assert "a2" in result2.paused_nodes
+
+        # Second resume runs a3 and completes
+        result3 = wf.resume("task")
+        assert result3.completed is True
+        assert "Output 3" in result3.output
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. Vector-based Semantic Memory Recall
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from meshflow.intelligence.memory import AgentMemory, _VectorIndex
+
+
+def _simple_embed(text: str) -> list[float]:
+    """Trivial bag-of-chars embedding for testing — deterministic and fast."""
+    vec = [0.0] * 26
+    for ch in text.lower():
+        if 'a' <= ch <= 'z':
+            vec[ord(ch) - ord('a')] += 1.0
+    # Normalise
+    mag = sum(v * v for v in vec) ** 0.5
+    if mag > 0:
+        vec = [v / mag for v in vec]
+    return vec
+
+
+class TestVectorMemory:
+    def test_vector_index_cosine_search(self):
+        """_VectorIndex returns closest vectors by cosine similarity."""
+        idx = _VectorIndex()
+        idx.add("hello world", [1.0, 0.0, 0.0])
+        idx.add("foo bar", [0.0, 1.0, 0.0])
+        idx.add("similar hello", [0.9, 0.1, 0.0])
+
+        results = idx.search([1.0, 0.0, 0.0], top_k=2)
+        assert len(results) == 2
+        assert results[0][0] == "hello world"  # exact match
+        assert results[1][0] == "similar hello"  # close match
+
+    def test_agent_memory_with_embed_fn(self):
+        """AgentMemory with embed_fn creates a vector index."""
+        mem = AgentMemory(agent_id="test", embed_fn=_simple_embed)
+        assert mem._vector_index is not None
+        mem.add("The cat sat on the mat")
+        mem.add("Python programming is great for data science")
+        mem.add("The kitten played on the rug")
+
+        results = mem.recall_semantic("cat mat sitting", top_k=2)
+        assert len(results) == 2
+        # The cat/kitten entries should rank higher than programming
+        assert any("cat" in r or "kitten" in r for r in results)
+
+    def test_agent_memory_without_embed_fn(self):
+        """AgentMemory without embed_fn has no vector index."""
+        mem = AgentMemory(agent_id="test")
+        assert mem._vector_index is None
+
+    def test_recall_semantic_raises_without_embed_fn(self):
+        """recall_semantic raises RuntimeError without embed_fn."""
+        mem = AgentMemory(agent_id="test")
+        with pytest.raises(RuntimeError, match="embed_fn"):
+            mem.recall_semantic("query")
+
+    def test_hybrid_recall_combines_bm25_and_vector(self):
+        """recall() with embed_fn uses hybrid BM25 + vector scoring."""
+        mem = AgentMemory(agent_id="test", embed_fn=_simple_embed)
+        mem.add("HIPAA compliance requirements for healthcare data")
+        mem.add("Python best practices and coding standards")
+        mem.add("Healthcare patient privacy regulations and HIPAA")
+
+        results = mem.recall("HIPAA healthcare privacy", top_k=2)
+        assert len(results) == 2
+        # Both HIPAA-related entries should be in top 2
+        assert all("HIPAA" in r or "Healthcare" in r or "healthcare" in r for r in results)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 10. Token/Call Rate Limiting
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from meshflow.core.rate_limiter import RateLimiter
+
+
+class TestRateLimiter:
+    @pytest.mark.asyncio
+    async def test_rpm_tracking(self):
+        """RateLimiter tracks requests in the sliding window."""
+        limiter = RateLimiter(rpm=100)
+        await limiter.acquire()
+        await limiter.acquire()
+        await limiter.acquire()
+        assert limiter.requests_in_window == 3
+
+    @pytest.mark.asyncio
+    async def test_tpm_tracking(self):
+        """RateLimiter tracks tokens in the sliding window."""
+        limiter = RateLimiter(tpm=10000)
+        await limiter.acquire(tokens=500)
+        await limiter.acquire(tokens=300)
+        assert limiter.tokens_in_window == 800
+
+    @pytest.mark.asyncio
+    async def test_rpm_blocks_when_exceeded(self):
+        """RateLimiter with very short window blocks when RPM exceeded."""
+        # Use a 0.1s window to test blocking without long waits
+        limiter = RateLimiter(rpm=2, window_s=0.1)
+        await limiter.acquire()
+        await limiter.acquire()
+        # Third acquire should block until window expires (~0.1s)
+        import time
+        start = time.monotonic()
+        await limiter.acquire()
+        elapsed = time.monotonic() - start
+        assert elapsed >= 0.05  # should have waited for window to expire
+
+    @pytest.mark.asyncio
+    async def test_agent_with_rate_limiter(self):
+        """Agent with rpm= creates a rate limiter."""
+        agent = Agent(name="rate_limited", provider=EchoProvider(), rpm=60, tpm=100000)
+        built = agent._build()
+        assert built._rate_limiter is not None
+        assert built._rate_limiter.rpm == 60
+        assert built._rate_limiter.tpm == 100000
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 11. Custom Merge Reducers for Parallel Steps
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCustomMergeReducers:
+    def test_custom_reducer_receives_all_results(self):
+        """Custom reducer receives dict of {name: result} from parallel agents."""
+        a1 = Agent(name="scorer_a", provider=MockProvider(["85"]))
+        a2 = Agent(name="scorer_b", provider=MockProvider(["92"]))
+
+        captured = {}
+
+        def average_scores(results: dict) -> str:
+            captured.update(results)
+            scores = []
+            for name, res in results.items():
+                val = res.get("result", "0") if isinstance(res, dict) else str(res)
+                try:
+                    scores.append(float(val))
+                except ValueError:
+                    scores.append(0.0)
+            avg = sum(scores) / len(scores) if scores else 0
+            return f"Average score: {avg:.1f}"
+
+        wf = Workflow()
+        wf.add_parallel(a1, a2, reducer=average_scores)
+
+        result = wf.run("Score this")
+        assert "Average score:" in result.output
+        assert "scorer_a" in captured
+        assert "scorer_b" in captured
+
+    def test_default_behavior_without_reducer(self):
+        """Without a reducer, default [Agent name] format is used."""
+        a1 = Agent(name="agent_x", provider=MockProvider(["X output"]))
+        a2 = Agent(name="agent_y", provider=MockProvider(["Y output"]))
+
+        wf = Workflow()
+        wf.add_parallel(a1, a2)
+
+        result = wf.run("task")
+        assert "[Agent agent_x]" in result.output
+        assert "[Agent agent_y]" in result.output

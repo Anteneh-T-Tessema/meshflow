@@ -73,6 +73,25 @@ class Task:
     output: TaskOutput | None = field(default=None, init=False, repr=False)
     max_context_chars: int = 8000  # max chars of injected prior-task context; 0 = unlimited
     context_filter: Any = None
+    condition: Any = None
+    """Optional ``Callable[[TaskOutput | None], bool]`` gating this task.
+
+    When set, the task is only executed if ``condition(previous_output)``
+    returns truthy.  If it returns falsy the task is skipped (its ``output``
+    remains ``None``) and the crew continues with the next task.
+
+    ``previous_output`` is the ``TaskOutput`` of the immediately preceding
+    task, or ``None`` for the first task.
+
+    Example::
+
+        report = Task(
+            description="Publish the report",
+            expected_output="Published confirmation",
+            agent=publisher,
+            condition=lambda out: out and "approved" in out.raw.lower(),
+        )
+    """
     """Optional callable ``(task: Task, output: TaskOutput) -> bool``.
 
     When set, only tasks whose output passes the filter are injected as context.

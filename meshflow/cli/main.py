@@ -223,10 +223,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_deploy.add_argument("--status", action="store_true", help="Show container status")
     p_deploy.add_argument("--logs", action="store_true", help="Show container logs")
 
-    # runs
-    p_runs = sub.add_parser("runs", help="List recent runs (alias for logs)")
+    # runs (v2 — supports 'ls' and 'inspect' subcommands as well as flat invocation)
+    p_runs = sub.add_parser("runs", help="List or inspect workflow runs")
     p_runs.add_argument("--db", default="meshflow_runs.db")
     p_runs.add_argument("--limit", type=int, default=20)
+    p_runs_sub = p_runs.add_subparsers(dest="runs_cmd")
+    p_runs_sub.add_parser("ls", help="List recent runs")
+    p_runs_inspect = p_runs_sub.add_parser("inspect", help="Show detailed step-by-step view of a run")
+    p_runs_inspect.add_argument("run_id", help="Run ID to inspect")
+    p_runs_inspect.add_argument("--json", dest="as_json", action="store_true", help="Output raw JSON")
+
+    # eval-baseline — manage EvalCI baseline files
+    p_eb = sub.add_parser("eval-baseline", help="Manage EvalCI pass-rate baselines")
+    p_eb_sub = p_eb.add_subparsers(dest="eval_baseline_cmd", required=True)
+    p_eb_set = p_eb_sub.add_parser("set", help="Save a baseline pass-rate")
+    p_eb_set.add_argument("name", help="Baseline name (e.g. 'production')")
+    p_eb_set.add_argument("pass_rate", type=float, help="Pass rate 0–1")
+    p_eb_set.add_argument("--db", default="meshflow_baselines.json")
+    p_eb_get = p_eb_sub.add_parser("get", help="Print a stored baseline")
+    p_eb_get.add_argument("name", help="Baseline name")
+    p_eb_get.add_argument("--db", default="meshflow_baselines.json")
+    p_eb_list = p_eb_sub.add_parser("list", help="List all stored baselines")
+    p_eb_list.add_argument("--db", default="meshflow_baselines.json")
+    p_eb_clear = p_eb_sub.add_parser("clear", help="Delete a baseline")
+    p_eb_clear.add_argument("name", help="Baseline name to delete")
+    p_eb_clear.add_argument("--db", default="meshflow_baselines.json")
 
     # watch
     p_watch = sub.add_parser("watch", help="Tail live events for a workflow run")
@@ -1182,6 +1203,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_w_status.add_argument("--queue", default="sqlite://meshflow_tasks.db")
     p_w_status.add_argument("--limit", type=int, default=20)
 
+    p_w_jobs = p_worker_sub.add_parser("jobs", help="List durable worker jobs (from @durable_task / WorkerDaemon)")
+    p_w_jobs.add_argument("--db", default="meshflow_workers.db", help="SQLite path used by WorkerDaemon")
+    p_w_jobs.add_argument("--status", dest="job_status", default="", help="Filter by status: pending/running/done/dead")
+    p_w_jobs.add_argument("--limit", type=int, default=30)
+
     # ── templates ─────────────────────────────────────────────────────────────
     p_tmpl = sub.add_parser("templates", help="Agent template registry")
     p_tmpl_sub = p_tmpl.add_subparsers(dest="templates_cmd", required=True)
@@ -1369,7 +1395,8 @@ def main() -> None:
         "init": _cmd_init,
         "new": _cmd_new,
         "logs": _cmd_logs,
-        "runs": _cmd_logs,  # alias
+        "runs": _cmd_runs_v2,
+
         "approve": _cmd_approve,
         "run": _cmd_run,
         "stream": _cmd_stream,
@@ -1427,8 +1454,9 @@ def main() -> None:
         "lint":          _cmd_lint,
         "diff":          _cmd_diff,
         "sweep":         _cmd_sweep,
-        "eval-feedback": _cmd_eval_feedback,
-        "worker":        _cmd_worker,
+        "eval-feedback":  _cmd_eval_feedback,
+        "eval-baseline":  _cmd_eval_baseline,
+        "worker":         _cmd_worker_v2,
         "templates":     _cmd_templates,
         "marketplace":   _cmd_marketplace,
         "zt-audit":      _cmd_zt_audit,
@@ -1551,6 +1579,138 @@ async def _async_logs(args: argparse.Namespace) -> None:
         print(f"  {len(paused)} run(s) awaiting human approval.")
         print("  Run: meshflow approve <run_id> <node_id>")
         print()
+
+
+# ── runs v2 (ls + inspect) ────────────────────────────────────────────────────
+
+
+def _cmd_runs_v2(args: argparse.Namespace) -> None:
+    if getattr(args, "runs_cmd", None) == "inspect":
+        asyncio.run(_async_runs_inspect(args))
+    else:
+        # 'ls' or bare 'runs' → existing logs behaviour
+        asyncio.run(_async_logs(args))
+
+
+async def _async_runs_inspect(args: argparse.Namespace) -> None:
+    import os
+    from meshflow.core.ledger import ReplayLedger
+
+    db = args.db
+    if not os.path.exists(db):
+        print(f"\n  No ledger found at '{db}'.\n")
+        return
+
+    ledger = ReplayLedger(db)
+    records = await ledger.get_run(args.run_id)
+    if not records:
+        print(f"\n  Run '{args.run_id}' not found.\n")
+        return
+
+    if args.as_json:
+        import json as _json
+        print(_json.dumps(records, indent=2, default=str))
+        return
+
+    print(f"\n  Run: {args.run_id}\n")
+    print(f"  {'#':<4} {'NODE':<22} {'STATUS':<10} {'TOKENS':>7}  {'COST':>8}  OUTPUT (truncated)")
+    print(f"  {'─'*4} {'─'*22} {'─'*10} {'─'*7}  {'─'*8}  {'─'*40}")
+    for i, rec in enumerate(records, 1):
+        node    = str(rec.get("node_name", "?"))[:20]
+        status  = "blocked" if rec.get("blocked") else "ok"
+        tokens  = rec.get("tokens_used", 0)
+        cost    = rec.get("cost_usd", 0.0)
+        output  = str(rec.get("output", "")).replace("\n", " ")[:50]
+        print(f"  {i:<4} {node:<22} {status:<10} {tokens:>7}  ${cost:>7.4f}  {output}")
+    print()
+
+
+# ── eval-baseline ─────────────────────────────────────────────────────────────
+
+
+def _cmd_eval_baseline(args: argparse.Namespace) -> None:
+    import json as _json
+    import os
+
+    db = getattr(args, "db", "meshflow_baselines.json")
+    baselines: dict[str, float] = {}
+    if os.path.exists(db):
+        with open(db) as fh:
+            baselines = _json.load(fh)
+
+    cmd = args.eval_baseline_cmd
+    if cmd == "set":
+        baselines[args.name] = float(args.pass_rate)
+        with open(db, "w") as fh:
+            _json.dump(baselines, fh, indent=2)
+        print(f"  Saved baseline '{args.name}' = {args.pass_rate:.4f}  ({db})")
+
+    elif cmd == "get":
+        val = baselines.get(args.name)
+        if val is None:
+            print(f"  Baseline '{args.name}' not found.")
+        else:
+            print(f"  {args.name}: {val:.4f}")
+
+    elif cmd == "list":
+        if not baselines:
+            print("  No baselines stored.")
+        else:
+            print(f"\n  {'NAME':<30} {'PASS RATE':>10}")
+            print(f"  {'─'*30} {'─'*10}")
+            for name, rate in sorted(baselines.items()):
+                print(f"  {name:<30} {rate:>10.4f}")
+            print()
+
+    elif cmd == "clear":
+        if args.name not in baselines:
+            print(f"  Baseline '{args.name}' not found.")
+        else:
+            del baselines[args.name]
+            with open(db, "w") as fh:
+                _json.dump(baselines, fh, indent=2)
+            print(f"  Deleted baseline '{args.name}'.")
+
+
+# ── worker jobs (durable WorkerDaemon queue) ──────────────────────────────────
+
+
+def _cmd_worker_jobs(args: argparse.Namespace) -> None:
+    try:
+        from meshflow.workers.core import SQLiteJobStore, JobStatus
+    except ImportError:
+        print("  workers module not available.")
+        return
+
+    import datetime as _dt
+
+    store = SQLiteJobStore(path=args.db)
+    status_filter = args.job_status.strip().lower() if args.job_status else ""
+    jobs = store.list_all()
+
+    if status_filter:
+        try:
+            fs = JobStatus(status_filter)
+            jobs = [j for j in jobs if j.status == fs]
+        except ValueError:
+            print(f"  Unknown status '{status_filter}'. Valid: queued/running/done/failed/dead")
+            return
+
+    jobs = jobs[: args.limit]
+
+    if not jobs:
+        print("  No jobs found.")
+        return
+
+    print(f"\n  {'JOB ID':<36} {'TASK':<22} {'STATUS':<10} {'RETRIES':>7}  CREATED")
+    print(f"  {'─'*36} {'─'*22} {'─'*10} {'─'*7}  {'─'*20}")
+    for job in jobs:
+        ts = _dt.datetime.fromtimestamp(job.created_at).strftime("%Y-%m-%d %H:%M:%S") if job.created_at else "—"
+        print(
+            f"  {job.job_id:<36} {job.task_name[:20]:<22} "
+            f"{job.status.value:<10} {job.retries:>7}  {ts}"
+        )
+    print()
 
 
 # ── approve ───────────────────────────────────────────────────────────────────
@@ -5319,6 +5479,13 @@ def _cmd_worker(args: argparse.Namespace) -> None:
         asyncio.run(_async_worker_start(args))
     elif args.worker_cmd == "status":
         _worker_status(args)
+
+
+def _cmd_worker_v2(args: argparse.Namespace) -> None:
+    if args.worker_cmd == "jobs":
+        _cmd_worker_jobs(args)
+    else:
+        _cmd_worker(args)
 
 
 async def _async_worker_start(args: argparse.Namespace) -> None:

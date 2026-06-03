@@ -95,6 +95,19 @@ from meshflow.streaming.partial_output import (
     PartialStructuredOutput, PartialOutputChunk, stream_structured,
 )
 from meshflow.streaming.run_hub import RunStreamHub, get_run_hub, reset_run_hub
+from meshflow.streaming.structured_v2 import (
+    TypedStreamChunk,
+    stream_model,
+    collect_model,
+    stream_to_sse as typed_stream_to_sse,
+    stream_to_ndjson as typed_stream_to_ndjson,
+)
+from meshflow.agents.spawnable import (
+    SpawnableAgent,
+    SpawnRule,
+    SpawnConfig,
+    SpawnResult,
+)
 from meshflow.agents.supervisor import Supervisor, SupervisorResult
 from meshflow.agents.adversarial import AdversarialTeam, AdversarialResult
 from meshflow.agents.session import AgentSession, SessionResult, Turn
@@ -475,8 +488,80 @@ from meshflow.integrations.anthropic import (
     meshflow_tool_result_block,
 )
 from meshflow.integrations.openai import meshflow_as_openai_tool
+from meshflow.core.rate_limiter import RateLimiter
+from meshflow.core.agent_metrics import (
+    AgentMetrics,
+    AgentMetricsSummary,
+    AgentMetricsReport,
+)
+from meshflow.core.workflow_linter import WorkflowLinter, LintReport, LintIssue
+# ── Sprint 97: LangGraph + CrewAI parity ─────────────────────────────────────
+from meshflow.core.functional import task, entrypoint, Task as FunctionalTask, Entrypoint, EntrypointResult
+from meshflow.core.store import BaseStore, InMemoryStore as GraphInMemoryStore, SQLiteStore as GraphSQLiteStore, StoreItem
+from meshflow.core.state import InjectedState, InjectedStore
+from meshflow.intelligence.knowledge import (
+    StringKnowledgeSource,
+    PDFKnowledgeSource,
+    CSVKnowledgeSource,
+    JSONKnowledgeSource,
+    ExcelKnowledgeSource,
+)
+from meshflow.agents.pipeline import Pipeline, PipelineKickoffResult
+from meshflow.cloud import (
+    MeshFlowCloud,
+    get_cloud_client,
+    cloud_report_run,
+    cloud_report_eval,
+    cloud_report_mcp_call,
+    cloud_report_worker_job,
+)
+# ── Sprint 98: Agent Evals v2 ─────────────────────────────────────────────────
+from meshflow.eval.judge_v2 import (
+    StructuredJudge,
+    StructuredJudgeResult,
+    TrajectoryEval,
+    TrajectoryEvalResult,
+    TrajectoryStep,
+    RAGEval,
+    RAGEvalResult,
+    EvalCI,
+    EvalCIReport,
+    EvalRegressionError,
+)
+# ── Sprint 98: @traceable + exporters ────────────────────────────────────────
+from meshflow.observability.traceable import (
+    traceable,
+    TraceSpan,
+    TraceExporter,
+    LangfuseExporter,
+    MeshFlowCloudExporter,
+    set_exporter,
+    add_exporter,
+    trace_span,
+)
+# ── Sprint 98: MCPRouter ──────────────────────────────────────────────────────
+from meshflow.mcp.router import (
+    MCPRouter,
+    MCPServerConfig,
+    MCPAuthPolicy,
+    MCPToolEntry as MCPRouterToolEntry,
+    MCPCallResult,
+    MCPDeniedError,
+)
+# ── Sprint 98: Durable Workers ────────────────────────────────────────────────
+from meshflow.workers import (
+    durable_task,
+    DurableTask,
+    WorkerDaemon,
+    CronTrigger,
+    JobRecord,
+    JobStatus,
+    WorkerStats,
+    InMemoryJobStore,
+    SQLiteJobStore,
+)
 
-__version__ = "1.10.0"
+__version__ = "1.13.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -857,6 +942,12 @@ __all__ = [
     "RunStreamHub",
     "get_run_hub",
     "reset_run_hub",
+    # ── Sprint 99: Typed structured streaming v2 ─────────────────────────────
+    "TypedStreamChunk",
+    "stream_model",
+    "collect_model",
+    "typed_stream_to_sse",
+    "typed_stream_to_ndjson",
     # ── Production deployment — doctor, env generator, Docker deployer ────────
     "Doctor",
     "DoctorReport",
@@ -892,6 +983,16 @@ __all__ = [
     "ScheduledTask",
     "ScheduleRun",
     "ScheduleStore",
+    # ── LLM call rate limiting (sliding-window RPM/TPM) ───────────────────────
+    "RateLimiter",
+    # ── Agent metrics (per-agent call/token/latency tracking) ────────────────
+    "AgentMetrics",
+    "AgentMetricsSummary",
+    "AgentMetricsReport",
+    # ── Workflow linter (static graph analysis) ───────────────────────────────
+    "WorkflowLinter",
+    "LintReport",
+    "LintIssue",
     # ── Per-agent / per-team rate limiting ────────────────────────────────────
     "RateLimitPolicy",
     "RateLimitResult",
@@ -1168,4 +1269,76 @@ __all__ = [
     "meshflow_tool_result_block",
     # ── OpenAI tool integration ────────────────────────────────────────────────
     "meshflow_as_openai_tool",
+    # ── Cloud telemetry client (meshflow.dev dashboard) ───────────────────────
+    "MeshFlowCloud",
+    "get_cloud_client",
+    "cloud_report_run",
+    "cloud_report_eval",
+    "cloud_report_mcp_call",
+    "cloud_report_worker_job",
+    # ── Sprint 98: Agent Evals v2 ─────────────────────────────────────────────
+    "StructuredJudge",
+    "StructuredJudgeResult",
+    "TrajectoryEval",
+    "TrajectoryEvalResult",
+    "TrajectoryStep",
+    "RAGEval",
+    "RAGEvalResult",
+    "EvalCI",
+    "EvalCIReport",
+    "EvalRegressionError",
+    # ── Sprint 98: @traceable + exporters ─────────────────────────────────────
+    "traceable",
+    "TraceSpan",
+    "TraceExporter",
+    "LangfuseExporter",
+    "MeshFlowCloudExporter",
+    "set_exporter",
+    "add_exporter",
+    "trace_span",
+    # ── Sprint 98: MCPRouter ──────────────────────────────────────────────────
+    "MCPRouter",
+    "MCPServerConfig",
+    "MCPAuthPolicy",
+    "MCPRouterToolEntry",
+    "MCPCallResult",
+    "MCPDeniedError",
+    # ── Sprint 98: Durable Workers ────────────────────────────────────────────
+    "durable_task",
+    "DurableTask",
+    "WorkerDaemon",
+    "CronTrigger",
+    "JobRecord",
+    "JobStatus",
+    "WorkerStats",
+    "InMemoryJobStore",
+    "SQLiteJobStore",
+    # ── Sprint 99: SpawnableAgent ─────────────────────────────────────────────
+    "SpawnableAgent",
+    "SpawnRule",
+    "SpawnConfig",
+    "SpawnResult",
+    # ── Sprint 97: LangGraph Functional API ───────────────────────────────────
+    "task",
+    "entrypoint",
+    "FunctionalTask",
+    "Entrypoint",
+    "EntrypointResult",
+    # ── Sprint 97: Cross-thread Store (LangGraph BaseStore parity) ────────────
+    "BaseStore",
+    "GraphInMemoryStore",
+    "GraphSQLiteStore",
+    "StoreItem",
+    # ── Sprint 97: InjectedState / InjectedStore annotations ─────────────────
+    "InjectedState",
+    "InjectedStore",
+    # ── Sprint 97: Typed knowledge sources (CrewAI parity) ───────────────────
+    "StringKnowledgeSource",
+    "PDFKnowledgeSource",
+    "CSVKnowledgeSource",
+    "JSONKnowledgeSource",
+    "ExcelKnowledgeSource",
+    # ── Sprint 97: CrewAI Pipeline ────────────────────────────────────────────
+    "Pipeline",
+    "PipelineKickoffResult",
 ]

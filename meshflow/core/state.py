@@ -56,6 +56,38 @@ START = "__start__"
 T = TypeVar("T")
 
 
+# ── InjectedState / InjectedStore markers ─────────────────────────────────────
+
+class InjectedState:
+    """Annotation marker: inject the current graph state into a tool parameter.
+
+    Usage::
+
+        from typing import Annotated
+        from meshflow.core.state import InjectedState
+
+        def my_tool(query: str, state: Annotated[dict, InjectedState]) -> str:
+            topic = state.get("topic", "unknown")
+            return f"searching {topic} for {query}"
+    """
+
+
+class InjectedStore:
+    """Annotation marker: inject the compiled graph's store into a tool parameter.
+
+    Usage::
+
+        from typing import Annotated
+        from meshflow.core.state import InjectedStore
+        from meshflow.core.store import BaseStore
+
+        def save_result(key: str, value: str,
+                        store: Annotated[BaseStore, InjectedStore]) -> str:
+            store.put(("results",), key, {"value": value})
+            return "saved"
+    """
+
+
 # ── @node decorator ───────────────────────────────────────────────────────────
 
 def node(fn_or_name: Any = None) -> Any:
@@ -498,10 +530,37 @@ class StateGraph:
         self,
         policy: Any = None,
         checkpointer: "MemorySaver | SqliteSaver | None" = None,
+        interrupt_before: list[str] | None = None,
+        interrupt_after: list[str] | None = None,
+        store: Any = None,
     ) -> "CompiledGraph":
+        """Compile the graph into an executable :class:`CompiledGraph`.
+
+        Parameters
+        ----------
+        policy:
+            MeshFlow governance policy.
+        checkpointer:
+            Checkpoint backend (``MemorySaver``, ``SqliteSaver``, etc.) for
+            thread-level state persistence and HITL resume support.
+        interrupt_before:
+            List of node names to pause execution *before* running.
+        interrupt_after:
+            List of node names to pause execution *after* running.
+        store:
+            A :class:`~meshflow.core.store.BaseStore` injected into tools that
+            declare an ``InjectedStore`` annotation.
+        """
         if self._entry is None:
             raise ValueError("Call set_entry_point() before compile().")
-        return CompiledGraph(self, policy, checkpointer=checkpointer)
+        return CompiledGraph(
+            self,
+            policy,
+            checkpointer=checkpointer,
+            interrupt_before=interrupt_before or [],
+            interrupt_after=interrupt_after or [],
+            store=store,
+        )
 
     # ── Direct execution (without explicit compile) ───────────────────────────
 
@@ -531,10 +590,16 @@ class CompiledGraph:
         graph: StateGraph,
         policy: Any = None,
         checkpointer: "MemorySaver | SqliteSaver | None" = None,
+        interrupt_before: list[str] | None = None,
+        interrupt_after: list[str] | None = None,
+        store: Any = None,
     ) -> None:
         self._g = graph
         self._policy = policy
         self._checkpointer = checkpointer
+        self._interrupt_before: set[str] = set(interrupt_before or [])
+        self._interrupt_after: set[str] = set(interrupt_after or [])
+        self._store = store  # BaseStore | None
 
     # ── State inspection / mutation ───────────────────────────────────────────
 
@@ -631,6 +696,15 @@ class CompiledGraph:
             )
 
             for name, result in zip(ready, results):
+                # compile-time interrupt_before: raise before applying result
+                if name in self._interrupt_before:
+                    self._interrupted_node = name
+                    err = InterruptedError(f"interrupt_before node {name!r}")
+                    err.node = name           # type: ignore[attr-defined]
+                    err.value = f"interrupt_before:{name}"  # type: ignore[attr-defined]
+                    err.state = state.snapshot()  # type: ignore[attr-defined]
+                    raise err
+
                 if isinstance(result, Interrupt):
                     # Save the paused node so resume= can restart it
                     self._interrupted_node = name
@@ -649,6 +723,15 @@ class CompiledGraph:
 
                 if isinstance(result, dict):
                     state = state.update(result)
+
+                # compile-time interrupt_after: raise after applying result
+                if name in self._interrupt_after:
+                    self._interrupted_node = name
+                    err = InterruptedError(f"interrupt_after node {name!r}")
+                    err.node = name           # type: ignore[attr-defined]
+                    err.value = f"interrupt_after:{name}"  # type: ignore[attr-defined]
+                    err.state = state.snapshot()  # type: ignore[attr-defined]
+                    raise err
 
                 # Route from this node
                 if name in self._g._conditional:
@@ -711,14 +794,37 @@ class CompiledGraph:
     def stream(
         self,
         initial: dict[str, Any],
+        stream_mode: str = "values",
+        config: dict[str, Any] | None = None,
     ):
-        """Async generator yielding (node_name, state_snapshot) after each step."""
-        return self._stream_impl(initial)
+        """Async generator that streams execution events.
+
+        Parameters
+        ----------
+        initial:
+            Initial state dict.
+        stream_mode:
+            Controls what each yielded chunk contains:
+
+            ``"values"``  — ``(node_name, full_state_snapshot)`` — default.
+            ``"updates"`` — ``(node_name, delta_dict)`` — only changed keys.
+            ``"messages"``— ``(node_name, {"role": "ai", "content": "..."})`` —
+                            last LLM message from the state.
+            ``"debug"``   — ``(node_name, {"step": N, "state": snap, "mode": ...})``
+                            verbose debug dict.
+            ``"events"``  — ``{"event": "on_node_start"|"on_node_end", "node": ..., "state": ...}``
+                            structured event dicts (no tuple, yields dicts).
+        config:
+            Optional ``{"thread_id": "..."}`` for checkpoint integration.
+        """
+        return self._stream_impl(initial, stream_mode=stream_mode, config=config)
 
     async def _stream_impl(
         self,
         initial: dict[str, Any],
         max_steps: int = 200,
+        stream_mode: str = "values",
+        config: dict[str, Any] | None = None,
     ):
         state = GraphState(self._g._channels, initial)
         queue: list[str] = [self._g._entry]  # type: ignore[list-item]
@@ -728,6 +834,13 @@ class CompiledGraph:
             step += 1
             ready = list(dict.fromkeys(queue))
             queue = []
+
+            prev_snap = state.snapshot()
+
+            # Fire on_node_start for "events" mode
+            if stream_mode == "events":
+                for name in ready:
+                    yield {"event": "on_node_start", "node": name, "state": prev_snap}
 
             results = await asyncio.gather(
                 *[self._run_node(name, state.snapshot()) for name in ready],
@@ -739,7 +852,30 @@ class CompiledGraph:
                     raise result
                 if isinstance(result, dict):
                     state = state.update(result)
-                yield name, state.snapshot()
+                snap = state.snapshot()
+
+                if stream_mode == "values":
+                    yield name, snap
+                elif stream_mode == "updates":
+                    delta = {k: v for k, v in snap.items() if prev_snap.get(k) != v}
+                    yield name, delta
+                elif stream_mode == "messages":
+                    # Extract the last AI message if present in the state
+                    msgs = snap.get("messages", snap.get("output", []))
+                    if isinstance(msgs, list) and msgs:
+                        last = msgs[-1]
+                        content = last.get("content", "") if isinstance(last, dict) else str(last)
+                        yield name, {"role": "ai", "content": content}
+                    else:
+                        yield name, {"role": "ai", "content": str(snap.get("output", snap.get("result", "")))}
+                elif stream_mode == "debug":
+                    yield name, {"step": step, "node": name, "state": snap, "mode": "debug"}
+                elif stream_mode == "events":
+                    yield {"event": "on_node_end", "node": name, "state": snap, "step": step}
+                else:
+                    yield name, snap  # unknown mode → fall back to "values"
+
+                prev_snap = snap
 
                 if name in self._g._conditional:
                     condition_fn, mapping = self._g._conditional[name]
@@ -762,3 +898,8 @@ class CompiledGraph:
                     for dst in self._g._edges.get(name, []):
                         if dst != END:
                             queue.append(dst)
+
+        # Checkpoint the final state when config carries a thread_id
+        thread_id: str | None = (config or {}).get("thread_id")
+        if thread_id and self._checkpointer is not None:
+            self._checkpointer.put(thread_id, state.snapshot())

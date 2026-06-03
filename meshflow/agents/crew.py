@@ -135,6 +135,29 @@ class Crew:
     role_router: Any = None          # optional RoleRouter for dynamic agent creation
     stop_on_confidence: float | None = None  # exit sequential run early when met
     context_dedup: bool = False              # deduplicate shared context in parallel runs
+    memory_config: dict[str, Any] | None = None
+    """Crew-level memory provider configuration (CrewAI-compatible).
+
+    Supported keys:
+
+    ``provider`` — ``"sqlite"`` (default), ``"redis"``, ``"file"``, ``"in_memory"``.
+    ``config``   — provider-specific options (e.g. path, url, ttl, prefix).
+
+    Example::
+
+        crew = Crew(
+            agents=[a1, a2],
+            tasks=[t1, t2],
+            memory_config={
+                "provider": "sqlite",
+                "config": {"path": "crew_memory.db"},
+            },
+        )
+
+    When set, a shared :class:`~meshflow.intelligence.memory.AgentMemory`
+    backed by the specified backend is attached to every agent in the crew
+    before execution.
+    """
 
     def __post_init__(self) -> None:
         if not self.tasks:
@@ -143,6 +166,36 @@ class Crew:
             raise ValueError("Crew must have at least one agent (or a role_router).")
         if isinstance(self.process, str):
             self.process = Process(self.process)
+        if self.memory_config:
+            self._apply_memory_config(self.memory_config)
+
+    def _apply_memory_config(self, cfg: dict[str, Any]) -> None:
+        """Attach a shared memory backend to all agents from memory_config."""
+        provider = cfg.get("provider", "sqlite")
+        options: dict[str, Any] = cfg.get("config", {})
+        try:
+            if provider == "in_memory":
+                from meshflow.intelligence.memory_backends import InMemoryBackend
+                backend = InMemoryBackend()
+            elif provider == "file":
+                from meshflow.intelligence.memory_backends import FileMemoryBackend
+                backend = FileMemoryBackend(options.get("directory", "crew_memory"))
+            elif provider == "redis":
+                from meshflow.intelligence.memory_backends import RedisMemoryBackend
+                backend = RedisMemoryBackend(
+                    options.get("url", "redis://localhost:6379/0"),
+                    ttl=options.get("ttl"),
+                    prefix=options.get("prefix", "crew:memory:"),
+                )
+            else:
+                from meshflow.intelligence.memory_backends import SQLiteMemoryBackend
+                backend = SQLiteMemoryBackend(options.get("path", "crew_memory.db"))
+            for agent in self.agents:
+                if hasattr(agent, "memory_backend"):
+                    agent.memory_backend = backend
+                    agent.memory = True
+        except Exception:
+            pass  # memory_config errors are non-fatal
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -294,8 +347,22 @@ class Crew:
     async def _run_sequential(self, inputs: dict[str, Any] | None) -> CrewOutput:
         """Tasks execute in order; each receives all prior task outputs as context."""
         outputs: list[TaskOutput] = []
+        prev_output: TaskOutput | None = None
         for i, task in enumerate(self.tasks):
             await self._resolve_agent_for_task(task)
+
+            # Condition gate — skip if condition(previous_output) is falsy
+            if task.condition is not None:
+                try:
+                    should_run = bool(task.condition(prev_output))
+                except Exception:
+                    should_run = True
+                if not should_run:
+                    if self.verbose:
+                        print(f"[Crew] Task {i+1}/{len(self.tasks)} skipped (condition=False): "
+                              f"{task.description[:60]}")
+                    continue
+
             if self.verbose:
                 agent_name = getattr(task.agent, "name", "?") if task.agent else "?"
                 print(f"[Crew] Task {i+1}/{len(self.tasks)}: {task.description[:60]}  → {agent_name}")
@@ -305,6 +372,7 @@ class Crew:
                 task.context = list(self.tasks[:i])
 
             out = await task.run(inputs)
+            prev_output = out
             outputs.append(out)
 
             if self.verbose:
@@ -463,6 +531,102 @@ class Crew:
             process=Process(process_str),
             verbose=verbose,
         )
+
+    # ── Train & Replay ────────────────────────────────────────────────────────
+
+    async def train(
+        self,
+        n_iterations: int,
+        filename: str,
+        inputs: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run the crew *n_iterations* times and save training data to *filename*.
+
+        Each iteration produces a ``CrewOutput``.  The training record stores the
+        inputs, the final output, per-task outputs, and an auto-computed quality
+        score (confidence extracted from the final output).
+
+        Training data is written as newline-delimited JSON (one record per line),
+        suitable for fine-tuning pipelines.
+
+        Parameters
+        ----------
+        n_iterations:
+            Number of complete crew runs to collect.
+        filename:
+            Path to write training data (appended if exists).
+        inputs:
+            Fixed inputs passed to every run.
+        """
+        import json as _json
+        records: list[dict[str, Any]] = []
+        for i in range(n_iterations):
+            if self.verbose:
+                print(f"[Crew.train] Iteration {i+1}/{n_iterations}")
+            result = await self.kickoff(inputs)
+            record: dict[str, Any] = {
+                "iteration": i + 1,
+                "inputs": inputs or {},
+                "output": result.raw,
+                "task_outputs": [
+                    {"description": t.task_description, "output": t.raw}
+                    for t in result.tasks_output
+                ],
+                "quality_score": _parse_confidence(result.raw),
+                "tokens": result.total_tokens,
+                "cost_usd": result.total_cost_usd,
+            }
+            records.append(record)
+        with open(filename, "a", encoding="utf-8") as f:
+            for rec in records:
+                f.write(_json.dumps(rec) + "\n")
+        if self.verbose:
+            print(f"[Crew.train] Saved {len(records)} records to {filename!r}")
+        return records
+
+    async def replay(
+        self,
+        task_id: int,
+        inputs: dict[str, Any] | None = None,
+    ) -> "CrewOutput":
+        """Replay crew execution starting from *task_id* (0-based index).
+
+        Tasks before *task_id* are treated as already-complete: their outputs
+        are set to a placeholder so downstream context injection still works.
+        Tasks from *task_id* onward are re-executed.
+
+        Parameters
+        ----------
+        task_id:
+            0-based index of the task to replay from.
+        inputs:
+            Inputs for the re-run segment.
+        """
+        if task_id < 0 or task_id >= len(self.tasks):
+            raise ValueError(
+                f"task_id {task_id} is out of range — crew has {len(self.tasks)} tasks "
+                f"(valid: 0–{len(self.tasks)-1})"
+            )
+
+        # Inject placeholder outputs for tasks that are being skipped
+        for i, task in enumerate(self.tasks[:task_id]):
+            if task.output is None:
+                task.output = TaskOutput(
+                    raw=f"[replayed — skipped task {i}]",
+                    task_description=task.description,
+                    agent_name=getattr(getattr(task, "agent", None), "name", ""),
+                )
+
+        # Run only tasks from task_id onward
+        replay_crew = type(self)(
+            agents=self.agents,
+            tasks=self.tasks[task_id:],
+            process=self.process,
+            manager_llm=self.manager_llm,
+            verbose=self.verbose,
+            policy=self.policy,
+        )
+        return await replay_crew.kickoff(inputs)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -25,5 +25,19 @@ from __future__ import annotations
 
 from meshflow.cloud.reporter import is_enabled, report_run
 from meshflow.cloud.model_router_analytics import RouterAnalytics, RouterSummary, TierStats
+from meshflow.cloud.client import (
+    MeshFlowCloud,
+    get_cloud_client,
+    report_run as cloud_report_run,
+    report_eval as cloud_report_eval,
+    report_mcp_call as cloud_report_mcp_call,
+    report_worker_job as cloud_report_worker_job,
+)
 
-__all__ = ["report_run", "is_enabled", "RouterAnalytics", "RouterSummary", "TierStats"]
+__all__ = [
+    "report_run", "is_enabled",
+    "RouterAnalytics", "RouterSummary", "TierStats",
+    "MeshFlowCloud", "get_cloud_client",
+    "cloud_report_run", "cloud_report_eval",
+    "cloud_report_mcp_call", "cloud_report_worker_job",
+]
