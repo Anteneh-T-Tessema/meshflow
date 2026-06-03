@@ -722,3 +722,59 @@ func (c *Client) BatchRun(
 	wg.Wait()
 	return results
 }
+
+// ── Structured output ─────────────────────────────────────────────────────────
+
+// structuredRequestBody adds a JSON schema hint to the run request.
+type structuredRequestBody struct {
+	Task       string                 `json:"task"`
+	Policy     map[string]interface{} `json:"policy,omitempty"`
+	Context    map[string]interface{} `json:"context,omitempty"`
+	OutputMode string                 `json:"output_mode,omitempty"` // "json"
+	Schema     string                 `json:"schema,omitempty"`       // JSON Schema string
+}
+
+// StructuredRunResult extends RunResult with the parsed JSON output.
+type StructuredRunResult struct {
+	RunResult
+	// ParsedOutput holds the server's structured JSON response as a map.
+	// Unmarshal into your own type:
+	//   data, _ := json.Marshal(r.ParsedOutput)
+	//   json.Unmarshal(data, &myStruct)
+	ParsedOutput map[string]interface{} `json:"parsed_output,omitempty"`
+}
+
+// RunAgentStructured asks the server to return structured JSON output.
+//
+// schema is a JSON Schema string describing the expected output format.
+// Pass an empty string to request JSON output without a strict schema.
+//
+// Usage:
+//
+//	result, err := client.RunAgentStructured(ctx,
+//	    "Extract all line items from this invoice.",
+//	    `{"type":"object","properties":{"items":{"type":"array"},"total":{"type":"number"}}}`,
+//	)
+//	if err != nil { ... }
+//	data, _ := json.Marshal(result.ParsedOutput)
+//	json.Unmarshal(data, &myInvoice)
+func (c *Client) RunAgentStructured(
+	ctx context.Context,
+	task string,
+	schema string,
+	opts ...RunOption,
+) (*StructuredRunResult, error) {
+	o := applyOptions(opts)
+	reqBody := structuredRequestBody{
+		Task:       task,
+		Policy:     buildPolicy(o),
+		Context:    o.Context,
+		OutputMode: "json",
+		Schema:     schema,
+	}
+	var out StructuredRunResult
+	if err := c.do(ctx, http.MethodPost, "/run", reqBody, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

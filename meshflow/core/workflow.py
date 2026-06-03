@@ -2190,6 +2190,125 @@ class Workflow:
 
         return CostEstimate(lines=lines, task_preview=task[:80])
 
+    # ── Structured output ─────────────────────────────────────────────────────
+
+    def run_structured(self, task: str, schema: Any) -> Any:
+        """Run the workflow and return a fully validated structured object.
+
+        Uses the agent's structured output pipeline internally, streaming tokens
+        into a partial JSON parser and returning the final validated Pydantic model
+        (or raw dict if *schema* is None).
+
+        Parameters
+        ----------
+        task:   Text task for the pipeline.
+        schema: A Pydantic ``BaseModel`` class, or ``None`` to return raw dict.
+
+        Example::
+
+            from pydantic import BaseModel
+            from meshflow import Workflow, Agent
+
+            class Report(BaseModel):
+                title: str
+                summary: str
+                key_points: list[str]
+
+            wf = Workflow()
+            wf.add(Agent("analyst"))
+            report = wf.run_structured("Write a market analysis.", Report)
+            print(report.title)
+        """
+        from meshflow.integrations._utils import run_sync
+        return run_sync(self._run_structured_async(task, schema))
+
+    async def _run_structured_async(self, task: str, schema: Any) -> Any:
+        """Async backbone for :meth:`run_structured`."""
+        async for chunk in self.astream_structured(task, schema):
+            if chunk.complete:
+                return chunk.validated if schema is not None else chunk.partial
+        return None
+
+    async def astream_structured(self, task: str, schema: Any) -> "Any":
+        """Native async generator — yields :class:`~meshflow.streaming.partial_output.PartialOutputChunk` objects.
+
+        Streams the pipeline's token output through a partial JSON parser.
+        Yields one chunk per token (with the growing partial parse) and a final
+        chunk with ``complete=True`` and the fully validated object in
+        ``chunk.validated``.
+
+        Parameters
+        ----------
+        task:   Text task for the pipeline.
+        schema: A Pydantic ``BaseModel`` class, or ``None`` to return raw dict.
+
+        Usage in FastAPI::
+
+            @app.get("/stream-structured")
+            async def endpoint(task: str):
+                async def _gen():
+                    async for chunk in wf.astream_structured(task, Report):
+                        yield stream_to_ndjson(PartialOutputChunk(...))
+                return StreamingResponse(_gen(), media_type="application/x-ndjson")
+
+        Or collect synchronously::
+
+            report = wf.run_structured("Write a market report.", Report)
+        """
+        from meshflow.streaming.partial_output import stream_structured
+
+        async def _token_gen():
+            async for chunk in self.astream(task):
+                if chunk.is_token and chunk.content:
+                    yield chunk.content
+
+        async for partial_chunk in stream_structured(_token_gen(), schema):
+            yield partial_chunk
+
+    def stream_structured(self, task: str, schema: Any) -> "Any":
+        """Synchronous structured streaming generator.
+
+        Like :meth:`stream` but wraps the output through a partial JSON parser,
+        yielding :class:`~meshflow.streaming.partial_output.PartialOutputChunk`
+        objects as tokens accumulate.
+
+        Use :meth:`run_structured` to block until the final object is ready.
+        Use this method when you want to update a progress UI as the JSON fills in.
+
+        Example::
+
+            for chunk in wf.stream_structured("Analyse this.", Report):
+                print(chunk.partial)      # dict with fields parsed so far
+                if chunk.complete:
+                    report = chunk.validated  # fully validated Report instance
+        """
+        import asyncio
+        import queue as _queue
+        import threading as _threading
+
+        q: "_queue.Queue[Any]" = _queue.Queue(maxsize=256)
+
+        async def _produce() -> None:
+            try:
+                async for chunk in self.astream_structured(task, schema):
+                    q.put(chunk)
+            except Exception:
+                from meshflow.streaming.partial_output import PartialOutputChunk
+                q.put(PartialOutputChunk(partial={}, complete=False, raw_so_far=""))
+            finally:
+                q.put(None)
+
+        def _run() -> None:
+            asyncio.run(_produce())
+
+        t = _threading.Thread(target=_run, daemon=True)
+        t.start()
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                break
+            yield chunk
+
     def stream(self, task: str) -> "Any":
         """Synchronous streaming generator — yields :class:`~meshflow.core.streaming.StreamChunk` objects.
 

@@ -90,7 +90,10 @@ class PartialStructuredOutput:
             partial, complete, validated = self._parse(accumulated)
 
             changed = partial != last_partial
-            if changed or self._emit_every:
+            # Always emit when complete transitions False→True (even if the
+            # closing token — e.g. "}" — doesn't change the partial dict).
+            completing_now = complete and not completed
+            if changed or self._emit_every or completing_now:
                 last_partial = dict(partial)
                 yield PartialOutputChunk(
                     raw_so_far=accumulated,
@@ -100,7 +103,7 @@ class PartialStructuredOutput:
                     token=token,
                 )
 
-            if complete and not completed:
+            if completing_now:
                 completed = True
                 break  # full object parsed — stop consuming tokens
 
