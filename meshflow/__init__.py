@@ -58,7 +58,7 @@ from meshflow.agents.skills import Skill, SKILLS, skill_prompt, list_skills
 from meshflow.agents.messaging import MessageBus
 from meshflow.agents.conversation import GroupChat, GroupChatManager, ConversationResult
 from meshflow.agents.react import ReActAgent, ReActResult, ThoughtStep
-from meshflow.agents.router import ProviderRouter, auto_provider, auto_model, ModelTierRouter, ModelTier, AdaptiveModelTierRouter
+from meshflow.agents.router import ProviderRouter, auto_provider, auto_model, ModelTierRouter, ModelTier, AdaptiveModelTierRouter, CascadeRouter
 from meshflow.agents.base import model_is_local
 from meshflow.agents.registry import ModelSpec, ModelRegistry, DEFAULT_REGISTRY
 from meshflow.agents.scoring import TaskScore, TaskScorer, extract_confidence, score_task
@@ -604,6 +604,7 @@ __all__ = [
     "ModelTierRouter",
     "ModelTier",
     "AdaptiveModelTierRouter",
+    "CascadeRouter",
     "model_is_local",
     "auto_provider",
     "auto_model",

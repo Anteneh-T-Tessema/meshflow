@@ -110,9 +110,10 @@ class _BuiltAgent(BaseAgent):
             self._restore_memory()
         self._input_stack = GuardrailStack(input_guardrails or [], mode="strict")
         self._output_stack = GuardrailStack(output_guardrails or [], mode="strict")
-        self._model_router: Any = None    # set by Agent._build() when model_router= is given
-        self._context_pruner: Any = None  # set by Agent._build() when context_pruner= is given
-        self._thinking: bool = False      # set by Agent._build() when thinking= is given
+        self._model_router: Any = None          # set by Agent._build() when model_router= is given
+        self._cascade_threshold: float | None = None  # set by Agent._build() when cascade_threshold= is given
+        self._context_pruner: Any = None        # set by Agent._build() when context_pruner= is given
+        self._thinking: bool = False            # set by Agent._build() when thinking= is given
         self._thinking_budget: int = 2000
         if knowledge:
             from meshflow.intelligence.knowledge import AgentKnowledge
@@ -315,6 +316,31 @@ class _BuiltAgent(BaseAgent):
 
         confidence, content = _extract_confidence(content)
 
+        # ── Cascade escalation: retry with next tier on low confidence ─────────
+        _escalations = 0
+        if (
+            self._cascade_threshold is not None
+            and confidence < self._cascade_threshold
+            and self._model_router is not None
+            and hasattr(self._model_router, "escalate")
+            and _routing_id
+        ):
+            next_tier = self._model_router.escalate(_routing_id)
+            while next_tier is not None and confidence < self._cascade_threshold:
+                _escalations += 1
+                try:
+                    c2, t2, cost2 = await self.think(messages, model_override=next_tier.model)
+                    tokens += t2
+                    cost += cost2
+                    confidence2, c2 = _extract_confidence(c2)
+                    content = c2
+                    confidence = confidence2
+                    if confidence >= self._cascade_threshold:
+                        break
+                    next_tier = self._model_router.escalate(_routing_id)
+                except Exception:
+                    break
+
         # ── Output guardrails ─────────────────────────────────────────────────
         if self._output_stack.guardrails:
             try:
@@ -355,6 +381,7 @@ class _BuiltAgent(BaseAgent):
             "stated_confidence": confidence,
             "blocked": False,
             "guardrail_results": guardrail_results,
+            "cascade_escalations": _escalations,
         }
         if thinking_summary:
             result["thinking_summary"] = thinking_summary
@@ -452,6 +479,7 @@ class Agent:
     policy: Policy | str | None = None
     provider: Any = None         # low-level escape hatch; prefer llm=
     model_router: Any = None     # ModelRouter — auto-selects model tier per task
+    cascade_threshold: float | None = None  # CONFIDENCE below this → escalate to next tier
     context_pruner: Any = None   # SlidingWindowPruner | SummaryPruner — auto-prunes context
     thinking: bool = False        # enable Claude extended thinking
     thinking_budget: int = 2000   # max tokens Claude may spend on internal reasoning
@@ -573,6 +601,7 @@ class Agent:
         )
         # Attach optional model router, context pruner, and thinking config
         built._model_router = self.model_router
+        built._cascade_threshold = self.cascade_threshold
         built._context_pruner = self.context_pruner
         built._thinking = self.thinking
         built._thinking_budget = self.thinking_budget

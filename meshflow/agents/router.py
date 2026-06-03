@@ -736,3 +736,158 @@ class AdaptiveModelTierRouter(ModelTierRouter):
             self.adapt()
         except Exception:
             pass  # never crash a route() call due to adaptation failure
+
+
+# ── CascadeRouter ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class _CascadeState:
+    """Tracks a single in-flight cascade attempt."""
+    task: str
+    composite: float
+    current_tier_idx: int
+    escalations_used: int
+    initial_routing_id: str
+
+
+class CascadeRouter:
+    """FrugalGPT-style cascade: try the cheap model first, escalate on low confidence.
+
+    Route flow::
+
+        fast model  →  CONFIDENCE < threshold?  →  smart model  →  CONFIDENCE < threshold?  →  large model
+                              (first escalation)                        (second escalation)
+
+    Only pays for expensive models when the cheap model's CONFIDENCE marker
+    falls below ``escalation_threshold``.  Most tasks (simple Q&A, summaries)
+    are handled at $0 by the local fast-tier model.
+
+    Usage::
+
+        from meshflow import CascadeRouter, AdaptiveModelTierRouter, ModelTier, Agent, Workflow
+
+        base = AdaptiveModelTierRouter(tiers=[
+            ModelTier("fast",  "llama3.2", max_tokens=512),
+            ModelTier("smart", "mistral",  max_tokens=2048),
+            ModelTier("large", "gpt-4o",   max_tokens=4096),
+        ])
+
+        cascade = CascadeRouter(base, escalation_threshold=0.65, max_escalations=2)
+
+        wf = Workflow()
+        wf.add(Agent("analyst", model_router=cascade, cascade_threshold=0.65))
+        result = wf.run("Explain quantum entanglement simply.")
+
+    Parameters
+    ----------
+    router:                 Any router with a ``route()`` interface (typically
+                            :class:`AdaptiveModelTierRouter`).
+    escalation_threshold:   CONFIDENCE below this triggers escalation (default 0.65).
+    max_escalations:        Maximum number of tier upgrades per task (default 2).
+    """
+
+    def __init__(
+        self,
+        router: Any,
+        escalation_threshold: float = 0.65,
+        max_escalations: int = 2,
+    ) -> None:
+        self._router = router
+        self.escalation_threshold = escalation_threshold
+        self.max_escalations = max_escalations
+        self._states: dict[str, _CascadeState] = {}
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def route(
+        self,
+        task: str = "",
+        tools: list[Any] | None = None,
+        run_id: str = "",
+    ) -> "_TierResult":
+        """Route a task — delegates to the wrapped router for the initial tier."""
+        import inspect as _inspect
+        import uuid as _uuid
+        routing_id = run_id or str(_uuid.uuid4())
+        # Pass run_id only if the wrapped router's route() supports it
+        _route_sig = _inspect.signature(self._router.route)
+        if "run_id" in _route_sig.parameters:
+            result = self._router.route(task, tools, run_id=routing_id)
+        else:
+            result = self._router.route(task, tools)
+        # Record cascade state for potential escalation
+        tiers = getattr(self._router, "_tiers", [])
+        tier_idx = next(
+            (i for i, t in enumerate(tiers) if t.name == result.tier), 0
+        )
+        self._states[routing_id] = _CascadeState(
+            task=task,
+            composite=result.composite if hasattr(result, "composite") else 0.0,
+            current_tier_idx=tier_idx,
+            escalations_used=0,
+            initial_routing_id=routing_id,
+        )
+        result.routing_id = routing_id  # type: ignore[attr-defined]
+        return result
+
+    def escalate(self, routing_id: str) -> "_TierResult | None":
+        """Return the next tier's result for a given routing ID.
+
+        Called by ``_BuiltAgent.step()`` when CONFIDENCE < escalation_threshold.
+        Returns ``None`` when max_escalations is reached or no higher tier exists.
+        """
+        state = self._states.get(routing_id)
+        if state is None:
+            return None
+        if state.escalations_used >= self.max_escalations:
+            return None
+
+        tiers = getattr(self._router, "_tiers", [])
+        next_idx = state.current_tier_idx + 1
+        if next_idx >= len(tiers):
+            return None
+
+        next_tier = tiers[next_idx]
+        state.current_tier_idx = next_idx
+        state.escalations_used += 1
+
+        is_local = False
+        if hasattr(self._router, "_resolve_is_local"):
+            is_local = self._router._resolve_is_local(next_tier)
+        elif next_tier.is_local is not None:
+            is_local = next_tier.is_local
+        else:
+            from meshflow.agents.base import model_is_local
+            is_local = model_is_local(next_tier.model)
+
+        if not is_local:
+            import logging
+            logging.getLogger("meshflow.cascade_router").info(
+                "CascadeRouter: escalating to '%s' (tier=%s, escalation %d/%d). "
+                "CONFIDENCE was below %.2f.",
+                next_tier.model, next_tier.name,
+                state.escalations_used, self.max_escalations,
+                self.escalation_threshold,
+            )
+
+        return _TierResult(
+            model=next_tier.model,
+            tier=next_tier.name,
+            is_local=is_local,
+            routing_id=routing_id,
+        )
+
+    def record_outcome(self, run_id: str, **kw: Any) -> None:
+        """Forward outcome recording to the wrapped router if it supports it."""
+        if hasattr(self._router, "record_outcome"):
+            self._router.record_outcome(run_id, **kw)
+        self._states.pop(run_id, None)
+
+    def escalation_count(self, routing_id: str) -> int:
+        """Return how many escalations have been used for a given routing ID."""
+        state = self._states.get(routing_id)
+        return state.escalations_used if state else 0
+
+    def tiers(self) -> list[Any]:
+        return self._router.tiers() if hasattr(self._router, "tiers") else []
