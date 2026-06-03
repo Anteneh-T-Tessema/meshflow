@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -543,4 +544,181 @@ func (c *Client) Metrics(ctx context.Context) (string, error) {
 		return "", &Error{StatusCode: resp.StatusCode, Method: http.MethodGet, Path: "/metrics", Body: string(raw)}
 	}
 	return string(raw), nil
+}
+
+// ── Multi-modal ───────────────────────────────────────────────────────────────
+
+// multimodalRequestBody extends runRequestBody with content blocks.
+type multimodalRequestBody struct {
+	Task             string                   `json:"task"`
+	Policy           map[string]interface{}   `json:"policy,omitempty"`
+	Context          map[string]interface{}   `json:"context,omitempty"`
+	MultimodalInputs []map[string]interface{} `json:"multimodal_inputs,omitempty"`
+}
+
+// RunAgentMultimodal runs a task that includes multi-modal content (images,
+// documents, audio) alongside the text prompt.  The server passes the content
+// blocks to the first agent in the pipeline; subsequent agents receive the
+// text output.
+//
+//	img := meshflow.NewImageFromBytes(pngBytes, "image/png")
+//	doc := meshflow.NewDocumentFromString(jsonText, "data.json")
+//	result, err := client.RunAgentMultimodal(ctx,
+//	    "Extract all line items and totals from this invoice.",
+//	    []meshflow.MultimodalInput{img, doc},
+//	)
+func (c *Client) RunAgentMultimodal(
+	ctx context.Context,
+	task string,
+	inputs []MultimodalInput,
+	opts ...RunOption,
+) (*RunResult, error) {
+	o := applyOptions(opts)
+	blocks := BuildContentBlocks(inputs, "anthropic")
+	reqBody := multimodalRequestBody{
+		Task:             task,
+		Policy:           buildPolicy(o),
+		Context:          o.Context,
+		MultimodalInputs: blocks,
+	}
+	var out RunResult
+	if err := c.do(ctx, http.MethodPost, "/run", reqBody, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// StreamMultimodal starts a streaming task run with multi-modal inputs.
+// Returns a channel of StreamEvents; see [Client.Stream] for usage details.
+//
+//	img, _ := meshflow.NewImageFromFile("chart.png")
+//	ch, err := client.StreamMultimodal(ctx,
+//	    "Describe this chart in detail.",
+//	    []meshflow.MultimodalInput{img},
+//	)
+//	text := meshflow.CollectTokens(ch)
+func (c *Client) StreamMultimodal(
+	ctx context.Context,
+	task string,
+	inputs []MultimodalInput,
+	opts ...RunOption,
+) (<-chan StreamEvent, error) {
+	o := applyOptions(opts)
+	blocks := BuildContentBlocks(inputs, "anthropic")
+	reqBody := multimodalRequestBody{
+		Task:             task,
+		Policy:           buildPolicy(o),
+		Context:          o.Context,
+		MultimodalInputs: blocks,
+	}
+
+	b, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("meshflow: marshal stream request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/stream", bytes.NewReader(b))
+	if err != nil {
+		return nil, fmt.Errorf("meshflow: build stream request: %w", err)
+	}
+	for k, v := range c.headers() {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Accept", "application/x-ndjson, text/event-stream")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("meshflow: stream connect: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, &Error{
+			StatusCode: resp.StatusCode,
+			Method:     http.MethodPost,
+			Path:       "/stream",
+			Body:       strings.TrimSpace(string(raw)),
+		}
+	}
+
+	ch := make(chan StreamEvent, 64)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "data:") {
+				line = strings.TrimSpace(line[len("data:"):])
+			}
+			if line == "" || line == "[DONE]" {
+				continue
+			}
+			var ev StreamEvent
+			if err := json.Unmarshal([]byte(line), &ev); err == nil {
+				select {
+				case ch <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return ch, nil
+}
+
+// ── Batch execution ───────────────────────────────────────────────────────────
+
+// BatchRun executes multiple tasks concurrently, up to maxConcurrency at a
+// time, and returns results in the same order as tasks.
+//
+// Failed tasks do not abort the batch; they return a RunResult with
+// Status="failed" and Error set to the error message.  Check each result's
+// Error field for per-task failure details.
+//
+//	results := client.BatchRun(ctx, []string{
+//	    "Summarise Q1 results",
+//	    "Summarise Q2 results",
+//	    "Summarise Q3 results",
+//	    "Summarise Q4 results",
+//	}, 4)
+//	for i, r := range results {
+//	    fmt.Printf("Q%d: %s (cost=$%.4f)\n", i+1, r.Status, r.TotalCostUSD)
+//	}
+func (c *Client) BatchRun(
+	ctx context.Context,
+	tasks []string,
+	maxConcurrency int,
+	opts ...RunOption,
+) []*RunResult {
+	if maxConcurrency <= 0 {
+		maxConcurrency = 4
+	}
+	results := make([]*RunResult, len(tasks))
+	sem := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+
+	for i, task := range tasks {
+		wg.Add(1)
+		go func(idx int, t string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			r, err := c.RunAgent(ctx, t, opts...)
+			if err != nil {
+				results[idx] = &RunResult{
+					Status: "failed",
+					Error:  err.Error(),
+				}
+			} else {
+				results[idx] = r
+			}
+		}(i, task)
+	}
+
+	wg.Wait()
+	return results
 }

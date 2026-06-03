@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -549,5 +551,343 @@ func TestRunOptions(t *testing.T) {
 				tt.checks(t, policy)
 			}
 		})
+	}
+}
+
+// ── ImageInput ────────────────────────────────────────────────────────────────
+
+var _pngBytes = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01" +
+	"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00" +
+	"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+
+func TestNewImageFromBytes(t *testing.T) {
+	img := meshflow.NewImageFromBytes(_pngBytes, "image/png")
+	block := img.ToContentBlock()
+	if block["type"] != "image" {
+		t.Errorf("type = %v, want image", block["type"])
+	}
+	src, _ := block["source"].(map[string]interface{})
+	if src["type"] != "base64" {
+		t.Errorf("source.type = %v, want base64", src["type"])
+	}
+	if src["media_type"] != "image/png" {
+		t.Errorf("media_type = %v, want image/png", src["media_type"])
+	}
+}
+
+func TestNewImageFromURL(t *testing.T) {
+	img := meshflow.NewImageFromURL("https://example.com/chart.png")
+	block := img.ToContentBlock()
+	src, _ := block["source"].(map[string]interface{})
+	if src["type"] != "url" {
+		t.Errorf("source.type = %v, want url", src["type"])
+	}
+	if src["url"] != "https://example.com/chart.png" {
+		t.Errorf("url = %v", src["url"])
+	}
+}
+
+func TestNewImageFromURLOpenAI(t *testing.T) {
+	img := meshflow.NewImageFromURL("https://example.com/chart.png")
+	block := img.ToOpenAIContentBlock()
+	if block["type"] != "image_url" {
+		t.Errorf("type = %v, want image_url", block["type"])
+	}
+	iu, _ := block["image_url"].(map[string]interface{})
+	if iu["url"] != "https://example.com/chart.png" {
+		t.Errorf("image_url.url = %v", iu["url"])
+	}
+}
+
+func TestNewImageFromBytesOpenAI(t *testing.T) {
+	img := meshflow.NewImageFromBytes(_pngBytes, "image/png")
+	block := img.ToOpenAIContentBlock()
+	if block["type"] != "image_url" {
+		t.Errorf("type = %v, want image_url", block["type"])
+	}
+	iu, _ := block["image_url"].(map[string]interface{})
+	url, _ := iu["url"].(string)
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Errorf("url should be a data URI")
+	}
+}
+
+func TestNewImageFromFile(t *testing.T) {
+	f, err := os.CreateTemp("", "testimg*.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	_, _ = f.Write(_pngBytes)
+	f.Close()
+
+	img, err := meshflow.NewImageFromFile(f.Name())
+	if err != nil {
+		t.Fatalf("NewImageFromFile: %v", err)
+	}
+	block := img.ToContentBlock()
+	src, _ := block["source"].(map[string]interface{})
+	if src["type"] != "base64" {
+		t.Errorf("source.type = %v, want base64", src["type"])
+	}
+}
+
+func TestNewImageFromFileMissing(t *testing.T) {
+	_, err := meshflow.NewImageFromFile("/nonexistent/path/image.png")
+	if err == nil {
+		t.Error("expected error for missing file")
+	}
+}
+
+// ── DocumentInput ─────────────────────────────────────────────────────────────
+
+func TestNewDocumentFromString(t *testing.T) {
+	doc := meshflow.NewDocumentFromString("Revenue: $1.2M", "report.txt")
+	block := doc.ToContentBlock()
+	if block["type"] != "document" {
+		t.Errorf("type = %v, want document", block["type"])
+	}
+	src, _ := block["source"].(map[string]interface{})
+	if src["text"] != "Revenue: $1.2M" {
+		t.Errorf("text = %v", src["text"])
+	}
+}
+
+func TestNewDocumentFromStringOpenAI(t *testing.T) {
+	doc := meshflow.NewDocumentFromString("hello", "note.txt")
+	block := doc.ToOpenAIContentBlock()
+	if block["type"] != "text" {
+		t.Errorf("type = %v, want text", block["type"])
+	}
+	text, _ := block["text"].(string)
+	if !strings.Contains(text, "hello") {
+		t.Errorf("text should contain document content")
+	}
+}
+
+func TestNewDocumentFromFile(t *testing.T) {
+	f, err := os.CreateTemp("", "testdoc*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	_, _ = f.WriteString("quarterly results: up 12%")
+	f.Close()
+
+	doc, err := meshflow.NewDocumentFromFile(f.Name())
+	if err != nil {
+		t.Fatalf("NewDocumentFromFile: %v", err)
+	}
+	block := doc.ToContentBlock()
+	src, _ := block["source"].(map[string]interface{})
+	if src["text"] != "quarterly results: up 12%" {
+		t.Errorf("text = %v", src["text"])
+	}
+}
+
+func TestNewDocumentFromBytes(t *testing.T) {
+	doc := meshflow.NewDocumentFromBytes([]byte("%PDF-1.4"), "application/pdf", "invoice.pdf")
+	block := doc.ToContentBlock()
+	src, _ := block["source"].(map[string]interface{})
+	if src["type"] != "base64" {
+		t.Errorf("source.type = %v, want base64", src["type"])
+	}
+}
+
+// ── AudioInput ────────────────────────────────────────────────────────────────
+
+func TestNewAudioFromBytes(t *testing.T) {
+	audio := meshflow.NewAudioFromBytes([]byte("\xff\xfb\x90\x04"), "audio/mpeg")
+	block := audio.ToContentBlock()
+	if block["type"] != "audio" {
+		t.Errorf("type = %v, want audio", block["type"])
+	}
+}
+
+func TestNewAudioFromBytesOpenAI(t *testing.T) {
+	audio := meshflow.NewAudioFromBytes([]byte("\xff\xfb"), "audio/mpeg")
+	block := audio.ToOpenAIContentBlock()
+	if block["type"] != "input_audio" {
+		t.Errorf("type = %v, want input_audio", block["type"])
+	}
+}
+
+// ── BuildContentBlocks ────────────────────────────────────────────────────────
+
+func TestBuildContentBlocksAnthropic(t *testing.T) {
+	img := meshflow.NewImageFromBytes(_pngBytes, "image/png")
+	doc := meshflow.NewDocumentFromString("text", "doc.txt")
+	blocks := meshflow.BuildContentBlocks([]meshflow.MultimodalInput{img, doc}, "anthropic")
+	if len(blocks) != 2 {
+		t.Errorf("len = %d, want 2", len(blocks))
+	}
+	if blocks[0]["type"] != "image" {
+		t.Errorf("blocks[0].type = %v, want image", blocks[0]["type"])
+	}
+	if blocks[1]["type"] != "document" {
+		t.Errorf("blocks[1].type = %v, want document", blocks[1]["type"])
+	}
+}
+
+func TestBuildContentBlocksOpenAI(t *testing.T) {
+	img := meshflow.NewImageFromBytes(_pngBytes, "image/png")
+	blocks := meshflow.BuildContentBlocks([]meshflow.MultimodalInput{img}, "openai")
+	if blocks[0]["type"] != "image_url" {
+		t.Errorf("blocks[0].type = %v, want image_url", blocks[0]["type"])
+	}
+}
+
+// ── RunAgentMultimodal ────────────────────────────────────────────────────────
+
+func TestRunAgentMultimodal(t *testing.T) {
+	var gotBody map[string]interface{}
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		jsonResp(w, map[string]interface{}{
+			"run_id": "mm-1", "status": "completed",
+			"output": "Invoice total: $1,200", "total_cost_usd": 0.0, "total_tokens": 80,
+		})
+	}))
+
+	img := meshflow.NewImageFromBytes(_pngBytes, "image/png")
+	result, err := c.RunAgentMultimodal(context.Background(),
+		"Extract the invoice total.",
+		[]meshflow.MultimodalInput{img},
+	)
+	if err != nil {
+		t.Fatalf("RunAgentMultimodal: %v", err)
+	}
+	if result.RunID != "mm-1" {
+		t.Errorf("RunID = %q, want mm-1", result.RunID)
+	}
+	inputs, _ := gotBody["multimodal_inputs"].([]interface{})
+	if len(inputs) != 1 {
+		t.Errorf("multimodal_inputs len = %d, want 1", len(inputs))
+	}
+}
+
+func TestRunAgentMultimodalMultipleInputs(t *testing.T) {
+	var gotBody map[string]interface{}
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		jsonResp(w, map[string]interface{}{
+			"run_id": "r", "status": "completed", "output": "ok",
+			"total_cost_usd": 0.0, "total_tokens": 0,
+		})
+	}))
+
+	img := meshflow.NewImageFromBytes(_pngBytes, "image/png")
+	doc := meshflow.NewDocumentFromString("context text", "ctx.txt")
+	_, err := c.RunAgentMultimodal(context.Background(), "task",
+		[]meshflow.MultimodalInput{img, doc},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, _ := gotBody["multimodal_inputs"].([]interface{})
+	if len(inputs) != 2 {
+		t.Errorf("multimodal_inputs len = %d, want 2", len(inputs))
+	}
+}
+
+// ── BatchRun ──────────────────────────────────────────────────────────────────
+
+func TestBatchRun(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		jsonResp(w, map[string]interface{}{
+			"run_id": "batch-r", "status": "completed",
+			"output":         fmt.Sprintf("result for: %v", body["task"]),
+			"total_cost_usd": 0.0, "total_tokens": 10,
+		})
+	}))
+
+	tasks := []string{"task A", "task B", "task C", "task D"}
+	results := c.BatchRun(context.Background(), tasks, 2)
+	if len(results) != 4 {
+		t.Fatalf("len(results) = %d, want 4", len(results))
+	}
+	if calls != 4 {
+		t.Errorf("server called %d times, want 4", calls)
+	}
+	for i, r := range results {
+		if r == nil {
+			t.Errorf("results[%d] is nil", i)
+			continue
+		}
+		if r.Status != "completed" {
+			t.Errorf("results[%d].Status = %q, want completed", i, r.Status)
+		}
+	}
+}
+
+func TestBatchRunOrder(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		task, _ := body["task"].(string)
+		jsonResp(w, map[string]interface{}{
+			"run_id": "r", "status": "completed",
+			"output": "echo:" + task, "total_cost_usd": 0.0, "total_tokens": 5,
+		})
+	}))
+
+	tasks := []string{"alpha", "beta", "gamma"}
+	results := c.BatchRun(context.Background(), tasks, 3)
+	for i, task := range tasks {
+		if results[i] == nil {
+			t.Errorf("results[%d] nil", i)
+			continue
+		}
+		if results[i].Output != "echo:"+task {
+			t.Errorf("results[%d].Output = %q, want %q", i, results[i].Output, "echo:"+task)
+		}
+	}
+}
+
+func TestBatchRunEmpty(t *testing.T) {
+	c := meshflow.NewClient("http://localhost:9999", "")
+	results := c.BatchRun(context.Background(), []string{}, 4)
+	if len(results) != 0 {
+		t.Errorf("len(results) = %d, want 0", len(results))
+	}
+}
+
+func TestBatchRunServerError(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+
+	results := c.BatchRun(context.Background(), []string{"t1", "t2"}, 2)
+	for i, r := range results {
+		if r == nil {
+			t.Errorf("results[%d] nil; expected failed RunResult", i)
+			continue
+		}
+		if r.Status != "failed" {
+			t.Errorf("results[%d].Status = %q, want failed", i, r.Status)
+		}
+		if r.Error == "" {
+			t.Errorf("results[%d].Error should be set", i)
+		}
+	}
+}
+
+func TestBatchRunDefaultConcurrency(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResp(w, map[string]interface{}{
+			"run_id": "r", "status": "completed", "output": "ok",
+			"total_cost_usd": 0.0, "total_tokens": 0,
+		})
+	}))
+	results := c.BatchRun(context.Background(), []string{"a", "b"}, 0)
+	if len(results) != 2 {
+		t.Errorf("len = %d, want 2", len(results))
 	}
 }
