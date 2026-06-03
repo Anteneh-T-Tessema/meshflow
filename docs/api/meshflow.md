@@ -1,6 +1,6 @@
 # meshflow — Public API Reference
 
-Complete index of everything exported from `import meshflow`. All symbols listed here are stable under semantic versioning as of v1.0.0.
+Complete index of everything exported from `import meshflow`. All symbols listed here are stable under semantic versioning as of v1.13.0.
 
 ## Agent Creation
 

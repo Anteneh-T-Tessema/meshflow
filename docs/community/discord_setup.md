@@ -1,4 +1,4 @@
-# MeshFlow Discord Community — Setup Guide (v1.10.0)
+# MeshFlow Discord Community — Setup Guide (v1.13.0)
 
 ## Server Structure
 
@@ -25,9 +25,11 @@
   #model-routing        (ModelTierRouter, AdaptiveModelTierRouter, CascadeRouter)
   #cost-optimization    (estimate_cost, cost-report CLI, local vs cloud)
   #thompson-sampling    (TS posteriors, router.history(), per-bucket learning)
+  #cost-regression      (CostRegressionError CI gate, baseline tracking)
 
 📊 OBSERVABILITY
   #streaming            (Workflow.stream, astream, SSE helpers, FastAPI patterns)
+  #tool-streaming       (ToolStreamEvent, stream_tool_calls, tool lifecycle events)
   #structured-output    (run_structured, astream_structured, Pydantic models)
   #trace-studio         (meshflow studio, replay, audit ledger, ZT posture)
 
@@ -35,6 +37,12 @@
   #hipaa-sox-gdpr       (regulated-industry deployments)
   #audit-ledger         (tamper-evident chain, replay, forensics)
   #enterprise-policies  (DascGate, PII blocking, budget governance)
+  #soc2-eu-ai-act       (SOC2Assertion, EUAIActChecker, ForensicReport)
+
+🧠 ADVANCED AGENTS
+  #advisor-agent        (AdvisorAgent, AdvisorRouter, advisor-tool pattern)
+  #dynamic-workflows    (DynamicWorkflow, runtime agent spawning, DynamicPlan)
+  #context-compactor    (ContextCompactor, sliding window, summary strategies)
 
 🏢 ENTERPRISE
   #enterprise-general   (private — request access for verified enterprise orgs)
@@ -48,36 +56,35 @@
 
 ## #announcements — Launch Post
 
-> **MeshFlow is live on Discord.**
+> **MeshFlow v1.13.0 is live on Discord.**
 >
 > MeshFlow is the governance kernel for production multi-agent pipelines.
-> v1.10.0 — just shipped — adds something genuinely new: a routing system
-> that gets cheaper and smarter every time it runs.
+> v1.13.0 closes the gap with every major agentic framework and ships
+> five features we've never seen anywhere else:
 >
-> **The idea:** start with the cheapest model. Escalate only when the agent
-> isn't confident enough. Learn which tier handles which task type well.
-> Never touch the routing code again.
->
+> **AdvisorAgent** — a read-only advisor inspects drafts before final output:
 > ```python
-> from meshflow import AdaptiveModelTierRouter, ModelTier, CascadeRouter
+> from meshflow import AdvisorAgent, AdvisorConfig, AdvisorGuidance
+> agent = AdvisorAgent("writer", advisor_config=AdvisorConfig(
+>     guidance=AdvisorGuidance(content="Flag unverifiable claims."),
+>     use_threshold=0.6,
+> ))
+> ```
 >
-> router = AdaptiveModelTierRouter(
->     tiers=[
->         ModelTier("fast",  "llama3.2",   max_tokens=512),   # $0.00 local
->         ModelTier("smart", "mistral:7b", max_tokens=2048),  # $0.00 local
->         ModelTier("large", "gpt-4o",     max_tokens=4096),  # pay only here
->     ],
->     adapt_every=50,   # auto-adjust thresholds every 50 routes
-> )
+> **DynamicWorkflow** — the planner decides which agents to spawn at runtime:
+> ```python
+> from meshflow.core.dynamic_workflow import DynamicWorkflow
+> result = DynamicWorkflow().run("Write + analyse a Python function.")
+> ```
 >
-> cascade = CascadeRouter(router, escalation_threshold=0.65)
-> # → llama3.2 first. CONFIDENCE:0.90? Done. $0.
-> # → CONFIDENCE:0.40? Retry with mistral. $0.
-> # → Still low? gpt-4o. Pay once.
+> **meshflow-forensic** — standalone pip package for EU AI Act compliance:
+> ```bash
+> pip install meshflow-forensic
+> meshflow-forensic audit meshflow_runs.db --html report.html
 > ```
 >
 > Everything else: SHA-256 audit chain, HIPAA/SOX/GDPR/PCI/NERC profiles,
-> hard cost caps, SSE streaming, Go SDK, 5182 tests.
+> hard cost caps, SOC 2 assertion engine, tool streaming, 5,711 tests.
 >
 > Install: `pip install meshflow`
 > Docs: https://meshflow.dev/docs
@@ -95,14 +102,18 @@
 > MeshFlow is a governed multi-agent framework — compliance, cost caps,
 > and a tamper-evident audit chain built in from line one.
 >
-> **v1.10.0 highlights:**
-> - Self-improving cascade router (Thompson Sampling + per-bucket posteriors)
-> - `CascadeRouter` — start cheap, escalate only on low confidence
-> - `AdaptiveModelTierRouter` — learns which model tier fits which task type
-> - `router.history()` — see the last N routing decisions + TS state
-> - `Workflow.run_structured()` / `astream_structured()` — Pydantic output
-> - Redis + File memory backends for cross-session agent memory
-> - Go SDK: multimodal, batch, streaming, structured output
+> **v1.13.0 highlights (Sprints 95–102):**
+> - `AdvisorAgent` — Anthropic advisor-tool pattern for draft inspection
+> - `DynamicWorkflow` — planner spawns specialised agents at runtime
+> - `ContextCompactor` — Claude-native + sliding-window + summary strategies
+> - Tool streaming — `ToolStreamEvent` hierarchy, `stream_tool_calls`
+> - `BudgetConfig` — `ThinkingBudget` + `EffortBudget` enforced in the kernel
+> - `meshflow-forensic` — standalone forensic audit + EU AI Act compliance pip package
+> - `SOC2Assertion` — programmatic SOC 2 Type II assertion engine
+> - Cost regression gate — `CostRegressionError` in CI when cost exceeds baseline
+> - Competitive benchmark suite — MeshFlow vs LangGraph / CrewAI / AutoGen
+> - AutoGen 0.4+ and OpenAI Agents SDK full parity
+> - 5,711 tests, CI green on Python 3.11 + 3.12
 >
 > **Start here:**
 > - Install: `pip install meshflow`
@@ -134,7 +145,7 @@
    > **Key links:**
    > - Docs: https://meshflow.dev/docs
    > - QUICKSTART: https://github.com/Anteneh-T-Tessema/meshflow/blob/main/QUICKSTART.md
-   > - What's new in v1.10.0: CHANGELOG.md
+   > - What's new in v1.13.0: CHANGELOG.md
    >
    > If you're in healthcare, finance, energy, or legal → #hipaa-sox-gdpr
    > If you're building routing pipelines → #model-routing
@@ -145,8 +156,10 @@
    | Reaction | Role | Unlocks |
    |---|---|---|
    | 🏗️ | Builder | #showcase, #help, #integrations |
-   | 🤖 | Routing | #model-routing, #cost-optimization, #thompson-sampling |
-   | 📊 | Observability | #streaming, #structured-output, #trace-studio |
+   | 🤖 | Routing | #model-routing, #cost-optimization, #thompson-sampling, #cost-regression |
+   | 📊 | Observability | #streaming, #tool-streaming, #structured-output, #trace-studio |
+   | 🧠 | Advanced | #advisor-agent, #dynamic-workflows, #context-compactor |
+   | 🔐 | Security | #soc2-eu-ai-act, #audit-ledger, #enterprise-policies |
    | 🏥 | Healthcare | #hipaa-sox-gdpr |
    | 🏦 | Finance | #hipaa-sox-gdpr |
    | ⚡ | Energy | #hipaa-sox-gdpr |
@@ -187,7 +200,7 @@
 | `!docs` | MeshFlow docs: https://meshflow.dev/docs |
 | `!install` | `pip install meshflow` — requires Python 3.11+ |
 | `!quickstart` | https://github.com/Anteneh-T-Tessema/meshflow/blob/main/QUICKSTART.md |
-| `!version` | Latest: v1.10.0 — https://pypi.org/project/meshflow/ |
+| `!version` | Latest: v1.13.0 — https://pypi.org/project/meshflow/ |
 | `!changelog` | https://github.com/Anteneh-T-Tessema/meshflow/blob/main/CHANGELOG.md |
 | `!examples` | https://github.com/Anteneh-T-Tessema/meshflow/tree/main/examples |
 | `!roadmap` | https://github.com/Anteneh-T-Tessema/meshflow/blob/main/ROADMAP.md |
@@ -197,6 +210,11 @@
 | `!cost` | `meshflow cost-report --help` and `wf.estimate_cost(task)` |
 | `!memory` | Redis/SQLite/File/Postgres backends — https://meshflow.dev/docs/memory |
 | `!go` | Go SDK: `go get github.com/Anteneh-T-Tessema/meshflow/sdks/go` |
+| `!advisor` | AdvisorAgent: https://meshflow.dev/docs/agents/advisor |
+| `!dynamic` | DynamicWorkflow: https://meshflow.dev/docs/orchestration/dynamic-workflow |
+| `!compactor` | ContextCompactor: https://meshflow.dev/docs/agents/compactor |
+| `!forensic` | `pip install meshflow-forensic` — EU AI Act audit: https://meshflow.dev/docs/security/forensic |
+| `!soc2` | SOC2Assertion: https://meshflow.dev/docs/security/soc2-assertion |
 | `!bug` | https://github.com/Anteneh-T-Tessema/meshflow/issues/new?template=bug_report.md |
 
 ### Recommended Bots
@@ -229,7 +247,7 @@ COMMANDS = {
     "docs":        "MeshFlow docs: https://meshflow.dev/docs",
     "install":     "`pip install meshflow` — requires Python 3.11+",
     "quickstart":  "https://github.com/Anteneh-T-Tessema/meshflow/blob/main/QUICKSTART.md",
-    "version":     "Latest: **v1.10.0** — https://pypi.org/project/meshflow/",
+    "version":     "Latest: **v1.13.0** — https://pypi.org/project/meshflow/",
     "changelog":   "https://github.com/Anteneh-T-Tessema/meshflow/blob/main/CHANGELOG.md",
     "examples":    "https://github.com/Anteneh-T-Tessema/meshflow/tree/main/examples",
     "roadmap":     "https://github.com/Anteneh-T-Tessema/meshflow/blob/main/ROADMAP.md",
@@ -239,6 +257,11 @@ COMMANDS = {
     "cost":        "`meshflow cost-report --help`  |  `wf.estimate_cost(task)`",
     "memory":      "Redis/SQLite/File/Postgres memory backends: https://meshflow.dev/docs/memory",
     "go":          "Go SDK: `go get github.com/Anteneh-T-Tessema/meshflow/sdks/go`",
+    "advisor":     "AdvisorAgent docs: https://meshflow.dev/docs/agents/advisor",
+    "dynamic":     "DynamicWorkflow docs: https://meshflow.dev/docs/orchestration/dynamic-workflow",
+    "compactor":   "ContextCompactor docs: https://meshflow.dev/docs/agents/compactor",
+    "forensic":    "`pip install meshflow-forensic`  |  https://meshflow.dev/docs/security/forensic",
+    "soc2":        "SOC2Assertion docs: https://meshflow.dev/docs/security/soc2-assertion",
     "bug":         "File a bug: https://github.com/Anteneh-T-Tessema/meshflow/issues/new?template=bug_report.md",
 }
 
@@ -254,7 +277,7 @@ MESHFLOW_MOCK=1 python examples/adaptive_routing.py
 **Key links:**
 • Docs: https://meshflow.dev/docs
 • QUICKSTART: https://github.com/Anteneh-T-Tessema/meshflow/blob/main/QUICKSTART.md
-• What's new in v1.10.0: https://github.com/Anteneh-T-Tessema/meshflow/blob/main/CHANGELOG.md
+• What's new in v1.13.0: https://github.com/Anteneh-T-Tessema/meshflow/blob/main/CHANGELOG.md
 
 If you're building routing pipelines → #model-routing
 If you're in a regulated industry → #hipaa-sox-gdpr

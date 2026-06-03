@@ -129,7 +129,7 @@ NERC-CIP critical infrastructure teams and government contractors need air-gap-c
 | Durable execution backends | SQLite, Redis, Postgres, S3 |
 | Secret vault backends | AWS Secrets Manager, HashiCorp Vault, environment variables |
 | Documentation pages | 85+ |
-| PyPI release | v1.0.0 (Production/Stable) |
+| PyPI release | v1.13.0 (Production/Stable) |
 | Open-source license | Apache 2.0 |
 | Default model | claude-sonnet-4-6 |
 | Prompt caching | Enabled by default (cache_control: ephemeral) |

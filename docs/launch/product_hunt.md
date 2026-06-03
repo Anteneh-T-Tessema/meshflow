@@ -1,4 +1,4 @@
-# Product Hunt Launch — MeshFlow v1.12.0
+# Product Hunt Launch — MeshFlow v1.13.0
 
 ## Submission Metadata
 
@@ -12,7 +12,7 @@
 
 ## Description (260 chars)
 
-MeshFlow is a governed agent runtime for regulated industries — HIPAA/SOX/GDPR compliance, SHA-256 audit chain, cost caps, and StructuredJudge evals baked into the kernel. LangGraph/CrewAI/AutoGen parity. 5,500+ tests.
+MeshFlow is a governed agent runtime for regulated industries — HIPAA/SOX/GDPR compliance, SHA-256 audit chain, cost caps, SOC 2 assertion, and StructuredJudge evals baked into the kernel. LangGraph/CrewAI/AutoGen/AutoGen 0.4+/OpenAI Agents SDK parity. 5,711 tests.
 
 ---
 
@@ -24,7 +24,7 @@ I'm Anteneh, the maker of MeshFlow. Thanks for checking it out.
 
 **The problem I kept hitting:** You build a multi-agent pipeline, hardcode `gpt-4o` everywhere because it's the safe choice, and then watch your API bill climb while 70% of your tasks could have been handled by a free local model.
 
-**What v1.12.0 adds** (sprints 97–99):
+**What v1.13.0 adds** (sprints 95–102):
 
 ```python
 # 1. Functional API (@task / @entrypoint — LangGraph-style)
@@ -82,15 +82,23 @@ CronTrigger(cron="0 9 * * *").add(process_report, report_id="daily")
 
 vs. always-gpt-4o: same quality, ~10× cheaper.
 
-**New in v1.12.0:**
+**New in v1.13.0:**
+- `AdvisorAgent` / `AdvisorRouter` — advisor-tool pattern, adaptive use threshold
+- `DynamicWorkflow` — runtime agent spawning from planner output
+- `ContextCompactor` — Claude-native + sliding-window + summary strategies
+- `ToolStreamEvent` hierarchy — granular tool call lifecycle streaming
+- `BudgetConfig` — `ThinkingBudget` + `EffortBudget` enforced in kernel
+- `meshflow-forensic` — standalone forensic audit + EU AI Act compliance pip package
+- `SOC2Assertion` — programmatic SOC 2 Type II assertion; CI-ready
+- `CostRegressionError` — CI gate raises when per-run cost exceeds baseline
+- `competitive_bench.py` — MeshFlow vs LangGraph / CrewAI / AutoGen benchmarks
+- AutoGen 0.4+ parity: `AssistantAgent`, `SocietyOfMind`, `MagenticOne`, `AgentRuntime`
+- OpenAI Agents SDK parity: `Agent`, `Runner`, `handoff`, `FunctionTool`, `as_tool()`
 - `SpawnableAgent` — runtime specialised child agent spawning
 - `StructuredJudge` / `TrajectoryEval` / `RAGEval` / `EvalCI` regression gate
 - `@traceable` + `LangfuseExporter` for distributed tracing
 - `MCPRouter` multi-server MCP with per-server authorization
 - `@durable_task` / `WorkerDaemon` / `CronTrigger` with SQLite job persistence
-- `Workflow.astream_model(task, Report)` — yields real Pydantic instances as tokens arrive
-- `MeshFlowCloud` SDK — one `.instrument()` call ships telemetry to dashboard
-- `BaseStore` / `SQLiteStore` wired into `Agent(memory_store=...)` for cross-session facts
 
 **The full stack:**
 - SHA-256 tamper-evident audit chain on every agent step
@@ -103,7 +111,7 @@ vs. always-gpt-4o: same quality, ~10× cheaper.
 - A2A agent-to-agent protocol with `/.well-known/agent-card` discovery
 - Code interpreter (sandboxed subprocess, module allow-list)
 - Multi-modal: image, document, audio
-- 5,500+ tests, Python 3.11 + 3.12
+- 5,711 tests, Python 3.11 + 3.12
 
 **Install:**
 ```bash
@@ -175,5 +183,5 @@ async def stream(task: str):
 - GitHub: https://github.com/Anteneh-T-Tessema/meshflow
 - Docs: https://meshflow.dev/docs
 - PyPI: https://pypi.org/project/meshflow/
-- Docker: `docker pull ghcr.io/anteneh-t-tessema/meshflow-mcp:1.12.0`
+- Docker: `docker pull ghcr.io/anteneh-t-tessema/meshflow-mcp:1.13.0`
 - QUICKSTART.md: https://github.com/Anteneh-T-Tessema/meshflow/blob/main/QUICKSTART.md

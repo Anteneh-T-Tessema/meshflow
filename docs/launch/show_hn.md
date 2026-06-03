@@ -1,6 +1,6 @@
 # Show HN: MeshFlow — production multi-agent orchestration for regulated industries
 
-**HN title:** Show HN: MeshFlow – open-source agent orchestration with HIPAA/SOX/GDPR built in, 5,500+ tests
+**HN title:** Show HN: MeshFlow – open-source agent orchestration with HIPAA/SOX/GDPR built in, 5,711 tests
 
 ---
 
@@ -31,16 +31,23 @@ print(result.output)
 
 3. **Framework parity, not lock-in.** The same governance kernel wraps LangGraph graphs, CrewAI Crews, and AutoGen conversations. You can migrate incrementally.
 
-**Sprint 97/98 highlights (recent additions):**
+**v1.13.0 highlights (Sprints 95–102):**
 
-- **Functional API** — `@task` / `@entrypoint` decorators (LangGraph-style), `@traceable` for LangSmith-compatible distributed tracing with `LangfuseExporter`
-- **BestOfN + ConsensusVote** — `workflow.run_best_of(task, n=3)` runs N trials and picks the best scoring output; `ConsensusVote` aggregates across models
-- **StructuredJudge / TrajectoryEval / RAGEval / EvalCI** — rubric-based eval with weighted criteria, reasoning trajectory scoring, RAG faithfulness/relevance/recall, and a CI regression gate that raises `EvalRegressionError`
-- **MCPRouter** — multi-server MCP routing with per-server allow/deny authorization policies
-- **Durable Workers** — `@durable_task`, `WorkerDaemon`, `CronTrigger`, SQLite-backed job store that survives restarts
-- **SpawnableAgent** — dynamically spawns specialised child agents at runtime based on task content (Google Gemini "agent system" pattern)
-- **Typed structured streaming** — `workflow.astream_model(task, Report)` yields real Pydantic instances as tokens arrive, with SSE and NDJSON helpers
-- **MeshFlow Cloud SDK** — `from meshflow.cloud import MeshFlowCloud` ships run telemetry to the dashboard with one `.instrument()` call
+- **AdvisorAgent** — Anthropic advisor-tool pattern: a read-only advisor inspects drafts and injects structured guidance before the final response
+- **DynamicWorkflow** — the planner decides which agents to spawn at runtime based on intermediate results
+- **ContextCompactor** — Claude-native, sliding-window, and rolling-summary strategies to keep long sessions within the context window
+- **Tool streaming** — granular `ToolStreamEvent` hierarchy for observing tool call lifecycle (input delta → start → result) in real time
+- **BudgetConfig** — `ThinkingBudget` + `EffortBudget` enforced in `StepRuntime` with `BudgetExceededError` on cap breach
+- **meshflow-forensic** — standalone pip package (`pip install meshflow-forensic`) for deep audit, taint propagation, and EU AI Act compliance reporting
+- **SOC2Assertion** — programmatic SOC 2 Type II assertion engine; maps MeshFlow runtime controls to AICPA Trust Services Criteria; CI-ready
+- **Cost regression gate** — `CostRegressionError` raised in CI when per-run cost exceeds baseline
+- **Competitive benchmarks** — `benchmarks/competitive_bench.py` measures MeshFlow vs LangGraph / CrewAI / AutoGen on latency and governance overhead
+- **AutoGen 0.4+ parity** — `AssistantAgent`, `UserProxyAgent`, `SocietyOfMind`, `MagenticOne`, `AgentRuntime`, topic pub/sub
+- **OpenAI Agents SDK parity** — `Agent`, `Runner`, `handoff`, `AgentHooks`, `guardrails`, `FunctionTool`, `as_tool()`
+- **Functional API** — `@task` / `@entrypoint` decorators (LangGraph-style), `@traceable` + `LangfuseExporter`
+- **StructuredJudge / TrajectoryEval / RAGEval / EvalCI** — rubric-based eval with CI regression gate
+- **MCPRouter** — multi-server MCP with per-server allow/deny authorization
+- **Durable Workers** — `@durable_task`, `WorkerDaemon`, `CronTrigger`, SQLite-backed job store
 
 **The rest of the stack:**
 
@@ -54,7 +61,7 @@ print(result.output)
 - Code interpreter (sandboxed subprocess, module allow-list)
 - Multi-modal: image, document, audio inputs
 - BaseStore / SQLiteStore cross-session shared memory (LangGraph parity)
-- 5,500+ tests, CI green on Python 3.11 + 3.12
+- 5,711 tests, CI green on Python 3.11 + 3.12
 
 **Cost profile on a typical workload with the cascade router:**
 

@@ -11,7 +11,7 @@ meshflow doctor
   ──────────────────────────────────────────────────────────
   ✅ Python 3.11+                  Python 3.12.3
   ✅ ANTHROPIC_API_KEY             set (sk-ant-...)
-  ✅ meshflow package              v1.0.0
+  ✅ meshflow package              v1.13.0
   ✅ SQLite backend                meshflow_runs.db writable
   ⚠  OTEL endpoint                 not configured (optional)
   ❌ Redis connection              MESHFLOW_REDIS_URL not set

@@ -642,7 +642,8 @@ class TestLaunchPostsUpdated:
         content = self._read("show_hn.md")
         assert "SpawnableAgent" in content or "spawnable" in content.lower()
         assert "@traceable" in content or "traceable" in content.lower()
-        assert "5,500" in content or "5500" in content or "5,4" in content
+        # v1.13.0 updated test count
+        assert "5,711" in content or "5711" in content or "5,500" in content or "5500" in content or "5,4" in content
 
     def test_show_hn_updated_version(self) -> None:
         content = self._read("show_hn.md")
@@ -651,7 +652,8 @@ class TestLaunchPostsUpdated:
 
     def test_product_hunt_updated_version(self) -> None:
         content = self._read("product_hunt.md")
-        assert "v1.12.0" in content or "v1.11" in content or "v1.12" in content
+        # v1.13.0 supersedes v1.12.0
+        assert "v1.13.0" in content or "v1.12.0" in content or "v1.11" in content or "v1.12" in content
 
     def test_product_hunt_mentions_new_features(self) -> None:
         content = self._read("product_hunt.md")

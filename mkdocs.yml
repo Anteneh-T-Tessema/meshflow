@@ -75,12 +75,16 @@ nav:
     - ReAct Agent: agents/react.md
     - GroupChat: agents/groupchat.md
     - Streaming: agents/streaming.md
+    - AdvisorAgent: agents/advisor.md
+    - Context Compactor: agents/compactor.md
+    - Tool Streaming: agents/tool-streaming.md
   - Orchestration:
     - State Graphs: orchestration/state-graphs.md
     - Workflows (YAML): orchestration/yaml-workflows.md
     - Flows (Event-Driven): orchestration/flows.md
     - Durable Execution: orchestration/durable.md
     - Human-in-the-Loop: orchestration/hitl.md
+    - Dynamic Workflow: orchestration/dynamic-workflow.md
   - Governance:
     - Overview: governance/overview.md
     - Compliance Profiles: governance/compliance.md
@@ -91,6 +95,7 @@ nav:
     - Tenant Isolation: governance/tenants.md
     - SLA Tracking: governance/sla.md
     - Compliance Snapshots: governance/snapshots.md
+    - Budgets (Thinking & Effort): governance/budgets.md
   - Providers & Models:
     - LLM Providers: providers/overview.md
     - Provider Router: providers/router.md
@@ -122,12 +127,15 @@ nav:
     - Secret Scanning: security/secrets.md
     - DASC Risk Gate: security/dasc.md
     - Agent Identity: security/identity.md
+    - Forensic Audit Package: security/forensic.md
+    - SOC 2 Assertion: security/soc2-assertion.md
   - Deployment:
     - Doctor & Health Checks: deployment/doctor.md
     - Environment Generator: deployment/env-generator.md
     - Docker: deployment/docker.md
     - Kubernetes / Helm: deployment/kubernetes.md
     - Serving the API: deployment/serving.md
+    - Production Case Studies: deployment/case-studies.md
   - Protocols & Integrations:
     - A2A Protocol: integrations/a2a.md
     - MCP Servers: integrations/mcp.md
