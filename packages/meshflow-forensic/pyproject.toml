@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meshflow-forensic"
+version = "1.0.0"
+description = "Deterministic AI governance kernel — DASC-core forensic layer with tamper-evident audit ledger, IFC taint propagation, and EU AI Act compliance. Works standalone or as part of MeshFlow."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Anteneh Tessema", email = "anteneh@yayasystems.com"},
+]
+keywords = [
+    "ai-governance", "eu-ai-act", "audit-ledger", "dasc",
+    "llm-safety", "forensic", "compliance", "zero-trust",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = []   # zero runtime deps — stdlib only
+
+[project.optional-dependencies]
+meshflow = ["meshflow>=1.13.0"]   # full MeshFlow integration
+postgres  = ["psycopg2-binary>=2.9"]
+
+[project.urls]
+Homepage    = "https://meshflow.dev"
+Repository  = "https://github.com/Anteneh-T-Tessema/meshflow"
+"Bug Tracker" = "https://github.com/Anteneh-T-Tessema/meshflow/issues"
+Documentation = "https://meshflow.dev/docs/forensic"
+
+[tool.hatch.build.targets.wheel]
+packages = ["meshflow_forensic"]

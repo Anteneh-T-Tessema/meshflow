@@ -612,6 +612,13 @@ from meshflow.eval.judge_v2 import (
     EvalCIReport,
     EvalRegressionError,
 )
+from meshflow.compliance.soc2 import SOC2Checker, SOC2Report, ControlResult as SOC2ControlResult
+from meshflow.eval.cost_regression import (
+    CostRegressionGate,
+    CostRegressionError,
+    CostRegressionReport,
+    CostBaseline,
+)
 # ── Sprint 98: @traceable + exporters ────────────────────────────────────────
 from meshflow.observability.traceable import (
     traceable,
@@ -1502,4 +1509,13 @@ __all__ = [
     "stream_tool_calls",
     "collect_tool_stream",
     "ToolStreamSession",
+    # ── Sprint 102: SOC 2 assertion module ───────────────────────────────────
+    "SOC2Checker",
+    "SOC2Report",
+    "SOC2ControlResult",
+    # ── Sprint 102: Cost regression CI gate ──────────────────────────────────
+    "CostRegressionGate",
+    "CostRegressionError",
+    "CostRegressionReport",
+    "CostBaseline",
 ]
