@@ -273,3 +273,57 @@ class TestAgentMemoryCompression:
         assert "[Compressed Memory Summary]" in built._memory._episodic[0].content
         # Working count should be exactly 1 (retains only the most recent)
         assert built._memory.working_count == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. Cost Cap Enforcement
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from meshflow.core.workflow import CostCap
+from meshflow.core.policy import BudgetExceededError
+
+class MockCostProvider(LLMProvider):
+    def __init__(self, cost_per_call: float):
+        self.cost_per_call = cost_per_call
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str,
+        max_tokens: int,
+        response_format: str | None = None,
+    ) -> tuple[str, int, float]:
+        return "response", 10, self.cost_per_call
+
+    async def complete_with_tools(self, *args, **kwargs) -> tuple[str, int, float]:
+        return "response", 10, self.cost_per_call
+
+    async def stream_complete(self, *args, **kwargs):
+        pass
+
+
+class TestWorkflowCostCap:
+    def test_cost_cap_enforced_sequential_run(self):
+        wf = Workflow(cost_cap=CostCap(usd=0.05))
+        a1 = Agent(name="a1", provider=MockCostProvider(0.03))
+        a2 = Agent(name="a2", provider=MockCostProvider(0.03))
+        a3 = Agent(name="a3", provider=MockCostProvider(0.01))
+        wf.add(a1).add(a2).add(a3)
+
+        result = wf.run("task")
+        assert result.completed is False
+        assert "a3" in result.blocked_nodes
+
+    def test_cost_cap_enforced_parallel_run(self):
+        wf = Workflow(cost_cap=CostCap(usd=0.05))
+        a1 = Agent(name="a1", provider=MockCostProvider(0.03))
+        a2 = Agent(name="a2", provider=MockCostProvider(0.03))
+        a3 = Agent(name="a3", provider=MockCostProvider(0.01))
+        wf.add_parallel(a1).add(a2).add(a3)
+
+        result = wf.run("task")
+        assert result.completed is False
+        assert "a3" in result.blocked_nodes
+
+

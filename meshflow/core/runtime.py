@@ -414,6 +414,8 @@ class StepRuntime:
         tokens_used = output.tokens_used
         uncertainty_val = 0.0
         cost_usd = 0.0
+        if output.structured and isinstance(output.structured, dict):
+            cost_usd = output.structured.get("cost_usd", 0.0)
         carbon_gco2 = 0.0
 
         # 9. Uncertainty scoring + adaptive response
@@ -439,11 +441,11 @@ class StepRuntime:
                 }
 
         # 10. Cost + token + carbon accounting
-        if self._budget and tokens_used:
+        if self._budget:
             from meshflow.core.policy import BudgetExceededError
 
             try:
-                self._budget.charge(usd=0.0, tokens=tokens_used)
+                self._budget.charge(usd=cost_usd, tokens=tokens_used)
             except BudgetExceededError:
                 pass
 

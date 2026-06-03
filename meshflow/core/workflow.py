@@ -937,6 +937,14 @@ class WorkflowDefinition:
             else:
                 is_completed = len(failed) == 0
 
+        budget = getattr(runtime, "_budget", None)
+        if is_completed and budget:
+            from meshflow.core.policy import BudgetExceededError
+            try:
+                budget.pre_check()
+            except BudgetExceededError:
+                is_completed = False
+
         terminal_kind = (
             EventKind.WORKFLOW_COMPLETE
             if is_completed
@@ -2676,8 +2684,17 @@ class Workflow:
         total_tokens = 0
         current_task = task
         accumulated = ""
+        limit = self.cost_cap.usd if self.cost_cap else None
+        blocked_nodes = []
 
         for i, agent_item in enumerate(self.agents):
+            if limit is not None and total_cost > limit:
+                if isinstance(agent_item, (list, tuple)):
+                    blocked_nodes.extend(a.name for a in agent_item)
+                else:
+                    blocked_nodes.append(agent_item.name)
+                continue
+
             if isinstance(agent_item, (list, tuple)):
                 # Run parallel agents concurrently
                 async def _run_one(agent):
@@ -2706,17 +2723,29 @@ class Workflow:
             if i < len(self.agents) - 1:
                 current_task = f"{task}\n\nPrior output:\n{accumulated}"
 
+            if limit is not None and total_cost > limit:
+                if isinstance(agent_item, (list, tuple)):
+                    blocked_nodes.extend(a.name for a in agent_item)
+                else:
+                    blocked_nodes.append(agent_item.name)
+
+        is_completed = True
+        if limit is not None and total_cost > limit:
+            is_completed = False
+        if blocked_nodes:
+            is_completed = False
+
         return WorkflowResult(
             run_id="",
             workflow_name="simple_workflow_team",
-            completed=True,
+            completed=is_completed,
             output=accumulated,
             steps=[],
             total_cost_usd=round(total_cost, 6),
             total_tokens=total_tokens,
             total_carbon_gco2=0.0,
             duration_s=round(_time.monotonic() - start_time, 2),
-            blocked_nodes=[],
+            blocked_nodes=blocked_nodes,
             paused_nodes=[],
             skipped_nodes=[],
             ledger_db="",
@@ -2765,10 +2794,12 @@ class Workflow:
         """Run the first agent with multimodal inputs, then chain as text."""
         from meshflow.agents.team import Team
         from meshflow.core.schemas import policy_for_mode
+        from meshflow.core.policy import BudgetExceededError
         import asyncio
 
         budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
         policy = policy_for_mode("standard", budget_usd=budget_usd)
+        limit = self.cost_cap.usd if self.cost_cap else None
 
         # First agent: pass multimodal inputs directly
         first_result: dict[str, Any] = {}
@@ -2797,6 +2828,31 @@ class Workflow:
                 }
             else:
                 first_result = await first_item.run_multimodal(task, inputs, {})
+
+        first_cost = first_result.get("cost_usd", 0.0)
+        if limit is not None and first_cost > limit:
+            remaining = self.agents[1:]
+            blocked = []
+            for item in remaining:
+                if isinstance(item, (list, tuple)):
+                    blocked.extend(a.name for a in item)
+                else:
+                    blocked.append(item.name)
+            return WorkflowResult(
+                run_id="",
+                workflow_name="multimodal_workflow",
+                completed=False,
+                output=first_result.get("result", ""),
+                steps=[],
+                total_cost_usd=first_cost,
+                total_tokens=first_result.get("tokens", 0),
+                total_carbon_gco2=0.0,
+                duration_s=0.0,
+                blocked_nodes=blocked,
+                paused_nodes=[],
+                skipped_nodes=[],
+                ledger_db="",
+            )
 
         # Remaining agents: chain as text (standard sequential / parallel)
         if len(self.agents) <= 1:
@@ -2942,8 +2998,14 @@ class Workflow:
         last_result = None
         total_cost = 0.0
         total_tokens = 0
+        limit = self.cost_cap.usd if self.cost_cap else None
+        exceeded = False
 
         for step in range(1, max_steps + 1):
+            if limit is not None and total_cost > limit:
+                exceeded = True
+                break
+
             # Run the entire workflow on current_task
             result = await self._run_workflow_once(current_task)
             last_result = result
@@ -2961,11 +3023,14 @@ class Workflow:
                 f"Please refine and improve the previous output to meet the quality criteria."
             )
 
+        if limit is not None and total_cost > limit:
+            exceeded = True
+
         # Return the final result with accumulated usage stats
         return WorkflowResult(
             run_id=last_result.run_id if last_result else "",
             workflow_name=last_result.workflow_name if last_result else "run_until_workflow",
-            completed=True,
+            completed=not exceeded,
             output=last_result.output if last_result else "",
             steps=last_result.steps if last_result else [],
             total_cost_usd=round(total_cost, 6),
