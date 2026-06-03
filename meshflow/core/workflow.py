@@ -2217,3 +2217,162 @@ class Workflow:
             return run_sync(team.run(task))
         finally:
             sandbox_mode_var.reset(token)
+
+    def run_multimodal(self, task: str, inputs: list[Any]) -> WorkflowResult:
+        """Run the workflow with multi-modal inputs (images, documents, audio).
+
+        Passes *inputs* to the first agent in the pipeline as multi-modal
+        content blocks.  Subsequent agents receive the text output of the
+        preceding step as their task (standard sequential chaining).
+
+        Parameters
+        ----------
+        task:   Text prompt describing what to do with the inputs.
+        inputs: List of :class:`~meshflow.multimodal.inputs.ImageInput`,
+                :class:`~meshflow.multimodal.inputs.DocumentInput`, or
+                :class:`~meshflow.multimodal.inputs.AudioInput` objects.
+
+        Example::
+
+            from meshflow import Workflow, Agent
+            from meshflow.multimodal.inputs import ImageInput
+
+            wf = Workflow()
+            wf.add(Agent("analyst", model="claude-sonnet-4-6"))
+            result = wf.run_multimodal(
+                "Extract all text and tables from this chart.",
+                [ImageInput("quarterly_chart.png")],
+            )
+
+        Returns the same :class:`~meshflow.agents.team.WorkflowResult` as
+        :meth:`run`.
+        """
+        from meshflow.agents.base import sandbox_mode_var
+        from meshflow.integrations._utils import run_sync
+
+        is_sandbox = (self.mode == "sandbox")
+        token = sandbox_mode_var.set(is_sandbox)
+        try:
+            return run_sync(self._run_multimodal_async(task, inputs))
+        finally:
+            sandbox_mode_var.reset(token)
+
+    async def _run_multimodal_async(self, task: str, inputs: list[Any]) -> WorkflowResult:
+        """Run the first agent with multimodal inputs, then chain as text."""
+        from meshflow.agents.team import Team
+        from meshflow.core.schemas import policy_for_mode
+
+        budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
+        policy = policy_for_mode("standard", budget_usd=budget_usd)
+
+        # First agent: pass multimodal inputs directly
+        first_result: dict[str, Any] = {}
+        if self.agents:
+            first_result = await self.agents[0].run_multimodal(task, inputs, {})
+
+        # Remaining agents: chain as text (standard sequential)
+        if len(self.agents) <= 1:
+            return WorkflowResult(
+                run_id="",
+                workflow_name="multimodal_workflow",
+                completed=True,
+                output=first_result.get("result", ""),
+                steps=[],
+                total_cost_usd=first_result.get("cost_usd", 0.0),
+                total_tokens=first_result.get("tokens", 0),
+                total_carbon_gco2=0.0,
+                duration_s=0.0,
+                blocked_nodes=[],
+                paused_nodes=[],
+                skipped_nodes=[],
+                ledger_db="",
+            )
+
+        chained_task = first_result.get("result", task)
+        team = Team(
+            name="multimodal_workflow_team",
+            agents=self.agents[1:],
+            pattern="sequential",
+            policy=policy,
+            budget_usd=budget_usd,
+        )
+        result = await team.run(chained_task)
+        # Fold first-agent cost into result
+        result.total_cost_usd += first_result.get("cost_usd", 0.0)
+        result.total_tokens += first_result.get("tokens", 0)
+        return result
+
+    def batch_run(
+        self,
+        tasks: list[str],
+        *,
+        max_concurrency: int = 4,
+    ) -> list[WorkflowResult]:
+        """Run the workflow on multiple tasks in parallel.
+
+        Executes up to *max_concurrency* tasks simultaneously.  Results are
+        returned in the same order as *tasks* — a task that fails returns a
+        :class:`~meshflow.agents.team.WorkflowResult` with
+        ``status="failed"`` and the error message in ``output``.
+
+        Parameters
+        ----------
+        tasks:           List of task strings to run.
+        max_concurrency: Maximum simultaneous workflow executions (default 4).
+
+        Example::
+
+            results = wf.batch_run([
+                "Summarise Q1 results",
+                "Summarise Q2 results",
+                "Summarise Q3 results",
+                "Summarise Q4 results",
+            ], max_concurrency=4)
+            for r in results:
+                print(r.output, r.total_cost_usd)
+        """
+        from meshflow.integrations._utils import run_sync
+        return run_sync(self._batch_run_async(tasks, max_concurrency))
+
+    async def _batch_run_async(
+        self,
+        tasks: list[str],
+        max_concurrency: int,
+    ) -> list[WorkflowResult]:
+        import asyncio
+        from meshflow.agents.team import Team
+        from meshflow.core.schemas import policy_for_mode
+
+        budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
+        policy = policy_for_mode("standard", budget_usd=budget_usd)
+        sem = asyncio.Semaphore(max_concurrency)
+
+        async def _one(task: str) -> WorkflowResult:
+            async with sem:
+                team = Team(
+                    name="batch_team",
+                    agents=self.agents,
+                    pattern="sequential",
+                    policy=policy,
+                    budget_usd=budget_usd,
+                )
+                try:
+                    return await team.run(task)
+                except Exception as exc:
+                    return WorkflowResult(
+                        run_id="",
+                        workflow_name="batch_team",
+                        completed=False,
+                        output=str(exc),
+                        steps=[],
+                        total_cost_usd=0.0,
+                        total_tokens=0,
+                        total_carbon_gco2=0.0,
+                        duration_s=0.0,
+                        blocked_nodes=[],
+                        paused_nodes=[],
+                        skipped_nodes=[],
+                        ledger_db="",
+                    )
+
+        return list(await asyncio.gather(*[_one(t) for t in tasks]))
