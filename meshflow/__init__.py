@@ -58,8 +58,11 @@ from meshflow.agents.skills import Skill, SKILLS, skill_prompt, list_skills
 from meshflow.agents.messaging import MessageBus
 from meshflow.agents.conversation import GroupChat, GroupChatManager, ConversationResult
 from meshflow.agents.react import ReActAgent, ReActResult, ThoughtStep
-from meshflow.agents.router import ProviderRouter, auto_provider, auto_model, ModelTierRouter, ModelTier
+from meshflow.agents.router import ProviderRouter, auto_provider, auto_model, ModelTierRouter, ModelTier, AdaptiveModelTierRouter
 from meshflow.agents.base import model_is_local
+from meshflow.agents.registry import ModelSpec, ModelRegistry, DEFAULT_REGISTRY
+from meshflow.agents.scoring import TaskScore, TaskScorer, extract_confidence, score_task
+from meshflow.agents.adaptation import RoutingOutcome, RouterOutcomeStore, ThresholdOptimizer, ThresholdRecommendation, RouterStats, TierStats
 from meshflow.agents.base import EchoProvider, AnthropicProvider, OpenAICompatibleProvider
 from meshflow.agents.providers import (
     GeminiProvider,
@@ -600,9 +603,25 @@ __all__ = [
     "ProviderRouter",
     "ModelTierRouter",
     "ModelTier",
+    "AdaptiveModelTierRouter",
     "model_is_local",
     "auto_provider",
     "auto_model",
+    # ── Model registry & scoring ─────────────────────────────────────────────
+    "ModelSpec",
+    "ModelRegistry",
+    "DEFAULT_REGISTRY",
+    "TaskScore",
+    "TaskScorer",
+    "score_task",
+    "extract_confidence",
+    # ── Adaptive routing internals (observability & self-improvement) ────────
+    "RoutingOutcome",
+    "RouterOutcomeStore",
+    "ThresholdOptimizer",
+    "ThresholdRecommendation",
+    "RouterStats",
+    "TierStats",
     # ── LLM providers — any LLM, zero friction ───────────────────────────────
     "EchoProvider",           # offline / test / MESHFLOW_MOCK=1
     "AnthropicProvider",      # ANTHROPIC_API_KEY

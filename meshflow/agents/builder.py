@@ -269,11 +269,15 @@ class _BuiltAgent(BaseAgent):
         messages = [{"role": "user", "content": _user_content}]  # type: ignore[assignment]
 
         # ── ModelRouter: pick model tier per task ─────────────────────────────
+        import time as _time
+        _step_start = _time.monotonic()
         model_override: str | None = None
+        _routing_id: str = ""
         if self._model_router is not None:
             try:
                 routing = self._model_router.route(task, tools=self._tools or [])
                 model_override = routing.model or None
+                _routing_id = getattr(routing, "routing_id", "")
             except Exception:
                 pass  # best-effort — never blocks execution
 
@@ -317,6 +321,14 @@ class _BuiltAgent(BaseAgent):
                 _, content, out_results = self._output_stack.run(content)
                 guardrail_results.extend(out_results)
             except GuardrailViolation as exc:
+                if _routing_id and self._model_router is not None and hasattr(self._model_router, "record_outcome"):
+                    try:
+                        self._model_router.record_outcome(
+                            _routing_id, success=False,
+                            latency_ms=(_time.monotonic() - _step_start) * 1000.0,
+                        )
+                    except Exception:
+                        pass
                 return {
                     "result": f"[BLOCKED by {exc.result.guardrail_name}] {exc.result.reason}",
                     "agent_name": self.config.agent_id,
@@ -350,6 +362,21 @@ class _BuiltAgent(BaseAgent):
         if cache_stats:
             result["cache_creation_tokens"] = cache_stats.get("cache_creation_tokens", 0)
             result["cache_read_tokens"] = cache_stats.get("cache_read_tokens", 0)
+
+        # ── Adaptive router: record outcome for self-improvement ──────────────
+        if _routing_id and self._model_router is not None and hasattr(self._model_router, "record_outcome"):
+            try:
+                _elapsed_ms = (_time.monotonic() - _step_start) * 1000.0
+                self._model_router.record_outcome(
+                    _routing_id,
+                    success=True,
+                    quality=confidence if confidence > 0.0 else None,
+                    latency_ms=_elapsed_ms,
+                    actual_cost_usd=cost,
+                )
+            except Exception:
+                pass  # never crash a step due to outcome recording failure
+
         return result
 
 

@@ -411,12 +411,12 @@ class ModelTierRouter:
         self,
         tiers: list[ModelTier] | None = None,
         *,
-        smart_threshold: int = 300,
-        large_threshold: int = 800,
+        smart_threshold: int | float = 300,
+        large_threshold: int | float = 800,
     ) -> None:
         self._tiers = tiers or list(self.PRESET_LOCAL)
-        self._smart = smart_threshold
-        self._large = large_threshold
+        self._smart: float = float(smart_threshold)
+        self._large: float = float(large_threshold)
 
     # ── ProviderRouter-compatible interface ───────────────────────────────────
 
@@ -465,3 +465,274 @@ class _TierResult:
     tier: str
     cost_usd: float = 0.0
     is_local: bool = False
+    routing_id: str = ""      # set by AdaptiveModelTierRouter for outcome matching
+
+
+# ── AdaptiveModelTierRouter ───────────────────────────────────────────────────
+
+
+class AdaptiveModelTierRouter(ModelTierRouter):
+    """Self-improving router that learns from observed routing outcomes.
+
+    Extends :class:`ModelTierRouter` with three additions:
+
+    1. **Multi-dimensional task scoring** via :class:`~meshflow.agents.scoring.TaskScorer`.
+       Composite 0–1 score replaces raw character count.
+
+    2. **Epsilon-greedy exploration** with annealing.  With probability *ε*
+       (decaying toward 0 as data accumulates) the router picks a tier ±1 from
+       the greedy-optimal choice.  Exploration outcomes are flagged so the
+       optimizer can distinguish them.
+
+    3. **Automatic threshold adaptation** every ``adapt_every`` routes.
+       :class:`~meshflow.agents.adaptation.ThresholdOptimizer` analyses recent
+       outcomes and shifts ``smart_threshold`` / ``large_threshold`` when a tier
+       is failing on tasks in its assigned score range.
+
+    Quality signal
+    --------------
+    Outcomes are recorded by the ``_BuiltAgent.step()`` hook in
+    ``meshflow/agents/builder.py``.  The CONFIDENCE:0.XX marker emitted by
+    agents is extracted automatically — no user code changes required.
+    Quality < 0.5 counts as a failure for threshold optimisation purposes.
+
+    Usage::
+
+        from meshflow import AdaptiveModelTierRouter, ModelTier, Agent, Workflow
+
+        router = AdaptiveModelTierRouter(
+            tiers=[
+                ModelTier("fast",  "llama3.2",    max_tokens=512),
+                ModelTier("smart", "mistral:7b",  max_tokens=2048),
+                ModelTier("large", "gpt-4o",      max_tokens=4096),
+            ],
+            adapt_every=50,          # auto-adapt after every 50 routes
+            exploration_rate=0.10,   # 10% exploration, decays with experience
+        )
+
+        wf = Workflow()
+        wf.add(Agent("analyst", model_router=router))
+        result = wf.run("analyse the dataset")
+
+        # Inspect what the router learned
+        print(router.stats())
+        print(router.explain("short task"))
+    """
+
+    def __init__(
+        self,
+        tiers: list["ModelTier"] | None = None,
+        *,
+        smart_threshold: float = 0.33,
+        large_threshold: float = 0.67,
+        adapt_every: int = 50,
+        exploration_rate: float = 0.10,
+        store: Any | None = None,
+        registry: Any | None = None,
+        adapt_mode: str = "auto",
+    ) -> None:
+        # Initialise base with dummy char-count thresholds (not used by this class)
+        super().__init__(tiers, smart_threshold=9999, large_threshold=99999)
+        self._smart = smart_threshold    # composite 0-1
+        self._large = large_threshold
+        self._adapt_every = adapt_every
+        self._exploration_rate = exploration_rate
+        self._adapt_mode = adapt_mode
+
+        # Lazy imports to avoid circular imports at module load time
+        from meshflow.agents.adaptation import RouterOutcomeStore, ThresholdOptimizer
+        from meshflow.agents.scoring import TaskScorer
+
+        self._store: Any = store if store is not None else RouterOutcomeStore()
+        self._scorer = TaskScorer()
+        self._optimizer = ThresholdOptimizer()
+        self._registry = registry  # optional ModelRegistry
+
+        self._route_count: int = 0
+        self._last_adapted_at: float | None = None
+        # pending: routing_id → (task, composite_score, model, tier, was_exploration)
+        self._pending: dict[str, tuple[str, float, str, str, bool]] = {}
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def route(  # type: ignore[override]
+        self,
+        task: str = "",
+        tools: list[Any] | None = None,
+        run_id: str = "",
+    ) -> "_TierResult":
+        """Route a task, optionally with epsilon-greedy exploration.
+
+        Parameters
+        ----------
+        task:    Task text (any length).
+        tools:   Tool names available (bumps composite score).
+        run_id:  Step or run ID; used to match the routing to its outcome when
+                 :meth:`record_outcome` is called.  If empty, a UUID is generated.
+        """
+        import random
+        import uuid as _uuid
+
+        ts = self._scorer.score(task, tools)
+        composite = ts.composite
+
+        # Greedy tier index
+        optimal_idx = self._composite_to_tier_idx(composite)
+
+        # Epsilon-greedy with annealing
+        n = self._route_count
+        eps_effective = self._exploration_rate * (200.0 / (n + 200.0))
+        was_exploration = False
+        tier_idx = optimal_idx
+        if len(self._tiers) > 1 and random.random() < eps_effective:
+            direction = random.choice([-1, 1])
+            tier_idx = max(0, min(len(self._tiers) - 1, optimal_idx + direction))
+            was_exploration = True
+
+        chosen = self._tiers[tier_idx]
+
+        # Resolve is_local (registry → tier override → pattern detection)
+        is_local = self._resolve_is_local(chosen)
+
+        # Log cloud selection
+        if not is_local:
+            import logging
+            logging.getLogger("meshflow.adaptive_router").info(
+                "AdaptiveModelTierRouter: cloud model '%s' (tier=%s, composite=%.3f). "
+                "Ensure CostCap is set.",
+                chosen.model, chosen.name, composite,
+            )
+
+        routing_id = run_id or str(_uuid.uuid4())
+        self._pending[routing_id] = (task, composite, chosen.model, chosen.name, was_exploration)
+        self._route_count += 1
+
+        if self._adapt_mode == "auto" and self._route_count % self._adapt_every == 0:
+            self._maybe_adapt()
+
+        return _TierResult(
+            model=chosen.model,
+            tier=chosen.name,
+            is_local=is_local,
+            routing_id=routing_id,
+        )
+
+    def record_outcome(
+        self,
+        run_id: str,
+        *,
+        success: bool,
+        quality: float | None = None,
+        latency_ms: float = 0.0,
+        actual_cost_usd: float = 0.0,
+    ) -> None:
+        """Record the outcome of a previously routed task.
+
+        Normally called automatically by the ``_BuiltAgent.step()`` hook in
+        ``builder.py``.  Can also be called manually for custom pipelines.
+
+        Parameters
+        ----------
+        run_id:           The run/step ID passed to :meth:`route` (or the
+                          ``routing_id`` in the returned :class:`_TierResult`).
+        success:          False if the agent step raised an exception.
+        quality:          CONFIDENCE score from agent output (0–1 or None).
+        latency_ms:       Wall-clock duration of the step.
+        actual_cost_usd:  Actual cost from the ledger.
+        """
+        pending = self._pending.pop(run_id, None)
+        if pending is None:
+            return
+
+        task_text, composite, model, tier, was_exploration = pending
+
+        from meshflow.agents.adaptation import RoutingOutcome
+        outcome = RoutingOutcome.build(
+            run_id=run_id,
+            task=task_text,
+            composite_score=composite,
+            model=model,
+            tier=tier,
+            was_exploration=was_exploration,
+            success=success,
+            quality_score=quality,
+            latency_ms=latency_ms,
+            actual_cost_usd=actual_cost_usd,
+        )
+        self._store.record(outcome)
+
+    def adapt(self) -> "Any":
+        """Force a threshold optimisation pass and apply the recommendation.
+
+        Returns the :class:`~meshflow.agents.adaptation.ThresholdRecommendation`.
+        """
+        from meshflow.agents.adaptation import ThresholdOptimizer
+        rec = self._optimizer.optimize(self._store, self._smart, self._large)
+        if rec.changed and rec.confidence >= 0.30:
+            self._smart = rec.smart_threshold
+            self._large = rec.large_threshold
+            import logging, time
+            self._last_adapted_at = time.time()
+            logging.getLogger("meshflow.adaptive_router").info(
+                "Thresholds adapted: %s", rec.summary
+            )
+        return rec
+
+    def explain(self, task: str, tools: list[Any] | None = None) -> str:
+        """Return a human-readable explanation of the routing decision for *task*."""
+        ts = self._scorer.score(task, tools)
+        idx = self._composite_to_tier_idx(ts.composite)
+        chosen = self._tiers[idx]
+        is_local = self._resolve_is_local(chosen)
+        lines = [
+            f"Task routing explanation",
+            f"  task_type   : {ts.task_type}",
+            f"  length      : {ts.length} chars",
+            f"  complexity  : {ts.complexity:.3f}",
+            f"  tool_count  : {ts.tool_count}",
+            f"  composite   : {ts.composite:.3f}",
+            f"  thresholds  : smart={self._smart:.3f}, large={self._large:.3f}",
+            f"  → tier      : {chosen.name!r} ({chosen.model})",
+            f"  → is_local  : {is_local}",
+            f"  routes_seen : {self._route_count}",
+            f"  last_adapted: {self._last_adapted_at or 'never'}",
+        ]
+        return "\n".join(lines)
+
+    def stats(self) -> "Any":
+        """Return aggregated per-tier stats as a :class:`~meshflow.agents.adaptation.RouterStats`."""
+        from meshflow.agents.adaptation import RouterStats
+        total = self._store.count()
+        explorations = self._store.count_explorations()
+        tier_stats = {}
+        for t in self._tiers:
+            tier_stats[t.name] = self._store.get_tier_stats(t.name)
+        return RouterStats(
+            tiers=tier_stats,
+            total_runs=total,
+            exploration_rate_actual=explorations / total if total else 0.0,
+            last_adapted_at=self._last_adapted_at,
+        )
+
+    # ── Private helpers ───────────────────────────────────────────────────────
+
+    def _composite_to_tier_idx(self, composite: float) -> int:
+        if composite >= self._large and len(self._tiers) >= 3:
+            return 2
+        if composite >= self._smart and len(self._tiers) >= 2:
+            return 1
+        return 0
+
+    def _resolve_is_local(self, tier: "ModelTier") -> bool:
+        if tier.is_local is not None:
+            return tier.is_local
+        if self._registry is not None:
+            return self._registry.is_local(tier.model)
+        from meshflow.agents.base import model_is_local
+        return model_is_local(tier.model)
+
+    def _maybe_adapt(self) -> None:
+        try:
+            self.adapt()
+        except Exception:
+            pass  # never crash a route() call due to adaptation failure

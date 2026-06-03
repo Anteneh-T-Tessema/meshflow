@@ -2146,6 +2146,7 @@ class Workflow:
             # Total                                            $0.0032
         """
         from meshflow.agents.base import _cost_usd, model_is_local
+        from meshflow.agents.registry import DEFAULT_REGISTRY
 
         # Rough token estimate: chars / 4 input, 25% output ratio
         input_tokens = max(len(task) // 4, 50)
@@ -2174,9 +2175,17 @@ class Workflow:
                         is_local_override = bool(raw)
                 except Exception:
                     pass
-            is_local = is_local_override if is_local_override is not None else model_is_local(model)
-            force_cloud = (is_local_override is False)
-            cost = 0.0 if is_local else _cost_usd(model, input_tokens, output_tokens, force_cloud=force_cloud)
+            # Priority: explicit tier override → registry → pattern detection
+            if is_local_override is not None:
+                is_local = is_local_override
+                force_cloud = not is_local
+                cost = 0.0 if is_local else _cost_usd(model, input_tokens, output_tokens, force_cloud=force_cloud)
+            elif model in DEFAULT_REGISTRY:
+                is_local = DEFAULT_REGISTRY.is_local(model)
+                cost = DEFAULT_REGISTRY.cost_usd(model, input_tokens, output_tokens)
+            else:
+                is_local = model_is_local(model)
+                cost = 0.0 if is_local else _cost_usd(model, input_tokens, output_tokens)
             lines.append(_AgentCostLine(agent=name, model=model, cost_usd=cost, is_local=is_local))
 
         return CostEstimate(lines=lines, task_preview=task[:80])
