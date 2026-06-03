@@ -517,21 +517,28 @@ class TestAdaptiveModelTierRouter:
         r.route("t2")  # would trigger auto-adapt if mode were "auto"
         assert r._smart == initial_smart  # unchanged
 
-    def test_exploration_fires_at_rate(self):
+    def test_exploration_fires_when_fast_tier_underperforms(self):
+        """Thompson Sampling explores to smart when fast tier posterior shows low success."""
         from meshflow import AdaptiveModelTierRouter, ModelTier, RouterOutcomeStore
         r = AdaptiveModelTierRouter(
             tiers=[
                 ModelTier("fast",  "llama3.2", max_tokens=512),
                 ModelTier("smart", "mistral",  max_tokens=2048),
             ],
-            smart_threshold=0.90,   # effectively always route to fast
+            smart_threshold=0.90,   # greedy always picks fast for short tasks
             large_threshold=0.99,
-            exploration_rate=1.0,   # always explore
             store=RouterOutcomeStore(path=":memory:"),
         )
+        # Seed fast tier with many failures (n_obs >= 5) → TS will look for alternatives
+        r._ts_alpha[0] = 1.0    # 0 successes
+        r._ts_beta_[0] = 20.0   # 19 failures → mean ≈ 0.05, almost never >= 0.5
+        # Seed smart tier with high success rate and enough observations
+        r._ts_alpha[1] = 15.0   # 14 successes
+        r._ts_beta_[1] = 2.0    # 1 failure → mean ≈ 0.88
         results = [r.route("short task") for _ in range(20)]
         tiers = {res.tier for res in results}
-        assert len(tiers) > 1  # exploration picks smart occasionally
+        # TS should escalate to smart tier for most routes
+        assert len(tiers) > 1  # both tiers appear in results
 
     def test_tiers_returns_copy(self):
         r = self._router()

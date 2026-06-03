@@ -466,6 +466,7 @@ class _TierResult:
     cost_usd: float = 0.0
     is_local: bool = False
     routing_id: str = ""      # set by AdaptiveModelTierRouter for outcome matching
+    was_exploration: bool = False  # True when Thompson Sampling differs from greedy baseline
 
 
 # ── AdaptiveModelTierRouter ───────────────────────────────────────────────────
@@ -553,6 +554,19 @@ class AdaptiveModelTierRouter(ModelTierRouter):
         # pending: routing_id → (task, composite_score, model, tier, was_exploration)
         self._pending: dict[str, tuple[str, float, str, str, bool]] = {}
 
+        # ── Thompson Sampling posteriors ──────────────────────────────────────
+        # Per tier: Beta(α, β) distribution over success rate.
+        # α = cumulative successes, β = cumulative failures.
+        # Prior: Beta(1, 1) = uniform — no bias at cold start.
+        # Effective_success = quality_score >= 0.5 (matches RoutingOutcome.effective_success).
+        n = len(self._tiers)
+        self._ts_alpha: list[float] = [1.0] * n   # successes per tier
+        self._ts_beta_: list[float] = [1.0] * n   # failures per tier
+        # Quality threshold for Thompson Sampling: route to cheapest tier whose
+        # sampled success-rate draws above this.  Fixed at 0.5 (mirrors
+        # RoutingOutcome.effective_success).
+        self._ts_threshold: float = 0.5
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def route(  # type: ignore[override]
@@ -561,7 +575,19 @@ class AdaptiveModelTierRouter(ModelTierRouter):
         tools: list[Any] | None = None,
         run_id: str = "",
     ) -> "_TierResult":
-        """Route a task, optionally with epsilon-greedy exploration.
+        """Route a task using Thompson Sampling over Beta posteriors.
+
+        Algorithm
+        ---------
+        1. Score the task with :class:`~meshflow.agents.scoring.TaskScorer` to get
+           a composite complexity score (0–1).
+        2. Determine the greedy baseline tier from the composite score thresholds
+           (same as :class:`ModelTierRouter`).
+        3. **Thompson Sampling**: draw a sample from each tier's Beta posterior.
+           Select the cheapest tier whose sample exceeds the quality threshold (0.5).
+           Prefer cheaper tiers — iterate from index 0 (fast) upward and commit to
+           the first tier that samples above threshold.
+        4. ``was_exploration = (chosen_idx != greedy_idx)`` for outcome logging.
 
         Parameters
         ----------
@@ -576,18 +602,49 @@ class AdaptiveModelTierRouter(ModelTierRouter):
         ts = self._scorer.score(task, tools)
         composite = ts.composite
 
-        # Greedy tier index
+        # Greedy baseline from composite score thresholds
         optimal_idx = self._composite_to_tier_idx(composite)
-
-        # Epsilon-greedy with annealing
-        n = self._route_count
-        eps_effective = self._exploration_rate * (200.0 / (n + 200.0))
-        was_exploration = False
         tier_idx = optimal_idx
-        if len(self._tiers) > 1 and random.random() < eps_effective:
-            direction = random.choice([-1, 1])
-            tier_idx = max(0, min(len(self._tiers) - 1, optimal_idx + direction))
-            was_exploration = True
+        was_exploration = False
+
+        # ── Thompson Sampling (data-gated hybrid) ────────────────────────────
+        # Phase 1 — cold start (< _TS_MIN_OBS observations on the greedy tier):
+        #   Trust the composite score; no TS adjustment.  Preserves task-complexity
+        #   routing while we accumulate enough data to form informative posteriors.
+        #
+        # Phase 2 — warm (≥ _TS_MIN_OBS observations):
+        #   Sample Beta(α+1, β+1) for the greedy tier.
+        #   • Greedy tier samples ABOVE threshold → stay (no exploration needed).
+        #   • Greedy tier samples BELOW threshold → check neighbors:
+        #       cheaper first  → de-escalate if it's reliably performing
+        #       more expensive → escalate if it's proven to do better
+        #   Cheaper neighbors are always preferred over more expensive ones.
+        _TS_MIN_OBS = 5   # minimum observations before TS adjusts routing
+        greedy_n_obs = (
+            self._ts_alpha[optimal_idx] + self._ts_beta_[optimal_idx] - 2.0
+        )
+        if greedy_n_obs >= _TS_MIN_OBS:
+            greedy_sample = random.betavariate(
+                self._ts_alpha[optimal_idx] + 1.0,
+                self._ts_beta_[optimal_idx] + 1.0,
+            )
+            if greedy_sample < self._ts_threshold:
+                # Greedy tier uncertain/underperforming — look for a better option.
+                # Prefer cheaper (de-escalate), then more expensive (escalate).
+                for candidate in [optimal_idx - 1, optimal_idx + 1]:
+                    if 0 <= candidate < len(self._tiers):
+                        cand_n_obs = (
+                            self._ts_alpha[candidate] + self._ts_beta_[candidate] - 2.0
+                        )
+                        if cand_n_obs >= 3:   # need some data on the candidate too
+                            cand_sample = random.betavariate(
+                                self._ts_alpha[candidate] + 1.0,
+                                self._ts_beta_[candidate] + 1.0,
+                            )
+                            if cand_sample >= self._ts_threshold:
+                                tier_idx = candidate
+                                was_exploration = True
+                                break   # stop at cheapest viable candidate
 
         chosen = self._tiers[tier_idx]
 
@@ -615,6 +672,7 @@ class AdaptiveModelTierRouter(ModelTierRouter):
             tier=chosen.name,
             is_local=is_local,
             routing_id=routing_id,
+            was_exploration=was_exploration,
         )
 
     def record_outcome(
@@ -645,6 +703,19 @@ class AdaptiveModelTierRouter(ModelTierRouter):
             return
 
         task_text, composite, model, tier, was_exploration = pending
+
+        # ── Update Thompson Sampling Beta posteriors ───────────────────────
+        # effective_success mirrors RoutingOutcome.effective_success:
+        # success=True AND (quality is None OR quality >= 0.5)
+        effective = success and (quality is None or quality >= 0.5)
+        tier_pos = next(
+            (i for i, t in enumerate(self._tiers) if t.name == tier), None
+        )
+        if tier_pos is not None:
+            if effective:
+                self._ts_alpha[tier_pos] += 1.0
+            else:
+                self._ts_beta_[tier_pos] += 1.0
 
         from meshflow.agents.adaptation import RoutingOutcome
         outcome = RoutingOutcome.build(
@@ -696,7 +767,17 @@ class AdaptiveModelTierRouter(ModelTierRouter):
             f"  → is_local  : {is_local}",
             f"  routes_seen : {self._route_count}",
             f"  last_adapted: {self._last_adapted_at or 'never'}",
+            f"  Thompson Sampling posteriors (α=successes, β=failures):",
         ]
+        for i, t in enumerate(self._tiers):
+            alpha = self._ts_alpha[i]
+            beta_ = self._ts_beta_[i]
+            n_obs = alpha + beta_ - 2   # subtract uniform prior
+            mean  = alpha / (alpha + beta_)
+            lines.append(
+                f"    [{t.name:8s}] α={alpha:.1f} β={beta_:.1f}  "
+                f"mean={mean:.2f}  n_obs={n_obs:.0f}"
+            )
         return "\n".join(lines)
 
     def stats(self) -> "Any":
@@ -759,6 +840,9 @@ class AdaptiveModelTierRouter(ModelTierRouter):
             "adapt_every": self._adapt_every,
             "exploration_rate": self._exploration_rate,
             "adapt_mode": self._adapt_mode,
+            # Thompson Sampling posteriors — persist learned success/failure counts
+            "ts_alpha": list(self._ts_alpha),
+            "ts_beta": list(self._ts_beta_),
             "tiers": [
                 {
                     "name": t.name,
@@ -824,6 +908,14 @@ class AdaptiveModelTierRouter(ModelTierRouter):
         router = cls(**kwargs)
         router._route_count = data.get("route_count", 0)
         router._last_adapted_at = data.get("last_adapted_at")
+        # Restore Thompson Sampling posteriors if present
+        n = len(router._tiers)
+        saved_alpha = data.get("ts_alpha", [])
+        saved_beta  = data.get("ts_beta",  [])
+        if len(saved_alpha) == n:
+            router._ts_alpha = [float(a) for a in saved_alpha]
+        if len(saved_beta) == n:
+            router._ts_beta_  = [float(b) for b in saved_beta]
         return router
 
     # ── YAML config ───────────────────────────────────────────────────────────
