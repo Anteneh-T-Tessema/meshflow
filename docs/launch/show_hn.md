@@ -103,6 +103,6 @@ What I'd love feedback on:
 
 2. **EvalCI regression gate** — the `EvalCI` class raises `EvalRegressionError` in CI when pass-rate drops below the baseline. But what's the right baseline drift threshold? 2%? 5%? We're defaulting to 5% but it feels arbitrary.
 
-3. **The governance-as-kernel trade-off** — making StepRuntime mandatory means every step has overhead (hash chain, policy check, budget tick). On benchmarks this is ~0.8ms per step. Is that acceptable for your use case, or is it a dealbreaker?
+3. **The governance-as-kernel trade-off** — making StepRuntime mandatory means every step has overhead (hash chain, policy check, budget tick). On benchmarks this is ~2.4ms per step (bare p50=0.05ms → governed p50=2.39ms). Is that acceptable for your use case, or is it a dealbreaker?
 
 Thanks for reading.
