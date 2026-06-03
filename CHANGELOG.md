@@ -5,6 +5,137 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.10.0] — 2026-06-02
+
+### Self-improving mixed-model routing system
+
+**4,963 tests passing. CI green on Python 3.11 + 3.12.**
+
+This release completes the routing arc started in v1.9.3. Users can now build
+mixed local/cloud pipelines that automatically right-size each task, escalate
+only when confidence is low, and adapt their own thresholds over time —
+all without changing application code.
+
+#### `ModelRegistry` — explicit model catalog (`meshflow.DEFAULT_REGISTRY`)
+
+Register any model once at startup. The registry is consulted by `estimate_cost()`,
+`AdaptiveModelTierRouter`, and `routing-report` before falling back to pattern
+detection — fixing the long-standing problem of custom Ollama fine-tunes,
+LiteLLM proxies, and corporate model names being misclassified:
+
+```python
+from meshflow import DEFAULT_REGISTRY, ModelSpec
+
+DEFAULT_REGISTRY.register(ModelSpec(
+    model_id="corp-finance-llm",
+    is_local=True,
+    quality_estimate=0.78,
+    tags=["finance", "local"],
+))
+```
+
+#### `TaskScorer` — 5-factor composite routing score
+
+Replaces raw character count with a multi-dimensional score (0–1):
+
+```
+composite = (
+    0.35 × length_score          # chars / 2000
+  + 0.20 × question_density      # "?" marks per sentence
+  + 0.20 × conjunction_density   # adversative conjunctions
+  + 0.15 × technical_density     # code / domain keywords
+  + 0.10 × tool_pressure         # tool count / 5
+) × task_type_multiplier         # code=1.2, analysis=1.1, summary=0.85, chat=0.8
+```
+
+#### `AdaptiveModelTierRouter` — self-improving router
+
+Routes by composite score, not character count. Learns from `CONFIDENCE:0.XX`
+markers emitted by agents — no user code changes required:
+
+```python
+from meshflow import AdaptiveModelTierRouter, ModelTier, CascadeRouter, Agent, Workflow
+
+router = AdaptiveModelTierRouter(
+    tiers=[
+        ModelTier("fast",  "llama3.2",   max_tokens=512),   # $0 local
+        ModelTier("smart", "mistral:7b", max_tokens=2048),  # $0 local
+        ModelTier("large", "gpt-4o",     max_tokens=4096),  # cloud, pay only when needed
+    ],
+    adapt_every=50,          # auto-adapt thresholds every 50 routes
+    exploration_rate=0.10,   # epsilon-greedy exploration, decays with experience
+)
+```
+
+- `router.explain(task)` — human-readable routing rationale
+- `router.stats()` → `RouterStats` — per-tier success rate, avg quality, avg latency
+- `router.report()` → `RouterReport` — tier distribution + cost savings vs. always-large
+
+#### `CascadeRouter` — FrugalGPT escalation
+
+Start with the cheapest model; escalate automatically on low confidence:
+
+```python
+cascade = CascadeRouter(router, escalation_threshold=0.65, max_escalations=2)
+
+wf = Workflow()
+wf.add(Agent("analyst", model_router=cascade, cascade_threshold=0.65))
+result = wf.run("Summarise the quarterly results.")
+# → llama3.2 answers CONFIDENCE:0.90 → done, $0.00
+# → if CONFIDENCE:0.40 → retries with mistral → $0.00
+# → if still low → retries with gpt-4o → pay only now
+```
+
+`result` carries `cascade_escalations` (count of retries) and cumulative `tokens` + `cost_usd`.
+
+#### Router persistence + YAML config
+
+Learned thresholds survive process restarts:
+
+```python
+# Save after a run
+router.save("router_state.json")
+
+# Restore on next startup
+router = AdaptiveModelTierRouter.load("router_state.json", store=RouterOutcomeStore("prod.db"))
+
+# Version-control the config
+router.to_yaml("router.yaml")
+router = AdaptiveModelTierRouter.from_yaml("router.yaml")
+
+# Export outcome history for the data team
+router._store.export_csv("outcomes.csv")
+```
+
+#### `meshflow routing-report` CLI
+
+```bash
+meshflow routing-report --db meshflow_routing.db
+meshflow routing-report --db meshflow_routing.db --state router_state.json
+meshflow routing-report --db meshflow_routing.db --export outcomes.csv
+meshflow routing-report --db meshflow_routing.db --json
+```
+
+#### `ModelTier(is_local=True/False)` explicit override
+
+Custom model names (not in the known-family pattern list) can now declare their
+locality explicitly, with correct cost attribution:
+
+```python
+ModelTier("fast", "corp-llm",               is_local=True)   # custom Ollama
+ModelTier("smart","http://localhost:4000/v1", is_local=True)  # LiteLLM proxy
+ModelTier("large","llama3.2",               is_local=False)  # force-cloud billing
+```
+
+#### New exports
+
+`AdaptiveModelTierRouter`, `CascadeRouter`, `RouterReport`, `ModelSpec`,
+`ModelRegistry`, `DEFAULT_REGISTRY`, `TaskScore`, `TaskScorer`, `score_task`,
+`extract_confidence`, `RoutingOutcome`, `RouterOutcomeStore`, `ThresholdOptimizer`,
+`ThresholdRecommendation`, `RouterStats`, `TierStats`
+
+---
+
 ## [1.9.3] — 2026-06-02
 
 ### Extended thinking + always-on prompt caching + cache metrics

@@ -469,7 +469,7 @@ from meshflow.integrations.anthropic import (
 )
 from meshflow.integrations.openai import meshflow_as_openai_tool
 
-__version__ = "1.9.3"
+__version__ = "1.10.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
