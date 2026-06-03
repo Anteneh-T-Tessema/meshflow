@@ -1,0 +1,46 @@
+name: Publish meshflow-forensic
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 1.0.0)"
+        required: false
+        default: "1.0.0"
+
+jobs:
+  build-and-publish:
+    name: Build and publish meshflow-forensic to PyPI
+    runs-on: ubuntu-latest
+    env:
+      PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build
+        run: |
+          cd packages/meshflow-forensic
+          python -m build
+
+      - name: Check dist
+        run: twine check packages/meshflow-forensic/dist/*
+
+      - name: Publish to PyPI
+        if: env.PYPI_TOKEN != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: packages/meshflow-forensic/dist/
+          print-hash: true
+          skip-existing: true
+
+      - name: No token — skip
+        if: env.PYPI_TOKEN == ''
+        run: echo "::warning::PYPI_API_TOKEN not set — skipping."
