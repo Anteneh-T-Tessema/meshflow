@@ -90,7 +90,7 @@ This is the public roadmap. It is a living document — priorities shift based o
 - ✅ Product Hunt launch — `docs/launch/product_hunt.md` ready to post (v1.10.0)
 - ✅ `RedisMemoryBackend` — TTL, key prefix, multi-tenant; `pip install redis`
 - ✅ `FileMemoryBackend` — zero-dep JSON files, atomic writes, path-traversal-safe
-- [ ] Discord community launch — `docs/community/discord_setup.md` ready
+- ✅ Discord community launch — `docs/community/discord_setup.md` ready (v1.10.0, includes discord.py bot script, GH Actions webhook, launch checklist)
 
 ---
 
