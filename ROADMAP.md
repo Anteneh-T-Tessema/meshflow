@@ -69,6 +69,16 @@ This is the public roadmap. It is a living document — priorities shift based o
 - ✅ **Mixed-model pipelines** — `ModelTierRouter` + `ModelTier`; `model_is_local()` utility; zero cost for local calls; `RunResult.agent_costs` + `cloud_agents`
 - ✅ **CI green on Python 3.11 + 3.12** — 4,778 tests passing; all CI gates green
 - ✅ **PyPI 1.9.3 + GHCR image** — `pip install meshflow` and `ghcr.io/anteneh-t-tessema/meshflow-mcp:1.9.3`
+- ✅ **Workflow cost estimation** — `Workflow.estimate_cost(task)` dry-run before spending tokens
+- ✅ **`meshflow cost-report`** — per-agent cost table in CLI; estimation mode + ledger mode
+- ✅ **User-configurable `is_local`** — `ModelTier(is_local=True/False)` for custom Ollama models, LiteLLM proxies, corporate fine-tunes
+- ✅ **`ModelRegistry` + `DEFAULT_REGISTRY`** — register model metadata once (locality, cost rates, quality, latency); used by `estimate_cost`, `AdaptiveModelTierRouter`, and routing report
+- ✅ **`TaskScorer`** — 5-factor composite routing score (length + question density + conjunction density + technical terms + tool pressure × task-type multiplier); replaces raw char count
+- ✅ **`AdaptiveModelTierRouter`** — self-improving router: routes by composite score, epsilon-greedy exploration with annealing, auto-adapts thresholds every N runs from CONFIDENCE feedback; `explain()`, `stats()`, `report()`
+- ✅ **`CascadeRouter`** — FrugalGPT pattern: start cheap, escalate to next tier on low CONFIDENCE; `Agent(cascade_threshold=0.65)` triggers automatic retry within `step()`
+- ✅ **Router persistence** — `router.save(path)` / `AdaptiveModelTierRouter.load(path)` (JSON); `router.to_yaml(path)` / `AdaptiveModelTierRouter.from_yaml(path)` for version-controlled config; `RouterOutcomeStore.export_csv(path)`
+- ✅ **`meshflow routing-report`** — CLI: tier distribution, cost savings vs. always-large, adaptation history; `--state`, `--export`, `--json` flags
+- ✅ **4,963 tests passing** — 81–85 sprints; CI green on Python 3.11 + 3.12
 
 ## Next — v1.4 (June–July 2026)
 
@@ -76,8 +86,6 @@ This is the public roadmap. It is a living document — priorities shift based o
 
 - ✅ Go SDK — `go get meshflow.dev/go-sdk` (in progress)
 - ✅ OIDC/SSO middleware — Okta, Auth0, Azure AD, Google Workspace (in progress)
-- [ ] **Workflow cost estimation** — `Workflow.estimate_cost(task)` dry-run before spending tokens
-- [ ] **`meshflow cost-report <run-id>`** — per-agent cost table in CLI
 - [ ] Show HN launch — `docs/launch/show_hn.md` ready to post
 - [ ] Product Hunt launch — `docs/launch/product_hunt.md` ready to post
 - [ ] Discord community launch — `docs/community/discord_setup.md` ready

@@ -1290,6 +1290,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_cost.add_argument("--db", default="meshflow_runs.db", help="Ledger DB path (default: meshflow_runs.db)")
     p_cost.add_argument("--json", dest="as_json", action="store_true", help="Output as JSON")
 
+    # ── routing-report ────────────────────────────────────────────────────────
+    p_rr = sub.add_parser("routing-report", help="Show AdaptiveModelTierRouter stats and cost savings from a routing outcome store")
+    p_rr.add_argument("--db",     default="meshflow_routing.db", help="Routing outcome store path (default: meshflow_routing.db)")
+    p_rr.add_argument("--state",  default="",                    help="Router state JSON (written by router.save())")
+    p_rr.add_argument("--export", default="",                    help="Export outcomes to a CSV file and exit")
+    p_rr.add_argument("--json",   dest="as_json", action="store_true", help="Output as JSON")
+
     # ── migrate ───────────────────────────────────────────────────────────────
     p_migrate = sub.add_parser(
         "migrate",
@@ -1425,8 +1432,9 @@ def main() -> None:
         "templates":     _cmd_templates,
         "marketplace":   _cmd_marketplace,
         "zt-audit":      _cmd_zt_audit,
-        "cost-report":   _cmd_cost_report,
-        "red-team":      _cmd_red_team,
+        "cost-report":     _cmd_cost_report,
+        "routing-report":  _cmd_routing_report,
+        "red-team":        _cmd_red_team,
         "blue-green":    _cmd_deploy,
         "migrate":       _cmd_migrate,
         "test":          _cmd_test,
@@ -6267,4 +6275,115 @@ def _cmd_cost_report(args: argparse.Namespace) -> None:
         print(f"  {r['node']:{col_n}}  ${r['cost_usd']:.4f}  {r['tokens']:>7} tok{r['cache']}")
     print("  " + "─" * (col_n + 28))
     print(f"  {'Total':{col_n}}  ${total_cost:.4f}  {total_tokens:>7} tok")
+    print()
+
+# ── routing-report ─────────────────────────────────────────────────────────────
+
+def _cmd_routing_report(args: argparse.Namespace) -> None:
+    """Show AdaptiveModelTierRouter tier distribution, cost savings, and learned thresholds."""
+    import json as _json
+
+    from meshflow.agents.adaptation import RouterOutcomeStore, export_outcomes_csv
+
+    store = RouterOutcomeStore(path=args.db)
+
+    # ── CSV export mode ───────────────────────────────────────────────────────
+    if args.export:
+        n = export_outcomes_csv(store, args.export)
+        print(f"Exported {n} outcomes to {args.export!r}")
+        return
+
+    # ── Load router state if provided ─────────────────────────────────────────
+    smart_threshold = 0.33
+    large_threshold = 0.67
+    route_count = 0
+    last_adapted_at = None
+    tiers_cfg: list[dict] = []
+
+    if args.state:
+        try:
+            with open(args.state) as f:
+                state = _json.load(f)
+            smart_threshold = state.get("smart_threshold", smart_threshold)
+            large_threshold = state.get("large_threshold", large_threshold)
+            route_count = state.get("route_count", route_count)
+            last_adapted_at = state.get("last_adapted_at")
+            tiers_cfg = state.get("tiers", [])
+        except Exception as exc:
+            print(f"Warning: could not load state from {args.state!r}: {exc}")
+
+    # ── Compute stats from the outcome store ──────────────────────────────────
+    outcomes = store.get_recent(100_000)
+    total = len(outcomes)
+
+    tier_counts: dict[str, int] = {}
+    tier_cost: dict[str, float] = {}
+    tier_quality: dict[str, list[float]] = {}
+    tier_latency: dict[str, list[float]] = {}
+    always_large_cost = 0.0
+    actual_cost = 0.0
+
+    for o in outcomes:
+        tier_counts[o.tier] = tier_counts.get(o.tier, 0) + 1
+        tier_cost[o.tier] = tier_cost.get(o.tier, 0.0) + o.actual_cost_usd
+        if o.quality_score is not None:
+            tier_quality.setdefault(o.tier, []).append(o.quality_score)
+        tier_latency.setdefault(o.tier, []).append(o.latency_ms)
+        actual_cost += o.actual_cost_usd
+        # Estimate always-large cost using fallback rate
+        always_large_cost += (max(o.task_length // 4, 50) / 1000) * 0.005 + (25 / 1000) * 0.015
+
+    savings = always_large_cost - actual_cost
+    savings_pct = savings / always_large_cost if always_large_cost > 0 else 0.0
+
+    if args.as_json:
+        data = {
+            "smart_threshold": smart_threshold,
+            "large_threshold": large_threshold,
+            "route_count": route_count,
+            "last_adapted_at": last_adapted_at,
+            "outcomes_stored": total,
+            "tier_distribution": tier_counts,
+            "actual_cost_usd": actual_cost,
+            "always_large_cost_usd": always_large_cost,
+            "cost_saved_usd": savings,
+            "savings_pct": savings_pct,
+        }
+        print(_json.dumps(data, indent=2))
+        return
+
+    # ── Pretty-print ──────────────────────────────────────────────────────────
+    print(f"\n  MeshFlow Routing Report  ({args.db})\n")
+    print(f"  smart_threshold : {smart_threshold:.3f}")
+    print(f"  large_threshold : {large_threshold:.3f}")
+    print(f"  total routes    : {route_count}")
+    print(f"  outcomes stored : {total}")
+
+    if tiers_cfg:
+        print("\n  Tiers:")
+        for t in tiers_cfg:
+            loc = "(local)" if t.get("is_local") else "(cloud)" if t.get("is_local") is False else "(auto)"
+            print(f"    {t.get('name','?'):8s}  {t.get('model','?'):45s}  {loc}")
+
+    if total > 0:
+        print("\n  Tier distribution:")
+        total_routed = sum(tier_counts.values()) or 1
+        for tier in sorted(tier_counts):
+            count = tier_counts[tier]
+            pct = count / total_routed
+            bar = "█" * int(pct * 20)
+            avg_q = sum(tier_quality.get(tier, [])) / len(tier_quality.get(tier, [1])) if tier_quality.get(tier) else 0.0
+            avg_l = sum(tier_latency.get(tier, [0])) / len(tier_latency.get(tier, [1]))
+            print(f"    {tier:8s} {count:5d} ({pct:.0%})  {bar:20s}  quality={avg_q:.2f}  latency={avg_l:.0f}ms")
+
+        print(f"\n  Cost summary:")
+        print(f"    actual spend     : ${actual_cost:.4f}")
+        print(f"    always-large est : ${always_large_cost:.4f}")
+        print(f"    saved            : ${savings:.4f}  ({savings_pct:.0%})")
+
+    if last_adapted_at:
+        import datetime as _dt
+        ts = _dt.datetime.fromtimestamp(last_adapted_at).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\n  last adapted     : {ts}")
+
     print()

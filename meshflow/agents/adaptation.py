@@ -437,3 +437,53 @@ class ThresholdOptimizer:
                 # This bucket has too many failures — boundary should be at least here
                 boundary = max(boundary, (bucket_idx + 1) * bucket_width)
         return boundary
+
+
+# ── CSV export ────────────────────────────────────────────────────────────────
+
+    # (method added to RouterOutcomeStore below via monkey-patching is cleaner
+    #  as a free function to avoid class re-declaration)
+
+def export_outcomes_csv(store: "RouterOutcomeStore", path: str) -> int:
+    """Export all routing outcomes from *store* to a CSV file.
+
+    Returns the number of rows written.  The file can be opened in any
+    spreadsheet tool or loaded into pandas for deeper analysis::
+
+        import pandas as pd
+        df = pd.read_csv("routing_outcomes.csv")
+        df.groupby("tier")["quality_score"].mean()
+    """
+    import csv as _csv
+    outcomes = store.get_recent(100_000)
+    if not outcomes:
+        return 0
+    fields = [
+        "outcome_id", "run_id", "task_hash", "task_length", "composite_score",
+        "model", "tier", "was_exploration", "success", "quality_score",
+        "latency_ms", "actual_cost_usd", "timestamp",
+    ]
+    with open(path, "w", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for o in outcomes:
+            writer.writerow({
+                "outcome_id": o.outcome_id,
+                "run_id": o.run_id,
+                "task_hash": o.task_hash,
+                "task_length": o.task_length,
+                "composite_score": o.composite_score,
+                "model": o.model,
+                "tier": o.tier,
+                "was_exploration": int(o.was_exploration),
+                "success": int(o.success),
+                "quality_score": o.quality_score if o.quality_score is not None else "",
+                "latency_ms": o.latency_ms,
+                "actual_cost_usd": o.actual_cost_usd,
+                "timestamp": o.timestamp,
+            })
+    return len(outcomes)
+
+
+# Attach as a method on RouterOutcomeStore for ergonomic access
+RouterOutcomeStore.export_csv = lambda self, path: export_outcomes_csv(self, path)  # type: ignore[attr-defined]

@@ -737,6 +737,339 @@ class AdaptiveModelTierRouter(ModelTierRouter):
         except Exception:
             pass  # never crash a route() call due to adaptation failure
 
+    # ── Persistence ───────────────────────────────────────────────────────────
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return a JSON-serialisable snapshot of the router's learned state.
+
+        Captures thresholds, route count, last adaptation timestamp, and tier
+        definitions.  Does **not** include the full outcome store — use
+        :meth:`RouterOutcomeStore.export_csv` for that.
+
+        Usage::
+
+            data = router.snapshot()
+            import json; json.dump(data, open("router_state.json", "w"))
+        """
+        return {
+            "smart_threshold": self._smart,
+            "large_threshold": self._large,
+            "route_count": self._route_count,
+            "last_adapted_at": self._last_adapted_at,
+            "adapt_every": self._adapt_every,
+            "exploration_rate": self._exploration_rate,
+            "adapt_mode": self._adapt_mode,
+            "tiers": [
+                {
+                    "name": t.name,
+                    "model": t.model,
+                    "max_tokens": t.max_tokens,
+                    "is_local": t.is_local,
+                }
+                for t in self._tiers
+            ],
+        }
+
+    def save(self, path: str) -> None:
+        """Persist the router's learned thresholds and config to a JSON file.
+
+        Subsequent restarts can call :meth:`load` to resume from the saved
+        state rather than starting from default thresholds.
+
+        Example::
+
+            router.save("router_state.json")
+            # --- process restart ---
+            router = AdaptiveModelTierRouter.load("router_state.json")
+        """
+        import json as _json
+        import os as _os
+        data = self.snapshot()
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            _json.dump(data, f, indent=2)
+        _os.replace(tmp, path)
+
+    @classmethod
+    def load(cls, path: str, **overrides: Any) -> "AdaptiveModelTierRouter":
+        """Restore an :class:`AdaptiveModelTierRouter` from a saved JSON snapshot.
+
+        Parameters
+        ----------
+        path:       Path to the JSON file written by :meth:`save`.
+        **overrides: Any keyword argument accepted by ``__init__`` to override
+                    the saved value (e.g. ``store=RouterOutcomeStore("new.db")``).
+        """
+        import json as _json
+        with open(path) as f:
+            data = _json.load(f)
+        tiers = [
+            ModelTier(
+                name=t["name"],
+                model=t["model"],
+                max_tokens=t.get("max_tokens", 2048),
+                is_local=t.get("is_local"),
+            )
+            for t in data.get("tiers", [])
+        ]
+        kwargs: dict[str, Any] = {
+            "tiers": tiers,
+            "smart_threshold": data.get("smart_threshold", 0.33),
+            "large_threshold": data.get("large_threshold", 0.67),
+            "adapt_every": data.get("adapt_every", 50),
+            "exploration_rate": data.get("exploration_rate", 0.10),
+            "adapt_mode": data.get("adapt_mode", "auto"),
+        }
+        kwargs.update(overrides)
+        router = cls(**kwargs)
+        router._route_count = data.get("route_count", 0)
+        router._last_adapted_at = data.get("last_adapted_at")
+        return router
+
+    # ── YAML config ───────────────────────────────────────────────────────────
+
+    def to_yaml(self, path: str) -> None:
+        """Write a human-editable YAML config for this router.
+
+        The file can be shared with teammates or checked into version control.
+        Load it back with :meth:`from_yaml`::
+
+            router.to_yaml("router.yaml")
+            # --- edit thresholds or tier models in the file ---
+            router2 = AdaptiveModelTierRouter.from_yaml("router.yaml")
+        """
+        lines = [
+            "# MeshFlow AdaptiveModelTierRouter configuration",
+            f"smart_threshold: {self._smart}",
+            f"large_threshold: {self._large}",
+            f"adapt_every: {self._adapt_every}",
+            f"exploration_rate: {self._exploration_rate}",
+            f"adapt_mode: {self._adapt_mode!r}",
+            "tiers:",
+        ]
+        for t in self._tiers:
+            lines.append(f"  - name: {t.name!r}")
+            lines.append(f"    model: {t.model!r}")
+            lines.append(f"    max_tokens: {t.max_tokens}")
+            if t.is_local is not None:
+                lines.append(f"    is_local: {str(t.is_local).lower()}")
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+    @classmethod
+    def from_yaml(cls, path: str, **overrides: Any) -> "AdaptiveModelTierRouter":
+        """Construct an :class:`AdaptiveModelTierRouter` from a YAML config file.
+
+        The YAML schema matches the output of :meth:`to_yaml`.  Unknown keys
+        are silently ignored for forward-compatibility.
+
+        Example YAML::
+
+            smart_threshold: 0.33
+            large_threshold: 0.67
+            adapt_every: 50
+            exploration_rate: 0.10
+            adapt_mode: 'auto'
+            tiers:
+              - name: 'fast'
+                model: 'llama3.2'
+                max_tokens: 512
+              - name: 'smart'
+                model: 'mistral:7b'
+                max_tokens: 2048
+                is_local: true
+              - name: 'large'
+                model: 'gpt-4o'
+                max_tokens: 4096
+                is_local: false
+        """
+        # Minimal YAML parser — handles the schema written by to_yaml() without
+        # requiring PyYAML as a hard dependency.
+        data = _parse_simple_yaml(path)
+        tiers = []
+        for t in data.get("tiers", []):
+            is_local_raw = t.get("is_local")
+            if isinstance(is_local_raw, str):
+                is_local = is_local_raw.lower() == "true"
+            else:
+                is_local = is_local_raw  # bool or None
+            tiers.append(ModelTier(
+                name=str(t.get("name", "")).strip("'\""),
+                model=str(t.get("model", "")).strip("'\""),
+                max_tokens=int(t.get("max_tokens", 2048)),
+                is_local=is_local,
+            ))
+        kwargs: dict[str, Any] = {
+            "tiers": tiers or None,
+            "smart_threshold": float(data.get("smart_threshold", 0.33)),
+            "large_threshold": float(data.get("large_threshold", 0.67)),
+            "adapt_every": int(data.get("adapt_every", 50)),
+            "exploration_rate": float(data.get("exploration_rate", 0.10)),
+            "adapt_mode": str(data.get("adapt_mode", "auto")).strip("'\""),
+        }
+        kwargs.update(overrides)
+        return cls(**kwargs)
+
+    # ── Report ────────────────────────────────────────────────────────────────
+
+    def report(self) -> "RouterReport":
+        """Return a rich summary of routing decisions and learned thresholds.
+
+        Includes per-tier statistics, estimated cost savings versus an
+        always-large-model baseline, and recent adaptation history.
+        """
+        rs = self.stats()
+        all_outcomes = self._store.get_recent(500)
+        total = len(all_outcomes)
+        tier_counts: dict[str, int] = {}
+        for o in all_outcomes:
+            tier_counts[o.tier] = tier_counts.get(o.tier, 0) + 1
+        # cost saved vs. always using the last (most expensive) tier
+        last_tier = self._tiers[-1] if self._tiers else None
+        always_large_cost = 0.0
+        actual_cost = 0.0
+        for o in all_outcomes:
+            actual_cost += o.actual_cost_usd
+            if last_tier:
+                from meshflow.agents.base import _cost_usd
+                always_large_cost += _cost_usd(last_tier.model, max(o.task_length // 4, 50), 25)
+        return RouterReport(
+            smart_threshold=self._smart,
+            large_threshold=self._large,
+            route_count=self._route_count,
+            last_adapted_at=self._last_adapted_at,
+            tier_distribution=tier_counts,
+            tier_stats=rs.tiers,
+            outcomes_analyzed=total,
+            actual_cost_usd=actual_cost,
+            always_large_cost_usd=always_large_cost,
+            cost_saved_usd=always_large_cost - actual_cost,
+        )
+
+
+@dataclass
+class RouterReport:
+    """Summary of routing decisions and learned state from :meth:`AdaptiveModelTierRouter.report`.
+
+    Attributes
+    ----------
+    smart_threshold:       Current composite score boundary (fast → smart tier).
+    large_threshold:       Current composite score boundary (smart → large tier).
+    route_count:           Total number of routing decisions made.
+    last_adapted_at:       Unix timestamp of last auto-adaptation, or None.
+    tier_distribution:     Mapping of tier name → number of routes.
+    tier_stats:            Per-tier aggregated metrics.
+    outcomes_analyzed:     Number of outcomes used in the report.
+    actual_cost_usd:       Total cost actually spent across all analyzed outcomes.
+    always_large_cost_usd: Hypothetical cost if every task went to the large tier.
+    cost_saved_usd:        Estimated savings vs. always-large baseline.
+    """
+
+    smart_threshold: float
+    large_threshold: float
+    route_count: int
+    last_adapted_at: float | None
+    tier_distribution: dict[str, int]
+    tier_stats: dict[str, Any]
+    outcomes_analyzed: int
+    actual_cost_usd: float
+    always_large_cost_usd: float
+    cost_saved_usd: float
+
+    @property
+    def savings_pct(self) -> float:
+        if self.always_large_cost_usd <= 0:
+            return 0.0
+        return self.cost_saved_usd / self.always_large_cost_usd
+
+    def __str__(self) -> str:
+        lines = [
+            "MeshFlow Router Report",
+            f"  smart_threshold  : {self.smart_threshold:.3f}",
+            f"  large_threshold  : {self.large_threshold:.3f}",
+            f"  total routes     : {self.route_count}",
+            f"  outcomes stored  : {self.outcomes_analyzed}",
+            "",
+            "  Tier distribution:",
+        ]
+        total_routed = sum(self.tier_distribution.values()) or 1
+        for tier, count in sorted(self.tier_distribution.items()):
+            bar = "█" * int(count / total_routed * 20)
+            lines.append(f"    {tier:8s} {count:5d} ({count/total_routed:.0%})  {bar}")
+        lines += [
+            "",
+            "  Cost summary:",
+            f"    actual spend     : ${self.actual_cost_usd:.4f}",
+            f"    always-large est : ${self.always_large_cost_usd:.4f}",
+            f"    saved            : ${self.cost_saved_usd:.4f}  ({self.savings_pct:.0%})",
+        ]
+        if self.last_adapted_at:
+            import time as _t
+            import datetime as _dt
+            ts = _dt.datetime.fromtimestamp(self.last_adapted_at).strftime("%Y-%m-%d %H:%M:%S")
+            lines.append(f"  last adapted     : {ts}")
+        return "\n".join(lines)
+
+
+def _parse_simple_yaml(path: str) -> dict[str, Any]:
+    """Parse the small YAML subset emitted by AdaptiveModelTierRouter.to_yaml()."""
+    result: dict[str, Any] = {}
+    tiers: list[dict[str, Any]] = []
+    current_tier: dict[str, Any] | None = None
+    in_tiers = False
+
+    with open(path) as f:
+        for raw_line in f:
+            line = raw_line.rstrip()
+            stripped = line.lstrip()
+            if stripped.startswith("#") or not stripped:
+                continue
+            indent = len(line) - len(stripped)
+            if stripped.startswith("tiers:"):
+                in_tiers = True
+                continue
+            if in_tiers:
+                if indent >= 2 and stripped.startswith("- "):
+                    if current_tier is not None:
+                        tiers.append(current_tier)
+                    key, _, val = stripped[2:].partition(": ")
+                    current_tier = {key.strip(): _yaml_val(val.strip())}
+                elif indent >= 4 and current_tier is not None:
+                    key, _, val = stripped.partition(": ")
+                    current_tier[key.strip()] = _yaml_val(val.strip())
+                else:
+                    if current_tier is not None:
+                        tiers.append(current_tier)
+                        current_tier = None
+                    in_tiers = False
+            if not in_tiers and ": " in stripped:
+                key, _, val = stripped.partition(": ")
+                result[key.strip()] = _yaml_val(val.strip())
+    if current_tier is not None:
+        tiers.append(current_tier)
+    if tiers:
+        result["tiers"] = tiers
+    return result
+
+
+def _yaml_val(s: str) -> Any:
+    """Convert a YAML scalar string to a Python value."""
+    if s.lower() == "true":
+        return True
+    if s.lower() == "false":
+        return False
+    if s.lower() in ("null", "~", ""):
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    return s.strip("'\"")
+
 
 # ── CascadeRouter ─────────────────────────────────────────────────────────────
 
