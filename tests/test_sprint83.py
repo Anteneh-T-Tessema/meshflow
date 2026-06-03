@@ -537,8 +537,11 @@ class TestAdaptiveModelTierRouter:
         r._ts_beta_[1] = 2.0    # 1 failure → mean ≈ 0.88
         results = [r.route("short task") for _ in range(20)]
         tiers = {res.tier for res in results}
-        # TS should escalate to smart tier for most routes
-        assert len(tiers) > 1  # both tiers appear in results
+        # TS should converge on smart tier — fast has too many failures
+        # was_exploration should be True for most routes (TS differs from greedy)
+        assert "smart" in tiers  # escalated away from failing fast tier
+        explorations = sum(1 for r in results if r.was_exploration)
+        assert explorations >= 10  # TS actively exploring away from greedy
 
     def test_tiers_returns_copy(self):
         r = self._router()
