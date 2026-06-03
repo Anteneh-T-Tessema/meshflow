@@ -1,7 +1,7 @@
 {
   "name": "meshflow-sdk",
-  "version": "1.9.3",
-  "description": "TypeScript client SDK for MeshFlow — Zero Trust AI agents, HIPAA/SOX/GDPR compliance, tamper-evident audit chain, wire-level tool call enforcement",
+  "version": "1.13.0",
+  "description": "TypeScript client SDK for MeshFlow \u2014 Zero Trust AI agents, HIPAA/SOX/GDPR compliance, tamper-evident audit chain, wire-level tool call enforcement",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
