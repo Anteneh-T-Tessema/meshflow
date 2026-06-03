@@ -2190,6 +2190,173 @@ class Workflow:
 
         return CostEstimate(lines=lines, task_preview=task[:80])
 
+    def stream(self, task: str) -> "Any":
+        """Synchronous streaming generator — yields :class:`~meshflow.core.streaming.StreamChunk` objects.
+
+        Streams token-by-token output from each agent in the pipeline while
+        emitting ``"routing"`` events when a model tier is selected.  All
+        chunks are instances of :class:`~meshflow.core.streaming.StreamChunk`
+        so the same ``is_token``, ``is_routing``, ``is_done`` helpers work.
+
+        Use :func:`~meshflow.core.streaming.stream_collect` to get the final
+        text without handling individual chunks::
+
+            from meshflow.core.streaming import stream_collect
+            text = stream_collect(wf.stream("Explain GDPR §17"))
+
+        Or handle chunks directly for real-time UI updates::
+
+            for chunk in wf.stream("Write a haiku"):
+                if chunk.is_token:
+                    print(chunk.content, end="", flush=True)
+                elif chunk.is_routing:
+                    print(f"\\n→ tier={chunk.metadata['tier']} model={chunk.metadata['model']}")
+        """
+        import asyncio
+        import queue as _queue
+        import threading as _threading
+        from meshflow.core.streaming import StreamChunk
+
+        q: _queue.Queue[StreamChunk | None] = _queue.Queue(maxsize=256)
+
+        async def _produce() -> None:
+            try:
+                async for chunk in self._stream_async(task):
+                    q.put(chunk)
+            except Exception as exc:
+                q.put(StreamChunk(kind="error", content=str(exc)))
+            finally:
+                q.put(None)  # sentinel
+
+        def _run_loop() -> None:
+            asyncio.run(_produce())
+
+        t = _threading.Thread(target=_run_loop, daemon=True)
+        t.start()
+
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                break
+            yield chunk
+
+    async def _stream_async(self, task: str) -> "Any":
+        """Async generator powering :meth:`stream` and :meth:`stream_multimodal`."""
+        from meshflow.core.streaming import StreamChunk
+
+        current_task = task
+
+        for i, agent in enumerate(self.agents):
+            # ── Emit routing event if model_router is attached ────────────────
+            if agent.model_router is not None:
+                try:
+                    routing = agent.model_router.route(current_task)
+                    is_local = getattr(routing, "is_local", False)
+                    yield StreamChunk(
+                        kind="routing",
+                        node_name=agent.name,
+                        metadata={
+                            "model": getattr(routing, "model", ""),
+                            "tier": getattr(routing, "tier", ""),
+                            "is_local": is_local,
+                            "cascade_escalation": False,
+                            "reason": f"composite score routed to tier '{getattr(routing, 'tier', '')}'"
+                                      f" ({'local' if is_local else 'cloud'})",
+                        },
+                    )
+                except Exception:
+                    pass
+
+            yield StreamChunk(kind="node_start", node_name=agent.name)
+
+            # ── Stream tokens from the agent ──────────────────────────────────
+            accumulated: list[str] = []
+            try:
+                async for token in agent.stream(current_task):
+                    accumulated.append(token)
+                    yield StreamChunk(kind="token", content=token, node_name=agent.name)
+            except Exception as exc:
+                yield StreamChunk(kind="error", content=str(exc), node_name=agent.name)
+                break
+
+            full_output = "".join(accumulated)
+            yield StreamChunk(kind="node_end", content=full_output, node_name=agent.name)
+
+            # ── Chain: pass output to next agent ──────────────────────────────
+            if i < len(self.agents) - 1:
+                current_task = f"{task}\n\nPrior output:\n{full_output}"
+
+        yield StreamChunk(kind="done", node_name="workflow")
+
+    def stream_multimodal(self, task: str, inputs: list[Any]) -> "Any":
+        """Synchronous streaming generator for multi-modal pipelines.
+
+        Like :meth:`stream` but passes *inputs* (images, documents, audio)
+        to the first agent, then chains remaining agents on the text output.
+
+        Example::
+
+            from meshflow.multimodal.inputs import ImageInput
+            from meshflow.core.streaming import stream_collect
+
+            img = ImageInput.from_bytes(image_bytes, "image/png")
+            text = stream_collect(wf.stream_multimodal("Describe this chart.", [img]))
+        """
+        import asyncio
+        import queue as _queue
+        import threading as _threading
+        from meshflow.core.streaming import StreamChunk
+
+        q: _queue.Queue[StreamChunk | None] = _queue.Queue(maxsize=256)
+
+        async def _produce() -> None:
+            try:
+                async for chunk in self._stream_multimodal_async(task, inputs):
+                    q.put(chunk)
+            except Exception as exc:
+                q.put(StreamChunk(kind="error", content=str(exc)))
+            finally:
+                q.put(None)
+
+        def _run_loop() -> None:
+            asyncio.run(_produce())
+
+        t = _threading.Thread(target=_run_loop, daemon=True)
+        t.start()
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                break
+            yield chunk
+
+    async def _stream_multimodal_async(self, task: str, inputs: list[Any]) -> "Any":
+        """Async generator for multimodal streaming."""
+        from meshflow.core.streaming import StreamChunk
+
+        if not self.agents:
+            yield StreamChunk(kind="done", node_name="workflow")
+            return
+
+        # First agent: multimodal — accumulate its output, yield tokens
+        first = self.agents[0]
+        yield StreamChunk(kind="node_start", node_name=first.name)
+        first_result = await first.run_multimodal(task, inputs, {})
+        first_output = first_result.get("result", "") if isinstance(first_result, dict) else str(first_result)
+        # Emit the full output as a single token chunk (multimodal doesn't stream)
+        if first_output:
+            yield StreamChunk(kind="token", content=first_output, node_name=first.name)
+        yield StreamChunk(kind="node_end", content=first_output, node_name=first.name)
+
+        # Remaining agents: stream text
+        if len(self.agents) > 1:
+            chained_task = f"{task}\n\nPrior output:\n{first_output}"
+            rest_wf = Workflow(cost_cap=self.cost_cap, mode=self.mode)
+            rest_wf.agents = self.agents[1:]
+            async for chunk in rest_wf._stream_async(chained_task):
+                yield chunk
+        else:
+            yield StreamChunk(kind="done", node_name="workflow")
+
     def run(self, task: str) -> WorkflowResult:
         """Run the workflow sequentially and synchronously."""
         from meshflow.agents.base import sandbox_mode_var
