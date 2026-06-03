@@ -152,6 +152,49 @@ from meshflow.agents.openai_agents import (
     custom_span,
     Span as AgentTraceSpan,
 )
+from meshflow.agents.advisor import (
+    AdvisorAgent,
+    AdvisorConfig,
+    AdvisorGuidance,
+    AdvisorResult,
+    AdvisorRouter,
+)
+from meshflow.core.budget_config import (
+    ThinkingBudget,
+    EffortBudget,
+    BudgetConfig,
+    BudgetUsage,
+    BudgetViolation,
+)
+from meshflow.core.dynamic_workflow import (
+    DynamicWorkflow,
+    DynamicCoordinator,
+    DynamicWorkflowResult,
+    SpawnDecision,
+    SpawnRecord,
+)
+from meshflow.core.compactor import (
+    ContextCompactor,
+    CompactionConfig,
+    CompactionStats,
+    CompactionStrategy,
+)
+from meshflow.streaming.tool_stream import (
+    ToolEventKind,
+    ToolStreamEvent,
+    ToolCallStartEvent,
+    ToolCallInputDeltaEvent,
+    ToolCallEndEvent,
+    ToolResultStartEvent,
+    ToolResultDeltaEvent,
+    ToolResultEndEvent,
+    TextDeltaEvent,
+    ToolStreamError,
+    ToolStreamResult,
+    stream_tool_calls,
+    collect_tool_stream,
+    ToolStreamSession,
+)
 from meshflow.core.compliance import ComplianceProfile, compliance_profile, list_profiles
 from meshflow.core.durable import DurableWorkflowExecutor
 from meshflow.core.worker_pool import WorkerPool, WorkerPoolConfig  # noqa: F401
@@ -1421,4 +1464,42 @@ __all__ = [
     "oai_trace",
     "custom_span",
     "AgentTraceSpan",
+    # ── Sprint 101: AdvisorAgent (Anthropic advisor-tool pattern) ─────────────
+    "AdvisorAgent",
+    "AdvisorConfig",
+    "AdvisorGuidance",
+    "AdvisorResult",
+    "AdvisorRouter",
+    # ── Sprint 101: ThinkingBudget / EffortBudget ─────────────────────────────
+    "ThinkingBudget",
+    "EffortBudget",
+    "BudgetConfig",
+    "BudgetUsage",
+    "BudgetViolation",
+    "CompactionStrategy",
+    # ── Sprint 101: DynamicWorkflow ───────────────────────────────────────────
+    "DynamicWorkflow",
+    "DynamicCoordinator",
+    "DynamicWorkflowResult",
+    "SpawnDecision",
+    "SpawnRecord",
+    # ── Sprint 101: ContextCompactor ──────────────────────────────────────────
+    "ContextCompactor",
+    "CompactionConfig",
+    "CompactionStats",
+    # ── Sprint 101: Fine-grained tool streaming ───────────────────────────────
+    "ToolEventKind",
+    "ToolStreamEvent",
+    "ToolCallStartEvent",
+    "ToolCallInputDeltaEvent",
+    "ToolCallEndEvent",
+    "ToolResultStartEvent",
+    "ToolResultDeltaEvent",
+    "ToolResultEndEvent",
+    "TextDeltaEvent",
+    "ToolStreamError",
+    "ToolStreamResult",
+    "stream_tool_calls",
+    "collect_tool_stream",
+    "ToolStreamSession",
 ]
