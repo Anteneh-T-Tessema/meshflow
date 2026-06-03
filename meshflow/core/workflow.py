@@ -2240,6 +2240,54 @@ class Workflow:
                 break
             yield chunk
 
+    async def astream(self, task: str) -> "Any":
+        """Native async streaming generator — no thread overhead.
+
+        Prefer this in async contexts (FastAPI, Starlette, asyncio apps).
+        Use :meth:`stream` for synchronous code.
+
+        Usage in FastAPI::
+
+            from fastapi import FastAPI
+            from fastapi.responses import StreamingResponse
+            from meshflow.core.streaming import chunks_to_sse, stream_to_sse
+
+            app = FastAPI()
+
+            @app.get("/stream")
+            async def stream_endpoint(task: str):
+                async def _sse():
+                    async for chunk in wf.astream(task):
+                        yield stream_to_sse(chunk)
+                return StreamingResponse(_sse(), media_type="text/event-stream")
+
+        Or collect the full output::
+
+            from meshflow.core.streaming import async_stream_collect
+            text = await async_stream_collect(wf.astream("Summarise Q3"))
+        """
+        async for chunk in self._stream_async(task):
+            yield chunk
+
+    async def astream_multimodal(self, task: str, inputs: list[Any]) -> "Any":
+        """Native async streaming generator for multi-modal pipelines.
+
+        Like :meth:`astream` but passes *inputs* (images, documents, audio)
+        to the first agent.  No thread overhead — preferred in async contexts.
+
+        Usage::
+
+            from meshflow import ImageInput
+            from meshflow.core.streaming import async_stream_collect
+
+            img = ImageInput.from_bytes(chart_bytes, "image/png")
+            text = await async_stream_collect(
+                wf.astream_multimodal("Extract figures.", [img])
+            )
+        """
+        async for chunk in self._stream_multimodal_async(task, inputs):
+            yield chunk
+
     async def _stream_async(self, task: str) -> "Any":
         """Async generator powering :meth:`stream` and :meth:`stream_multimodal`."""
         from meshflow.core.streaming import StreamChunk

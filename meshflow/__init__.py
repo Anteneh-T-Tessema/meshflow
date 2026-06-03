@@ -83,7 +83,12 @@ from meshflow.intelligence.memory import AgentMemory, MemoryItem
 from meshflow.intelligence.consolidator import MemoryConsolidator, ConsolidationReport
 from meshflow.intelligence.team_workspace import TeamWorkspace, WorkspaceSummary
 from meshflow.intelligence.knowledge import VectorStore, KnowledgeSource, AgentKnowledge
-from meshflow.core.streaming import StreamChunk, tokens, cost_events, filter_stream, task_outputs, routing_events, stream_collect
+from meshflow.core.streaming import (
+    StreamChunk, tokens, cost_events, filter_stream, task_outputs,
+    routing_events, stream_collect,
+    stream_to_sse, stream_to_ndjson, chunks_to_sse, chunks_to_ndjson,
+    async_stream_collect,
+)
 from meshflow.streaming.backpressure import BackpressureQueue, BackpressureStrategy
 from meshflow.streaming.multiplexer import StreamMultiplexer, Subscription
 from meshflow.streaming.partial_output import (
@@ -653,6 +658,11 @@ __all__ = [
     "task_outputs",
     "routing_events",
     "stream_collect",
+    "stream_to_sse",
+    "stream_to_ndjson",
+    "chunks_to_sse",
+    "chunks_to_ndjson",
+    "async_stream_collect",
     # ── Multi-agent patterns ──────────────────────────────────────────────────
     "Supervisor",
     "SupervisorResult",

@@ -230,3 +230,148 @@ async def task_outputs(
     async for chunk in stream:
         if chunk.kind == "task_end":
             yield chunk
+
+
+# ── v1.10.0 — SSE / NDJSON / async helpers ───────────────────────────────────
+
+import json as _json  # noqa: E402
+
+
+def stream_to_sse(chunk: "StreamChunk", event: str = "") -> str:
+    """Format a single :class:`StreamChunk` as a Server-Sent Events (SSE) string.
+
+    The returned string is ready to be written directly to an SSE response body.
+    Each SSE message ends with a double newline as required by the spec.
+
+    Fields sent:
+    - ``event:`` — the chunk kind (omitted when *event* is empty and kind is "token")
+    - ``data:``  — JSON-encoded chunk payload
+
+    Usage in FastAPI::
+
+        from fastapi.responses import StreamingResponse
+        from meshflow.core.streaming import stream_to_sse
+
+        @app.get("/stream")
+        async def endpoint(task: str):
+            async def _gen():
+                async for chunk in wf.astream(task):
+                    yield stream_to_sse(chunk)
+            return StreamingResponse(_gen(), media_type="text/event-stream")
+    """
+    payload = {
+        "kind": chunk.kind,
+        "content": chunk.content,
+        "node_name": chunk.node_name,
+    }
+    if chunk.metadata:
+        payload["metadata"] = chunk.metadata  # type: ignore[assignment]
+
+    lines: list[str] = []
+    ev_name = event or (chunk.kind if chunk.kind != "token" else "")
+    if ev_name:
+        lines.append(f"event: {ev_name}")
+    lines.append(f"data: {_json.dumps(payload)}")
+    lines.append("")  # blank line = end of SSE message
+    return "\n".join(lines) + "\n"
+
+
+def stream_to_ndjson(chunk: "StreamChunk") -> str:
+    """Format a :class:`StreamChunk` as a single NDJSON line (newline-delimited JSON).
+
+    Suitable for streaming APIs that use ``Content-Type: application/x-ndjson``
+    or plain HTTP/2 server-push without SSE framing.
+
+    Usage::
+
+        async def _gen():
+            async for chunk in wf.astream(task):
+                yield stream_to_ndjson(chunk)
+    """
+    payload = {
+        "kind": chunk.kind,
+        "content": chunk.content,
+        "node_name": chunk.node_name,
+        "metadata": chunk.metadata,
+    }
+    return _json.dumps(payload) + "\n"
+
+
+async def chunks_to_sse(
+    stream: "AsyncIterator[StreamChunk]",
+    include_routing: bool = True,
+    include_metadata: bool = True,
+) -> "AsyncIterator[str]":
+    """Async generator that yields SSE-formatted strings from a chunk stream.
+
+    Designed for direct use as a FastAPI / Starlette streaming body::
+
+        from meshflow.core.streaming import chunks_to_sse
+
+        @app.get("/stream")
+        async def endpoint(task: str):
+            return StreamingResponse(
+                chunks_to_sse(wf.astream(task)),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+    Parameters
+    ----------
+    stream:           Async generator of :class:`StreamChunk` objects.
+    include_routing:  If False, routing/tier-selection events are omitted.
+    include_metadata: If False, the ``metadata`` field is stripped from payloads.
+    """
+    async for chunk in stream:
+        if not include_routing and chunk.kind == "routing":
+            continue
+        payload: dict = {
+            "kind": chunk.kind,
+            "content": chunk.content,
+            "node_name": chunk.node_name,
+        }
+        if include_metadata and chunk.metadata:
+            payload["metadata"] = chunk.metadata
+        ev = chunk.kind if chunk.kind != "token" else ""
+        lines = []
+        if ev:
+            lines.append(f"event: {ev}")
+        lines.append(f"data: {_json.dumps(payload)}")
+        lines.append("")
+        yield "\n".join(lines) + "\n"
+
+
+async def chunks_to_ndjson(
+    stream: "AsyncIterator[StreamChunk]",
+) -> "AsyncIterator[str]":
+    """Async generator that yields NDJSON-formatted strings from a chunk stream.
+
+    Usage::
+
+        return StreamingResponse(
+            chunks_to_ndjson(wf.astream(task)),
+            media_type="application/x-ndjson",
+        )
+    """
+    async for chunk in stream:
+        yield stream_to_ndjson(chunk)
+
+
+async def async_stream_collect(
+    stream: "AsyncIterator[StreamChunk]",
+) -> str:
+    """Collect all token chunks from an async stream into a single string.
+
+    Async equivalent of :func:`stream_collect` for use with :meth:`~meshflow.core.workflow.Workflow.astream`.
+
+    Usage::
+
+        from meshflow.core.streaming import async_stream_collect
+
+        text = await async_stream_collect(wf.astream("Summarise the report"))
+    """
+    parts: list[str] = []
+    async for chunk in stream:
+        if chunk.is_token and chunk.content:
+            parts.append(chunk.content)
+    return "".join(parts)
