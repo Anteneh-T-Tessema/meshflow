@@ -670,6 +670,7 @@ class TestEstimateCostWithRegistry:
             ],
             smart_threshold=0.90,   # short task stays fast
             large_threshold=0.95,
+            exploration_rate=0.0,   # deterministic — no epsilon-greedy noise in assertion
             store=RouterOutcomeStore(path=":memory:"),
         )
         wf = Workflow()
