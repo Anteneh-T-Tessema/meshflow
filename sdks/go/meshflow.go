@@ -32,7 +32,7 @@ import (
 
 const (
 	defaultTimeout = 120 * time.Second
-	sdkVersion     = "1.9.3"
+	sdkVersion     = "1.10.0"
 )
 
 // Client is the MeshFlow API client. Create one with NewClient and reuse it
@@ -157,6 +157,26 @@ func buildPolicy(o RunOptions) map[string]interface{} {
 	}
 	if o.EnableUncertainty {
 		p["enable_uncertainty"] = true
+	}
+	// v1.10.0 — routing
+	if len(o.ModelTiers) > 0 {
+		p["model_tiers"] = o.ModelTiers
+	}
+	if o.SmartThreshold > 0 {
+		p["smart_threshold"] = o.SmartThreshold
+	}
+	if o.LargeThreshold > 0 {
+		p["large_threshold"] = o.LargeThreshold
+	}
+	if o.CascadeThreshold > 0 {
+		p["cascade_threshold"] = o.CascadeThreshold
+	}
+	if o.MaxEscalations > 0 {
+		p["max_escalations"] = o.MaxEscalations
+	}
+	// v1.10.0 — extended thinking
+	if o.ThinkingBudget > 0 {
+		p["thinking_budget"] = o.ThinkingBudget
 	}
 	if len(p) == 0 {
 		return nil
