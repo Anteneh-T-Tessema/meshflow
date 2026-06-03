@@ -164,6 +164,7 @@ class WorkflowResult:
     paused_nodes: list[str]
     skipped_nodes: list[str]
     ledger_db: str
+    state: Any = None
 
     @property
     def cost_usd(self) -> float:
@@ -2117,21 +2118,64 @@ class Workflow:
     compiling the agent list into a Team running sequentially.
     """
 
-    def __init__(self, cost_cap: CostCap | None = None, mode: str = "production") -> None:
+    def __init__(
+        self,
+        cost_cap: CostCap | None = None,
+        mode: str = "production",
+        state_schema: Any | None = None,
+        initial_state: Any | None = None,
+    ) -> None:
         self.cost_cap = cost_cap
         self.mode = mode
         self.agents: list[Any] = []
+        self.state_schema = state_schema
+        self.initial_state = initial_state
+        self._input_maps: dict[Any, Any] = {}
+        self._output_maps: dict[Any, Any] = {}
+        self.state: Any = None
+        if state_schema is not None:
+            from pydantic import BaseModel
+            if isinstance(initial_state, BaseModel):
+                self.state = initial_state
+            elif isinstance(initial_state, dict):
+                self.state = state_schema(**initial_state)
+            elif initial_state is None:
+                self.state = state_schema()
+            else:
+                raise TypeError("initial_state must be a dict or a Pydantic model instance.")
+        elif initial_state is not None:
+            self.state = initial_state
 
-    def add(self, *agents: Any) -> "Workflow":
+    def add(
+        self,
+        *agents: Any,
+        input_map: Any = None,
+        output_map: Any = None,
+    ) -> "Workflow":
         """Add one or more agents to the sequential workflow. Supports chaining."""
         self.agents.extend(agents)
+        for agent in agents:
+            if input_map:
+                self._input_maps[agent.name] = input_map
+            if output_map:
+                self._output_maps[agent.name] = output_map
         return self
 
-    def add_parallel(self, *agents: Any) -> "Workflow":
+    def add_parallel(
+        self,
+        *agents: Any,
+        input_map: Any = None,
+        output_map: Any = None,
+    ) -> "Workflow":
         """Add parallel execution step with multiple agents. Supports chaining."""
         if not agents:
             raise ValueError("Must provide at least one agent for parallel execution.")
         self.agents.append(list(agents))
+        block_key = tuple(a.name for a in agents)
+        if input_map:
+            self._input_maps[block_key] = input_map
+        if output_map:
+            self._output_maps[block_key] = output_map
         return self
 
     def estimate_cost(self, task: str = "") -> "CostEstimate":
@@ -2657,7 +2701,7 @@ class Workflow:
                         item.mode = "sandbox"
 
             has_parallel = any(isinstance(a, (list, tuple)) for a in self.agents)
-            if has_parallel:
+            if has_parallel or self.state is not None:
                 return run_sync(self._run_async(task))
 
             budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
@@ -2678,6 +2722,8 @@ class Workflow:
         from meshflow.core.workflow import WorkflowResult
         import time as _time
         import asyncio
+        import inspect
+        import json
 
         start_time = _time.monotonic()
         total_cost = 0.0
@@ -2696,29 +2742,79 @@ class Workflow:
                 continue
 
             if isinstance(agent_item, (list, tuple)):
+                block_key = tuple(a.name for a in agent_item)
+            else:
+                block_key = agent_item.name
+
+            # Map inputs if state exists
+            context = {"state": self.state} if self.state is not None else {}
+            task_for_step = current_task
+            if self.state is not None:
+                input_map = self._input_maps.get(block_key)
+                if input_map:
+                    task_for_step = input_map(self.state)
+                else:
+                    state_data = self.state.model_dump() if hasattr(self.state, "model_dump") else self.state.dict()
+                    state_str = json.dumps(state_data, indent=2)
+                    task_for_step = f"{current_task}\n\nCurrent State:\n{state_str}"
+
+            if isinstance(agent_item, (list, tuple)):
                 # Run parallel agents concurrently
                 async def _run_one(agent):
-                    res = await agent.run(current_task)
+                    sig = inspect.signature(agent.run)
+                    if "context" in sig.parameters:
+                        res = await agent.run(task_for_step, context=context)
+                    else:
+                        res = await agent.run(task_for_step)
+
                     output = res.get("result", "") if isinstance(res, dict) else str(res)
                     tokens = res.get("tokens", 0) if isinstance(res, dict) else 0
                     cost = res.get("cost_usd", 0.0) if isinstance(res, dict) else 0.0
-                    return agent.name, output, tokens, cost
+                    return agent.name, output, tokens, cost, res
 
                 results = await asyncio.gather(*[_run_one(a) for a in agent_item])
 
                 # Combine outputs and usage
                 merged_parts = []
-                for name, output, tokens, cost in results:
+                for name, output, tokens, cost, res in results:
                     merged_parts.append(f"[Agent {name}]:\n{output}")
                     total_tokens += tokens
                     total_cost += cost
+                    
+                    if self.state is not None:
+                        agent_output_map = self._output_maps.get(name)
+                        if agent_output_map:
+                            agent_output_map(self.state, res)
+                        else:
+                            self._auto_merge_state(self.state, res)
+
                 accumulated = "\n\n".join(merged_parts)
+
+                if self.state is not None:
+                    block_output_map = self._output_maps.get(block_key)
+                    if block_output_map:
+                        block_res = {name: res for name, _, _, _, res in results}
+                        block_output_map(self.state, block_res)
             else:
-                res = await agent_item.run(current_task)
+                agent = agent_item
+                sig = inspect.signature(agent.run)
+                if "context" in sig.parameters:
+                    res = await agent.run(task_for_step, context=context)
+                else:
+                    res = await agent.run(task_for_step)
+
                 accumulated = res.get("result", "") if isinstance(res, dict) else str(res)
                 if isinstance(res, dict):
                     total_tokens += res.get("tokens", 0)
                     total_cost += res.get("cost_usd", 0.0)
+
+                # Map outputs if state exists
+                if self.state is not None:
+                    output_map = self._output_maps.get(block_key)
+                    if output_map:
+                        output_map(self.state, res)
+                    else:
+                        self._auto_merge_state(self.state, res)
 
             if i < len(self.agents) - 1:
                 current_task = f"{task}\n\nPrior output:\n{accumulated}"
@@ -2749,7 +2845,51 @@ class Workflow:
             paused_nodes=[],
             skipped_nodes=[],
             ledger_db="",
+            state=self.state,
         )
+
+    def _auto_merge_state(self, state: Any, res: Any) -> None:
+        """Automatically merge agent outcome back to state fields."""
+        out_dict = {}
+        raw_text = ""
+        if isinstance(res, dict):
+            # Check if dict directly has keys of interest
+            for key in res:
+                if hasattr(state, key) and key not in ["result", "tokens", "cost_usd"]:
+                    out_dict[key] = res[key]
+            raw_text = res.get("result", "")
+        else:
+            raw_text = str(res)
+
+        # If direct fields weren't found, try parsing raw_text (or res['result']) as JSON
+        if not out_dict and raw_text:
+            from meshflow.core.output_validation import OutputValidator
+            import json
+            extracted = OutputValidator._extract_json(raw_text)
+            if extracted:
+                try:
+                    out_dict = json.loads(extracted)
+                except Exception:
+                    pass
+
+        merged_any = False
+        if isinstance(out_dict, dict):
+            for key, val in out_dict.items():
+                if hasattr(state, key):
+                    try:
+                        setattr(state, key, val)
+                        merged_any = True
+                    except Exception:
+                        pass
+
+        if not merged_any and raw_text:
+            for field in ["output", "latest_output", "result", "summary", "text"]:
+                if hasattr(state, field):
+                    try:
+                        setattr(state, field, raw_text)
+                        break
+                    except Exception:
+                        pass
 
     def run_multimodal(self, task: str, inputs: list[Any]) -> WorkflowResult:
         """Run the workflow with multi-modal inputs (images, documents, audio).
@@ -3041,11 +3181,12 @@ class Workflow:
             paused_nodes=last_result.paused_nodes if last_result else [],
             skipped_nodes=last_result.skipped_nodes if last_result else [],
             ledger_db=last_result.ledger_db if last_result else "",
+            state=self.state,
         )
 
     async def _run_workflow_once(self, task: str) -> WorkflowResult:
         has_parallel = any(isinstance(a, (list, tuple)) for a in self.agents)
-        if has_parallel:
+        if has_parallel or self.state is not None:
             return await self._run_async(task)
         else:
             from meshflow.agents.base import sandbox_mode_var

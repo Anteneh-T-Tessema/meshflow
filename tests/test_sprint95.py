@@ -327,3 +327,83 @@ class TestWorkflowCostCap:
         assert "a3" in result.blocked_nodes
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. Structured Shared State
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from pydantic import BaseModel
+
+class DemoState(BaseModel):
+    query: str = ""
+    research_notes: str = ""
+    rating: int = 0
+    refined_output: str = ""
+
+
+class TestWorkflowStructuredSharedState:
+    def test_shared_state_basic_auto_merge(self):
+        wf = Workflow(state_schema=DemoState, initial_state={"query": "test query"})
+        assert wf.state.query == "test query"
+        assert wf.state.research_notes == ""
+
+        # a1 returns a JSON string containing research_notes
+        a1 = Agent(name="a1", provider=MockProvider(['{"research_notes": "First research findings"}']))
+        wf.add(a1)
+
+        result = wf.run("search")
+        assert result.completed is True
+        assert result.state is not None
+        assert result.state.research_notes == "First research findings"
+        assert result.state.query == "test query"
+
+    def test_shared_state_custom_mappers(self):
+        wf = Workflow(state_schema=DemoState, initial_state={"query": "advanced test"})
+
+        a1 = Agent(name="a1", provider=MockProvider(["output of agent 1"]))
+        
+        # custom input map: converts state to input task
+        def inp_map(state):
+            return f"Process this: {state.query}"
+            
+        # custom output map: mutates state
+        def out_map(state, res):
+            # res is a dict like {"result": "...", "tokens": ...}
+            output_content = res.get("result", "") if isinstance(res, dict) else str(res)
+            state.research_notes = f"custom_{output_content}"
+
+        wf.add(a1, input_map=inp_map, output_map=out_map)
+
+        result = wf.run("run")
+        assert result.completed is True
+        assert result.state.research_notes == "custom_output of agent 1"
+
+    def test_shared_state_parallel(self):
+        wf = Workflow(state_schema=DemoState, initial_state={"query": "parallel query"})
+
+        a1 = Agent(name="a1", provider=MockProvider(['{"research_notes": "notes from a1"}']))
+        a2 = Agent(name="a2", provider=MockProvider(['{"rating": 90}']))
+
+        wf.add_parallel(a1, a2)
+
+        result = wf.run("run parallel")
+        assert result.completed is True
+        assert result.state.research_notes == "notes from a1"
+        assert result.state.rating == 90
+
+    def test_shared_state_run_until(self):
+        # We loop until rating is >= 9
+        responses = [
+            '{"refined_output": "draft 1", "rating": 5}',
+            '{"refined_output": "final report", "rating": 9}',
+        ]
+        wf = Workflow(state_schema=DemoState, initial_state={"query": "loop test"})
+        a1 = Agent(name="a1", provider=MockProvider(responses))
+        wf.add(a1)
+
+        result = wf.run_until("optimize", lambda res: res.state.rating >= 9, max_steps=3)
+        assert result.completed is True
+        assert result.state.rating == 9
+        assert result.state.refined_output == "final report"
+
+
+
