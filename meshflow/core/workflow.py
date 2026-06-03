@@ -2119,6 +2119,13 @@ class Workflow:
         self.agents.extend(agents)
         return self
 
+    def add_parallel(self, *agents: Any) -> "Workflow":
+        """Add parallel execution step with multiple agents. Supports chaining."""
+        if not agents:
+            raise ValueError("Must provide at least one agent for parallel execution.")
+        self.agents.append(list(agents))
+        return self
+
     def estimate_cost(self, task: str = "") -> "CostEstimate":
         """Estimate cost per agent before making any LLM calls.
 
@@ -2152,8 +2159,15 @@ class Workflow:
         input_tokens = max(len(task) // 4, 50)
         output_tokens = max(input_tokens // 4, 25)
 
+        flat_agents = []
+        for item in self.agents:
+            if isinstance(item, (list, tuple)):
+                flat_agents.extend(item)
+            else:
+                flat_agents.append(item)
+
         lines: list[_AgentCostLine] = []
-        for agent in self.agents:
+        for agent in flat_agents:
             name = getattr(agent, "name", str(agent))
             model = ""
             if hasattr(agent, "_resolve_model"):
@@ -2410,48 +2424,109 @@ class Workflow:
     async def _stream_async(self, task: str) -> "Any":
         """Async generator powering :meth:`stream` and :meth:`stream_multimodal`."""
         from meshflow.core.streaming import StreamChunk
+        import asyncio
 
         current_task = task
 
-        for i, agent in enumerate(self.agents):
-            # ── Emit routing event if model_router is attached ────────────────
-            if agent.model_router is not None:
+        for i, agent_item in enumerate(self.agents):
+            if isinstance(agent_item, (list, tuple)):
+                # Parallel streaming
+                q: asyncio.Queue[StreamChunk | None] = asyncio.Queue()
+                active = len(agent_item)
+                collected_outputs = {}
+
+                async def _run_agent(agent: Any) -> None:
+                    # Emit routing event if model_router is attached
+                    if agent.model_router is not None:
+                        try:
+                            routing = agent.model_router.route(current_task)
+                            is_local = getattr(routing, "is_local", False)
+                            await q.put(StreamChunk(
+                                kind="routing",
+                                node_name=agent.name,
+                                metadata={
+                                    "model": getattr(routing, "model", ""),
+                                    "tier": getattr(routing, "tier", ""),
+                                    "is_local": is_local,
+                                    "cascade_escalation": False,
+                                    "reason": f"composite score routed to tier '{getattr(routing, 'tier', '')}'"
+                                              f" ({'local' if is_local else 'cloud'})",
+                                },
+                            ))
+                        except Exception:
+                            pass
+
+                    await q.put(StreamChunk(kind="node_start", node_name=agent.name))
+                    collected: list[str] = []
+                    try:
+                        async for token in agent.stream(current_task):
+                            await q.put(StreamChunk(kind="token", content=token, node_name=agent.name))
+                            collected.append(token)
+                    except Exception as exc:
+                        await q.put(StreamChunk(kind="error", content=str(exc), node_name=agent.name))
+
+                    full_out = "".join(collected)
+                    collected_outputs[agent.name] = full_out
+                    await q.put(StreamChunk(kind="node_end", content=full_out, node_name=agent.name))
+                    await q.put(None)
+
+                tasks = [asyncio.create_task(_run_agent(a)) for a in agent_item]
+                finished = 0
+                while finished < active:
+                    chunk = await q.get()
+                    if chunk is None:
+                        finished += 1
+                    else:
+                        yield chunk
+
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+                sorted_agents = [a.name for a in agent_item]
+                merged_output = "\n\n".join(
+                    f"[Agent {name}]:\n{collected_outputs.get(name, '')}" for name in sorted_agents
+                )
+                if i < len(self.agents) - 1:
+                    current_task = f"{task}\n\nPrior output:\n{merged_output}"
+            else:
+                agent = agent_item
+                # ── Emit routing event if model_router is attached ────────────────
+                if agent.model_router is not None:
+                    try:
+                        routing = agent.model_router.route(current_task)
+                        is_local = getattr(routing, "is_local", False)
+                        yield StreamChunk(
+                            kind="routing",
+                            node_name=agent.name,
+                            metadata={
+                                "model": getattr(routing, "model", ""),
+                                "tier": getattr(routing, "tier", ""),
+                                "is_local": is_local,
+                                "cascade_escalation": False,
+                                "reason": f"composite score routed to tier '{getattr(routing, 'tier', '')}'"
+                                          f" ({'local' if is_local else 'cloud'})",
+                            },
+                        )
+                    except Exception:
+                        pass
+
+                yield StreamChunk(kind="node_start", node_name=agent.name)
+
+                # ── Stream tokens from the agent ──────────────────────────────────
+                accumulated: list[str] = []
                 try:
-                    routing = agent.model_router.route(current_task)
-                    is_local = getattr(routing, "is_local", False)
-                    yield StreamChunk(
-                        kind="routing",
-                        node_name=agent.name,
-                        metadata={
-                            "model": getattr(routing, "model", ""),
-                            "tier": getattr(routing, "tier", ""),
-                            "is_local": is_local,
-                            "cascade_escalation": False,
-                            "reason": f"composite score routed to tier '{getattr(routing, 'tier', '')}'"
-                                      f" ({'local' if is_local else 'cloud'})",
-                        },
-                    )
-                except Exception:
-                    pass
+                    async for token in agent.stream(current_task):
+                        accumulated.append(token)
+                        yield StreamChunk(kind="token", content=token, node_name=agent.name)
+                except Exception as exc:
+                    yield StreamChunk(kind="error", content=str(exc), node_name=agent.name)
+                    break
 
-            yield StreamChunk(kind="node_start", node_name=agent.name)
+                full_output = "".join(accumulated)
+                yield StreamChunk(kind="node_end", content=full_output, node_name=agent.name)
 
-            # ── Stream tokens from the agent ──────────────────────────────────
-            accumulated: list[str] = []
-            try:
-                async for token in agent.stream(current_task):
-                    accumulated.append(token)
-                    yield StreamChunk(kind="token", content=token, node_name=agent.name)
-            except Exception as exc:
-                yield StreamChunk(kind="error", content=str(exc), node_name=agent.name)
-                break
-
-            full_output = "".join(accumulated)
-            yield StreamChunk(kind="node_end", content=full_output, node_name=agent.name)
-
-            # ── Chain: pass output to next agent ──────────────────────────────
-            if i < len(self.agents) - 1:
-                current_task = f"{task}\n\nPrior output:\n{full_output}"
+                # ── Chain: pass output to next agent ──────────────────────────────
+                if i < len(self.agents) - 1:
+                    current_task = f"{task}\n\nPrior output:\n{full_output}"
 
         yield StreamChunk(kind="done", node_name="workflow")
 
@@ -2505,14 +2580,45 @@ class Workflow:
             return
 
         # First agent: multimodal — accumulate its output, yield tokens
-        first = self.agents[0]
-        yield StreamChunk(kind="node_start", node_name=first.name)
-        first_result = await first.run_multimodal(task, inputs, {})
-        first_output = first_result.get("result", "") if isinstance(first_result, dict) else str(first_result)
-        # Emit the full output as a single token chunk (multimodal doesn't stream)
-        if first_output:
-            yield StreamChunk(kind="token", content=first_output, node_name=first.name)
-        yield StreamChunk(kind="node_end", content=first_output, node_name=first.name)
+        first_item = self.agents[0]
+        if isinstance(first_item, (list, tuple)):
+            # Fallback: if first step is parallel, just run them (but typically multimodal has a single first agent)
+            # We can stream them concurrently:
+            q: asyncio.Queue[StreamChunk | None] = asyncio.Queue()
+            active = len(first_item)
+            collected_outputs = {}
+
+            async def _run_agent(agent: Any) -> None:
+                yield StreamChunk(kind="node_start", node_name=agent.name)
+                res = await agent.run_multimodal(task, inputs, {})
+                out = res.get("result", "") if isinstance(res, dict) else str(res)
+                collected_outputs[agent.name] = out
+                if out:
+                    await q.put(StreamChunk(kind="token", content=out, node_name=agent.name))
+                await q.put(StreamChunk(kind="node_end", content=out, node_name=agent.name))
+                await q.put(None)
+
+            tasks = [asyncio.create_task(_run_agent(a)) for a in first_item]
+            finished = 0
+            while finished < active:
+                chunk = await q.get()
+                if chunk is None:
+                    finished += 1
+                else:
+                    yield chunk
+            await asyncio.gather(*tasks, return_exceptions=True)
+            sorted_agents = [a.name for a in first_item]
+            first_output = "\n\n".join(
+                f"[Agent {name}]:\n{collected_outputs.get(name, '')}" for name in sorted_agents
+            )
+        else:
+            first = first_item
+            yield StreamChunk(kind="node_start", node_name=first.name)
+            first_result = await first.run_multimodal(task, inputs, {})
+            first_output = first_result.get("result", "") if isinstance(first_result, dict) else str(first_result)
+            if first_output:
+                yield StreamChunk(kind="token", content=first_output, node_name=first.name)
+            yield StreamChunk(kind="node_end", content=first_output, node_name=first.name)
 
         # Remaining agents: stream text
         if len(self.agents) > 1:
@@ -2535,8 +2641,16 @@ class Workflow:
         token = sandbox_mode_var.set(is_sandbox)
         try:
             if is_sandbox:
-                for agent in self.agents:
-                    agent.mode = "sandbox"
+                for item in self.agents:
+                    if isinstance(item, (list, tuple)):
+                        for agent in item:
+                            agent.mode = "sandbox"
+                    else:
+                        item.mode = "sandbox"
+
+            has_parallel = any(isinstance(a, (list, tuple)) for a in self.agents)
+            if has_parallel:
+                return run_sync(self._run_async(task))
 
             budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
             policy = policy_for_mode("standard", budget_usd=budget_usd)
@@ -2551,6 +2665,62 @@ class Workflow:
             return run_sync(team.run(task))
         finally:
             sandbox_mode_var.reset(token)
+
+    async def _run_async(self, task: str) -> WorkflowResult:
+        from meshflow.core.workflow import WorkflowResult
+        import time as _time
+        import asyncio
+
+        start_time = _time.monotonic()
+        total_cost = 0.0
+        total_tokens = 0
+        current_task = task
+        accumulated = ""
+
+        for i, agent_item in enumerate(self.agents):
+            if isinstance(agent_item, (list, tuple)):
+                # Run parallel agents concurrently
+                async def _run_one(agent):
+                    res = await agent.run(current_task)
+                    output = res.get("result", "") if isinstance(res, dict) else str(res)
+                    tokens = res.get("tokens", 0) if isinstance(res, dict) else 0
+                    cost = res.get("cost_usd", 0.0) if isinstance(res, dict) else 0.0
+                    return agent.name, output, tokens, cost
+
+                results = await asyncio.gather(*[_run_one(a) for a in agent_item])
+
+                # Combine outputs and usage
+                merged_parts = []
+                for name, output, tokens, cost in results:
+                    merged_parts.append(f"[Agent {name}]:\n{output}")
+                    total_tokens += tokens
+                    total_cost += cost
+                accumulated = "\n\n".join(merged_parts)
+            else:
+                res = await agent_item.run(current_task)
+                accumulated = res.get("result", "") if isinstance(res, dict) else str(res)
+                if isinstance(res, dict):
+                    total_tokens += res.get("tokens", 0)
+                    total_cost += res.get("cost_usd", 0.0)
+
+            if i < len(self.agents) - 1:
+                current_task = f"{task}\n\nPrior output:\n{accumulated}"
+
+        return WorkflowResult(
+            run_id="",
+            workflow_name="simple_workflow_team",
+            completed=True,
+            output=accumulated,
+            steps=[],
+            total_cost_usd=round(total_cost, 6),
+            total_tokens=total_tokens,
+            total_carbon_gco2=0.0,
+            duration_s=round(_time.monotonic() - start_time, 2),
+            blocked_nodes=[],
+            paused_nodes=[],
+            skipped_nodes=[],
+            ledger_db="",
+        )
 
     def run_multimodal(self, task: str, inputs: list[Any]) -> WorkflowResult:
         """Run the workflow with multi-modal inputs (images, documents, audio).
@@ -2595,6 +2765,7 @@ class Workflow:
         """Run the first agent with multimodal inputs, then chain as text."""
         from meshflow.agents.team import Team
         from meshflow.core.schemas import policy_for_mode
+        import asyncio
 
         budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
         policy = policy_for_mode("standard", budget_usd=budget_usd)
@@ -2602,9 +2773,32 @@ class Workflow:
         # First agent: pass multimodal inputs directly
         first_result: dict[str, Any] = {}
         if self.agents:
-            first_result = await self.agents[0].run_multimodal(task, inputs, {})
+            first_item = self.agents[0]
+            if isinstance(first_item, (list, tuple)):
+                # If first item is parallel, run them concurrently:
+                async def _run_one(agent):
+                    res = await agent.run_multimodal(task, inputs, {})
+                    out = res.get("result", "") if isinstance(res, dict) else str(res)
+                    tokens = res.get("tokens", 0) if isinstance(res, dict) else 0
+                    cost = res.get("cost_usd", 0.0) if isinstance(res, dict) else 0.0
+                    return agent.name, out, tokens, cost
+                results = await asyncio.gather(*[_run_one(a) for a in first_item])
+                merged_parts = []
+                total_t = 0
+                total_c = 0.0
+                for name, out, tokens, cost in results:
+                    merged_parts.append(f"[Agent {name}]:\n{out}")
+                    total_t += tokens
+                    total_c += cost
+                first_result = {
+                    "result": "\n\n".join(merged_parts),
+                    "tokens": total_t,
+                    "cost_usd": total_c,
+                }
+            else:
+                first_result = await first_item.run_multimodal(task, inputs, {})
 
-        # Remaining agents: chain as text (standard sequential)
+        # Remaining agents: chain as text (standard sequential / parallel)
         if len(self.agents) <= 1:
             return WorkflowResult(
                 run_id="",
@@ -2623,18 +2817,27 @@ class Workflow:
             )
 
         chained_task = first_result.get("result", task)
-        team = Team(
-            name="multimodal_workflow_team",
-            agents=self.agents[1:],
-            pattern="sequential",
-            policy=policy,
-            budget_usd=budget_usd,
-        )
-        result = await team.run(chained_task)
-        # Fold first-agent cost into result
-        result.total_cost_usd += first_result.get("cost_usd", 0.0)
-        result.total_tokens += first_result.get("tokens", 0)
-        return result
+        has_parallel = any(isinstance(a, (list, tuple)) for a in self.agents[1:])
+        if not has_parallel:
+            team = Team(
+                name="multimodal_workflow_team",
+                agents=self.agents[1:],
+                pattern="sequential",
+                policy=policy,
+                budget_usd=budget_usd,
+            )
+            result = await team.run(chained_task)
+            # Fold first-agent cost into result
+            result.total_cost_usd += first_result.get("cost_usd", 0.0)
+            result.total_tokens += first_result.get("tokens", 0)
+            return result
+        else:
+            rest_wf = Workflow(cost_cap=self.cost_cap, mode=self.mode)
+            rest_wf.agents = self.agents[1:]
+            result = await rest_wf._run_async(chained_task)
+            result.total_cost_usd += first_result.get("cost_usd", 0.0)
+            result.total_tokens += first_result.get("tokens", 0)
+            return result
 
     def batch_run(
         self,
@@ -2710,3 +2913,155 @@ class Workflow:
                     )
 
         return list(await asyncio.gather(*[_one(t) for t in tasks]))
+
+    def run_until(self, task: str, condition: Any, max_steps: int = 5) -> WorkflowResult:
+        """Run the workflow repeatedly on *task* until *condition* is met.
+
+        On subsequent iterations, the task is updated to include the prior output
+        and a refinement directive.
+
+        Parameters
+        ----------
+        task:       The original task.
+        condition:  A quality condition. Can be:
+                    - a float (threshold for confidence, e.g. 0.85)
+                    - a string condition expression (e.g. "confidence >= 0.85")
+                    - a callable/custom function (e.g. lambda result: ...)
+                    - an assertion (which is also a callable or string)
+        max_steps:  Maximum number of refinement iterations (defaults to 5).
+        """
+        from meshflow.integrations._utils import run_sync
+        return run_sync(self._run_until_async(task, condition, max_steps))
+
+    async def _run_until_async(self, task: str, condition: Any, max_steps: int) -> WorkflowResult:
+        from meshflow.core.workflow import WorkflowResult
+        import time as _time
+
+        start_time = _time.monotonic()
+        current_task = task
+        last_result = None
+        total_cost = 0.0
+        total_tokens = 0
+
+        for step in range(1, max_steps + 1):
+            # Run the entire workflow on current_task
+            result = await self._run_workflow_once(current_task)
+            last_result = result
+            total_cost += result.total_cost_usd
+            total_tokens += result.total_tokens
+
+            # Evaluate condition
+            if self._eval_loop_condition(result, condition):
+                break
+
+            # If not met, update current_task for the next refinement iteration
+            current_task = (
+                f"{task}\n\n"
+                f"Previous attempt:\n{result.output}\n\n"
+                f"Please refine and improve the previous output to meet the quality criteria."
+            )
+
+        # Return the final result with accumulated usage stats
+        return WorkflowResult(
+            run_id=last_result.run_id if last_result else "",
+            workflow_name=last_result.workflow_name if last_result else "run_until_workflow",
+            completed=True,
+            output=last_result.output if last_result else "",
+            steps=last_result.steps if last_result else [],
+            total_cost_usd=round(total_cost, 6),
+            total_tokens=total_tokens,
+            total_carbon_gco2=last_result.total_carbon_gco2 if last_result else 0.0,
+            duration_s=round(_time.monotonic() - start_time, 2),
+            blocked_nodes=last_result.blocked_nodes if last_result else [],
+            paused_nodes=last_result.paused_nodes if last_result else [],
+            skipped_nodes=last_result.skipped_nodes if last_result else [],
+            ledger_db=last_result.ledger_db if last_result else "",
+        )
+
+    async def _run_workflow_once(self, task: str) -> WorkflowResult:
+        has_parallel = any(isinstance(a, (list, tuple)) for a in self.agents)
+        if has_parallel:
+            return await self._run_async(task)
+        else:
+            from meshflow.agents.base import sandbox_mode_var
+            from meshflow.agents.team import Team
+            from meshflow.core.schemas import policy_for_mode
+
+            is_sandbox = (self.mode == "sandbox")
+            token = sandbox_mode_var.set(is_sandbox)
+            try:
+                if is_sandbox:
+                    for agent in self.agents:
+                        agent.mode = "sandbox"
+
+                budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
+                policy = policy_for_mode("standard", budget_usd=budget_usd)
+
+                team = Team(
+                    name="simple_workflow_team",
+                    agents=self.agents,
+                    pattern="sequential",
+                    policy=policy,
+                    budget_usd=budget_usd,
+                )
+                return await team.run(task)
+            finally:
+                sandbox_mode_var.reset(token)
+
+    def _eval_loop_condition(self, result: WorkflowResult, condition: Any) -> bool:
+        if condition is None:
+            return True
+
+        output_content = result.output or ""
+
+        # 1. If condition is a callable
+        if callable(condition):
+            try:
+                return bool(condition(result))
+            except Exception:
+                try:
+                    return bool(condition(output_content))
+                except Exception:
+                    return False
+
+        # Parse confidence score from output_content to use in float or string conditions
+        from meshflow.agents.team import _parse_confidence
+        confidence = _parse_confidence(output_content)
+
+        # Also try to extract stated confidence from the last step record
+        if result.steps:
+            last_step = result.steps[-1]
+            if hasattr(last_step, "output") and hasattr(last_step.output, "confidence"):
+                confidence = max(confidence, last_step.output.confidence)
+            elif hasattr(last_step, "record") and hasattr(last_step.record, "uncertainty"):
+                # in case uncertainty composite score is present (it represents confidence/uncertainty)
+                pass
+
+        # 2. If condition is a float
+        if isinstance(condition, (int, float)):
+            return confidence >= float(condition)
+
+        # 3. If condition is a string (e.g. "confidence >= 0.85" or "CONFIDENCE score")
+        if isinstance(condition, str):
+            cond_str = condition.strip().lower()
+            # If the string contains a relational operator (e.g., >=, >, ==, etc.)
+            import re
+            m = re.match(r"(?:confidence\s*)?(>=|<=|>|<|==)\s*([0-9]*\.?[0-9]+)", cond_str)
+            if m:
+                op, val_str = m.groups()
+                val = float(val_str)
+                if op == ">=":
+                    return confidence >= val
+                elif op == "<=":
+                    return confidence <= val
+                elif op == ">":
+                    return confidence > val
+                elif op == "<":
+                    return confidence < val
+                elif op == "==":
+                    return confidence == val
+
+            # Simple substring checking in the output content as an assertion
+            return condition in output_content
+
+        return False

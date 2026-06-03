@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, get_args, get_origin
 
@@ -80,8 +81,41 @@ def _py_type_to_json_schema(annotation: Any) -> dict[str, Any]:
     return {}
 
 
+def _parse_param_description(doc: str, param_name: str) -> str:
+    if not doc:
+        return ""
+
+    # Try Sphinx style: :param param_name: description
+    sphinx_pattern = r"(?::param\s+" + re.escape(param_name) + r"\s*:\s*|:parameter\s+" + re.escape(param_name) + r"\s*:\s*)([^\n]+)"
+    m = re.search(sphinx_pattern, doc, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Try Google style: param_name (type): description or param_name: description
+    google_pattern = r"^\s*" + re.escape(param_name) + r"(?:\s*\([^)]+\))?\s*:\s*([^\n]+)"
+    m = re.search(google_pattern, doc, re.MULTILINE | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Try simple param_name - description
+    dash_pattern = r"^\s*" + re.escape(param_name) + r"(?:\s*\([^)]+\))?\s*-\s*([^\n]+)"
+    m = re.search(dash_pattern, doc, re.MULTILINE | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Existing prefix match
+    if f"{param_name}:" in doc:
+        for line in doc.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(f"{param_name}:"):
+                return stripped[len(param_name) + 1:].strip()
+
+    return ""
+
+
 def _build_input_schema(fn: Callable[..., Any]) -> dict[str, Any]:
     """Build a JSON Schema 'object' for all parameters of *fn*."""
+    import re
     sig = inspect.signature(fn)
     hints: dict[str, Any] = {}
     try:
@@ -93,20 +127,17 @@ def _build_input_schema(fn: Callable[..., Any]) -> dict[str, Any]:
     properties: dict[str, Any] = {}
     required: list[str] = []
 
+    doc = inspect.getdoc(fn) or ""
+
     for param_name, param in sig.parameters.items():
         if param_name in ("self", "cls"):
             continue
         annotation = hints.get(param_name, param.annotation)
         prop = _py_type_to_json_schema(annotation)
 
-        # Grab inline description from default docstring-style comments if available
-        doc = inspect.getdoc(fn) or ""
-        if f"{param_name}:" in doc:
-            for line in doc.splitlines():
-                stripped = line.strip()
-                if stripped.startswith(f"{param_name}:"):
-                    prop["description"] = stripped[len(param_name) + 1:].strip()
-                    break
+        desc = _parse_param_description(doc, param_name)
+        if desc:
+            prop["description"] = desc
 
         properties[param_name] = prop
         if param.default is inspect.Parameter.empty:
@@ -236,28 +267,50 @@ global_registry = ToolRegistry()
 
 
 def tool(
-    name: str | None = None,
+    name: str | Callable[..., Any] | None = None,
     description: str = "",
     risk: RiskTier = RiskTier.READ_ONLY,
     tags: list[str] | None = None,
     registry: ToolRegistry | None = None,
-) -> Callable[[Callable[..., Any]], Tool]:
+) -> Any:
     """Decorator to define and register a governed tool.
 
     @tool(name="web_search", description="Search the web", risk=RiskTier.EXTERNAL_IO)
     async def web_search(query: str) -> str:
         ...
     """
+    reg = global_registry if registry is None else registry
 
-    def decorator(fn: Callable[..., Any]) -> Tool:
+    # Case 1: Used as a direct decorator, e.g. @tool
+    if callable(name):
+        fn = name
+        t_name = fn.__name__
+        doc = (fn.__doc__ or "").strip()
+        t_desc = doc.split("\n")[0].strip() if doc else ""
         t = Tool(
-            name=name or fn.__name__,
-            description=description or (fn.__doc__ or "").strip().split("\n")[0],
+            name=t_name,
+            description=t_desc,
             fn=fn,
             risk=risk,
             tags=tags or [],
         )
-        reg = global_registry if registry is None else registry
+        reg.register(t)
+        return t
+
+    # Case 2: Used with arguments, e.g. @tool(description="...")
+    def decorator(fn: Callable[..., Any]) -> Tool:
+        t_name = name or fn.__name__
+        t_desc = description
+        if not t_desc:
+            doc = (fn.__doc__ or "").strip()
+            t_desc = doc.split("\n")[0].strip() if doc else ""
+        t = Tool(
+            name=t_name,
+            description=t_desc,
+            fn=fn,
+            risk=risk,
+            tags=tags or [],
+        )
         reg.register(t)
         return t
 

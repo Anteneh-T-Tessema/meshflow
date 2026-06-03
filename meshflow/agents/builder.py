@@ -91,6 +91,7 @@ class _BuiltAgent(BaseAgent):
         knowledge: list[Any] | None = None,
         memory_backend: Any = None,
         memory_session_id: str = "",
+        memory_compress_threshold: int = 8000,
     ) -> None:
         super().__init__(config, policy)
         self._tools = tools
@@ -105,6 +106,7 @@ class _BuiltAgent(BaseAgent):
         )
         self._memory_backend: Any = memory_backend
         self._memory_session_id: str = memory_session_id or config.agent_id
+        self._memory_compress_threshold = memory_compress_threshold
         # Restore persisted memory if backend available
         if memory_backend is not None and memory_enabled:
             self._restore_memory()
@@ -120,6 +122,42 @@ class _BuiltAgent(BaseAgent):
             self._knowledge: Any = AgentKnowledge(knowledge)
         else:
             self._knowledge = None
+
+    async def _maybe_compress_memory(self) -> None:
+        if not self._memory_enabled or not self._memory:
+            return
+
+        working_text = "\n".join(item.content for item in self._memory._working)
+        if len(working_text) > self._memory_compress_threshold:
+            system = (
+                "You are an agent memory compressor. Summarize the following sequence of historical "
+                "steps, decisions, facts, and outcomes into a concise, high-density summary. "
+                "Retain crucial details, facts, code snippets, and outcomes. Avoid fluff."
+            )
+            messages = [{"role": "user", "content": f"Memory to compress:\n{working_text}"}]
+            try:
+                summary, _, _ = await self.think(messages, system)
+                if summary:
+                    # Clear working memory except the most recent one (to keep immediate context)
+                    most_recent = None
+                    if self._memory._working:
+                        most_recent = self._memory._working[-1]
+
+                    self._memory._working.clear()
+
+                    # Add the summary as a compressed episodic memory item
+                    from meshflow.intelligence.memory import MemoryItem
+                    summary_item = MemoryItem(
+                        content=f"[Compressed Memory Summary]: {summary}",
+                        tier="episodic",
+                        metadata={"step": self._memory._step_count, "compressed": True}
+                    )
+                    self._memory._episodic.append(summary_item)
+
+                    if most_recent is not None:
+                        self._memory._working.append(most_recent)
+            except Exception:
+                pass  # Do not crash the step if memory compression fails
 
     def _restore_memory(self) -> None:
         from meshflow.intelligence.memory_backends import restore_memory
@@ -370,6 +408,7 @@ class _BuiltAgent(BaseAgent):
         # ── Memory ────────────────────────────────────────────────────────────
         if self._memory_enabled:
             self._memory.add(content, metadata={"task": task[:100], "confidence": confidence})
+            await self._maybe_compress_memory()
             self._persist_memory()
 
         result: dict[str, Any] = {
@@ -469,6 +508,7 @@ class Agent:
     memory: bool = False
     memory_backend: Any = None     # MemoryBackend instance or "sqlite://path.db" shorthand
     memory_session_id: str = ""    # defaults to agent.name when empty
+    memory_compress_threshold: int = 8000
     cache: Any = None              # LLMCache instance, True (→ InMemoryCache), or False
     healing: Any = None            # HealingPolicy instance or None (disabled)
     teachable: bool = False        # wrap with TeachableAgent to learn from corrections
@@ -598,6 +638,7 @@ class Agent:
             list(self.knowledge) if self.knowledge else None,
             memory_backend=self._resolve_memory_backend(),
             memory_session_id=self.memory_session_id or self.name,
+            memory_compress_threshold=self.memory_compress_threshold,
         )
         # Attach optional model router, context pruner, and thinking config
         built._model_router = self.model_router
