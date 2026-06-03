@@ -406,4 +406,82 @@ class TestWorkflowStructuredSharedState:
         assert result.state.refined_output == "final report"
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. Declarative Conditional Routing
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestWorkflowConditionalRouting:
+    def test_conditional_routing_agent_selection(self):
+        wf = Workflow(state_schema=DemoState, initial_state={"rating": 10})
+        
+        a_high = Agent(name="high_agent", provider=MockProvider(["High branch executed"]))
+        a_low = Agent(name="low_agent", provider=MockProvider(["Low branch executed"]))
+
+        def select_branch(state):
+            return "high" if state.rating > 5 else "low"
+
+        wf.add_conditional(select_branch, {"high": a_high, "low": a_low})
+
+        result = wf.run("test task")
+        assert result.completed is True
+        assert "High branch executed" in result.output
+        assert "Low branch executed" not in result.output
+
+    def test_conditional_routing_parallel(self):
+        wf = Workflow(state_schema=DemoState, initial_state={"rating": 3})
+        
+        a_high = Agent(name="high_agent", provider=MockProvider(["High branch executed"]))
+        a_parallel_1 = Agent(name="p1", provider=MockProvider(["p1 result"]))
+        a_parallel_2 = Agent(name="p2", provider=MockProvider(["p2 result"]))
+
+        def select_branch(state):
+            return "high" if state.rating > 5 else "low"
+
+        wf.add_conditional(select_branch, {
+            "high": a_high,
+            "low": [a_parallel_1, a_parallel_2]
+        })
+
+        result = wf.run("test task")
+        assert result.completed is True
+        assert "[Agent p1]" in result.output
+        assert "[Agent p2]" in result.output
+
+    def test_conditional_routing_sub_workflow(self):
+        wf_parent = Workflow(state_schema=DemoState, initial_state={"rating": 8})
+        
+        wf_sub = Workflow(state_schema=DemoState)
+        a_sub_1 = Agent(name="sub_agent", provider=MockProvider(['{"refined_output": "sub-workflow output", "rating": 12}']))
+        wf_sub.add(a_sub_1)
+
+        def select_branch(state):
+            return "sub" if state.rating > 5 else "none"
+
+        wf_parent.add_conditional(select_branch, {"sub": wf_sub})
+
+        result = wf_parent.run("run parent")
+        assert result.completed is True
+        assert "sub-workflow output" in result.output
+        assert result.state.rating == 12
+        assert result.state.refined_output == "sub-workflow output"
+
+    def test_conditional_routing_fallback_task(self):
+        wf = Workflow()
+        
+        a_coder = Agent(name="coder", provider=MockProvider(["Code generated"]))
+        a_writer = Agent(name="writer", provider=MockProvider(["Essay written"]))
+
+        def route_by_task(task):
+            return "code" if "code" in task else "write"
+
+        wf.add_conditional(route_by_task, {"code": a_coder, "write": a_writer})
+
+        result_code = wf.run("Write some code")
+        assert "Code generated" in result_code.output
+
+        result_write = wf.run("Write an essay")
+        assert "Essay written" in result_write.output
+
+
+
 

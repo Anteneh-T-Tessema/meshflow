@@ -148,6 +148,12 @@ class _LoopEdge:
 
 
 @dataclass
+class _ConditionalBranch:
+    condition: Any
+    branches: dict[str, Any]
+
+
+@dataclass
 class WorkflowResult:
     """Final outcome of running a WorkflowDefinition."""
 
@@ -2178,6 +2184,15 @@ class Workflow:
             self._output_maps[block_key] = output_map
         return self
 
+    def add_conditional(self, condition: Any, branches: dict[str, Any]) -> "Workflow":
+        """Add a conditional branch step based on a state condition. Supports chaining."""
+        if not callable(condition):
+            raise TypeError("condition must be a callable.")
+        if not isinstance(branches, dict):
+            raise TypeError("branches must be a dictionary.")
+        self.agents.append(_ConditionalBranch(condition, branches))
+        return self
+
     def estimate_cost(self, task: str = "") -> "CostEstimate":
         """Estimate cost per agent before making any LLM calls.
 
@@ -2701,7 +2716,8 @@ class Workflow:
                         item.mode = "sandbox"
 
             has_parallel = any(isinstance(a, (list, tuple)) for a in self.agents)
-            if has_parallel or self.state is not None:
+            has_conditional = any(isinstance(a, _ConditionalBranch) for a in self.agents)
+            if has_parallel or has_conditional or self.state is not None:
                 return run_sync(self._run_async(task))
 
             budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
@@ -2741,7 +2757,9 @@ class Workflow:
                     blocked_nodes.append(agent_item.name)
                 continue
 
-            if isinstance(agent_item, (list, tuple)):
+            if isinstance(agent_item, _ConditionalBranch):
+                block_key = "__conditional__"
+            elif isinstance(agent_item, (list, tuple)):
                 block_key = tuple(a.name for a in agent_item)
             else:
                 block_key = agent_item.name
@@ -2758,7 +2776,75 @@ class Workflow:
                     state_str = json.dumps(state_data, indent=2)
                     task_for_step = f"{current_task}\n\nCurrent State:\n{state_str}"
 
-            if isinstance(agent_item, (list, tuple)):
+            if isinstance(agent_item, _ConditionalBranch):
+                if self.state is None:
+                    try:
+                        branch_key = agent_item.condition(current_task)
+                    except Exception:
+                        branch_key = agent_item.condition(None)
+                else:
+                    branch_key = agent_item.condition(self.state)
+
+                chosen_item = agent_item.branches.get(branch_key)
+                if chosen_item is None:
+                    continue
+
+                if isinstance(chosen_item, Workflow):
+                    sub_res = await chosen_item._run_async(current_task)
+                    accumulated = sub_res.output
+                    total_tokens += sub_res.total_tokens
+                    total_cost += sub_res.total_cost_usd
+                    if self.state is not None and sub_res.state is not None:
+                        sub_data = sub_res.state.model_dump() if hasattr(sub_res.state, "model_dump") else sub_res.state.dict()
+                        for k, v in sub_data.items():
+                            if hasattr(self.state, k):
+                                try:
+                                    setattr(self.state, k, v)
+                                except Exception:
+                                    pass
+                elif isinstance(chosen_item, (list, tuple)):
+                    async def _run_one(agent):
+                        sig = inspect.signature(agent.run)
+                        if "context" in sig.parameters:
+                            res = await agent.run(task_for_step, context=context)
+                        else:
+                            res = await agent.run(task_for_step)
+                        output = res.get("result", "") if isinstance(res, dict) else str(res)
+                        tokens = res.get("tokens", 0) if isinstance(res, dict) else 0
+                        cost = res.get("cost_usd", 0.0) if isinstance(res, dict) else 0.0
+                        return agent.name, output, tokens, cost, res
+
+                    results = await asyncio.gather(*[_run_one(a) for a in chosen_item])
+                    merged_parts = []
+                    for name, output, tokens, cost, res in results:
+                        merged_parts.append(f"[Agent {name}]:\n{output}")
+                        total_tokens += tokens
+                        total_cost += cost
+                        if self.state is not None:
+                            agent_output_map = self._output_maps.get(name)
+                            if agent_output_map:
+                                agent_output_map(self.state, res)
+                            else:
+                                self._auto_merge_state(self.state, res)
+                    accumulated = "\n\n".join(merged_parts)
+                else:
+                    agent = chosen_item
+                    sig = inspect.signature(agent.run)
+                    if "context" in sig.parameters:
+                        res = await agent.run(task_for_step, context=context)
+                    else:
+                        res = await agent.run(task_for_step)
+                    accumulated = res.get("result", "") if isinstance(res, dict) else str(res)
+                    if isinstance(res, dict):
+                        total_tokens += res.get("tokens", 0)
+                        total_cost += res.get("cost_usd", 0.0)
+                    if self.state is not None:
+                        agent_output_map = self._output_maps.get(agent.name)
+                        if agent_output_map:
+                            agent_output_map(self.state, res)
+                        else:
+                            self._auto_merge_state(self.state, res)
+            elif isinstance(agent_item, (list, tuple)):
                 # Run parallel agents concurrently
                 async def _run_one(agent):
                     sig = inspect.signature(agent.run)
@@ -3186,7 +3272,8 @@ class Workflow:
 
     async def _run_workflow_once(self, task: str) -> WorkflowResult:
         has_parallel = any(isinstance(a, (list, tuple)) for a in self.agents)
-        if has_parallel or self.state is not None:
+        has_conditional = any(isinstance(a, _ConditionalBranch) for a in self.agents)
+        if has_parallel or has_conditional or self.state is not None:
             return await self._run_async(task)
         else:
             from meshflow.agents.base import sandbox_mode_var
