@@ -555,17 +555,35 @@ class AdaptiveModelTierRouter(ModelTierRouter):
         self._pending: dict[str, tuple[str, float, str, str, bool]] = {}
 
         # ── Thompson Sampling posteriors ──────────────────────────────────────
-        # Per tier: Beta(α, β) distribution over success rate.
-        # α = cumulative successes, β = cumulative failures.
+        # Two levels:
+        #
+        # 1. Global per-tier: Beta(α, β) — fast convergence, less specific.
+        #    Used when a bucket has < _TS_BUCKET_MIN_OBS observations.
+        #
+        # 2. Per-composite-bucket per-tier: Beta(α_b, β_b) — finer-grained.
+        #    5 equal-width buckets of composite score: [0, 0.2), [0.2, 0.4),
+        #    [0.4, 0.6), [0.6, 0.8), [0.8, 1.0].
+        #    Used when a bucket has >= _TS_BUCKET_MIN_OBS observations, giving
+        #    the router separate learning for simple vs complex tasks.
+        #
         # Prior: Beta(1, 1) = uniform — no bias at cold start.
-        # Effective_success = quality_score >= 0.5 (matches RoutingOutcome.effective_success).
+        _N_BUCKETS: int = 5
         n = len(self._tiers)
-        self._ts_alpha: list[float] = [1.0] * n   # successes per tier
-        self._ts_beta_: list[float] = [1.0] * n   # failures per tier
-        # Quality threshold for Thompson Sampling: route to cheapest tier whose
-        # sampled success-rate draws above this.  Fixed at 0.5 (mirrors
-        # RoutingOutcome.effective_success).
+        self._ts_alpha: list[float] = [1.0] * n    # global successes per tier
+        self._ts_beta_: list[float] = [1.0] * n    # global failures per tier
+        # Per-bucket posteriors: _ts_alpha_b[tier_idx][bucket_idx]
+        self._ts_alpha_b: list[list[float]] = [[1.0] * _N_BUCKETS for _ in range(n)]
+        self._ts_beta_b:  list[list[float]] = [[1.0] * _N_BUCKETS for _ in range(n)]
+        self._ts_n_buckets: int = _N_BUCKETS
+        # Quality threshold — mirrors RoutingOutcome.effective_success.
         self._ts_threshold: float = 0.5
+        # Minimum observations in a bucket before switching from global → bucket TS
+        self._ts_bucket_min_obs: int = 5
+
+        # ── Routing history (last N decisions) ───────────────────────────────
+        # Each entry: (routing_id, tier_name, model, composite, was_exploration, ts_mean)
+        self._history_maxlen: int = 100
+        self._history: list[dict[str, Any]] = []
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -607,44 +625,51 @@ class AdaptiveModelTierRouter(ModelTierRouter):
         tier_idx = optimal_idx
         was_exploration = False
 
-        # ── Thompson Sampling (data-gated hybrid) ────────────────────────────
-        # Phase 1 — cold start (< _TS_MIN_OBS observations on the greedy tier):
-        #   Trust the composite score; no TS adjustment.  Preserves task-complexity
-        #   routing while we accumulate enough data to form informative posteriors.
-        #
-        # Phase 2 — warm (≥ _TS_MIN_OBS observations):
-        #   Sample Beta(α+1, β+1) for the greedy tier.
-        #   • Greedy tier samples ABOVE threshold → stay (no exploration needed).
-        #   • Greedy tier samples BELOW threshold → check neighbors:
-        #       cheaper first  → de-escalate if it's reliably performing
-        #       more expensive → escalate if it's proven to do better
-        #   Cheaper neighbors are always preferred over more expensive ones.
-        _TS_MIN_OBS = 5   # minimum observations before TS adjusts routing
-        greedy_n_obs = (
-            self._ts_alpha[optimal_idx] + self._ts_beta_[optimal_idx] - 2.0
+        # ── Thompson Sampling (data-gated hybrid with per-bucket refinement) ──
+        # Bucket = int(composite * n_buckets) clamped to [0, n_buckets-1].
+        # Two-level posterior hierarchy:
+        #   Level 1 (global):  one Beta per tier — fast convergence at cold start.
+        #   Level 2 (bucket):  one Beta per (tier × bucket) — finer-grained once
+        #                      enough bucket-specific data has accumulated.
+        _TS_MIN_OBS = 5   # global: min obs before TS adjusts routing
+        bucket_idx = min(
+            int(composite * self._ts_n_buckets),
+            self._ts_n_buckets - 1,
         )
-        if greedy_n_obs >= _TS_MIN_OBS:
-            greedy_sample = random.betavariate(
-                self._ts_alpha[optimal_idx] + 1.0,
-                self._ts_beta_[optimal_idx] + 1.0,
+
+        def _alpha(i: int) -> float:
+            """Return best-available alpha for tier i, given current bucket."""
+            b_n_obs = (
+                self._ts_alpha_b[i][bucket_idx] + self._ts_beta_b[i][bucket_idx] - 2.0
             )
+            if b_n_obs >= self._ts_bucket_min_obs:
+                return self._ts_alpha_b[i][bucket_idx]
+            return self._ts_alpha[i]
+
+        def _beta(i: int) -> float:
+            """Return best-available beta for tier i, given current bucket."""
+            b_n_obs = (
+                self._ts_alpha_b[i][bucket_idx] + self._ts_beta_b[i][bucket_idx] - 2.0
+            )
+            if b_n_obs >= self._ts_bucket_min_obs:
+                return self._ts_beta_b[i][bucket_idx]
+            return self._ts_beta_[i]
+
+        greedy_n_obs = _alpha(optimal_idx) + _beta(optimal_idx) - 2.0
+        if greedy_n_obs >= _TS_MIN_OBS:
+            greedy_sample = random.betavariate(_alpha(optimal_idx) + 1.0, _beta(optimal_idx) + 1.0)
             if greedy_sample < self._ts_threshold:
-                # Greedy tier uncertain/underperforming — look for a better option.
-                # Prefer cheaper (de-escalate), then more expensive (escalate).
                 for candidate in [optimal_idx - 1, optimal_idx + 1]:
                     if 0 <= candidate < len(self._tiers):
-                        cand_n_obs = (
-                            self._ts_alpha[candidate] + self._ts_beta_[candidate] - 2.0
-                        )
-                        if cand_n_obs >= 3:   # need some data on the candidate too
+                        cand_n_obs = _alpha(candidate) + _beta(candidate) - 2.0
+                        if cand_n_obs >= 3:
                             cand_sample = random.betavariate(
-                                self._ts_alpha[candidate] + 1.0,
-                                self._ts_beta_[candidate] + 1.0,
+                                _alpha(candidate) + 1.0, _beta(candidate) + 1.0
                             )
                             if cand_sample >= self._ts_threshold:
                                 tier_idx = candidate
                                 was_exploration = True
-                                break   # stop at cheapest viable candidate
+                                break
 
         chosen = self._tiers[tier_idx]
 
@@ -712,10 +737,40 @@ class AdaptiveModelTierRouter(ModelTierRouter):
             (i for i, t in enumerate(self._tiers) if t.name == tier), None
         )
         if tier_pos is not None:
+            # Level 1: global per-tier posterior
             if effective:
                 self._ts_alpha[tier_pos] += 1.0
             else:
                 self._ts_beta_[tier_pos] += 1.0
+            # Level 2: per-composite-bucket posterior
+            bkt = min(
+                int(composite * self._ts_n_buckets),
+                self._ts_n_buckets - 1,
+            )
+            if effective:
+                self._ts_alpha_b[tier_pos][bkt] += 1.0
+            else:
+                self._ts_beta_b[tier_pos][bkt] += 1.0
+
+        # ── Record routing history ─────────────────────────────────────────
+        ts_mean = (
+            self._ts_alpha[tier_pos] / (self._ts_alpha[tier_pos] + self._ts_beta_[tier_pos])
+            if tier_pos is not None else 0.5
+        )
+        self._history.append({
+            "routing_id": run_id,
+            "tier": tier,
+            "model": model,
+            "composite": composite,
+            "was_exploration": was_exploration,
+            "effective_success": effective,
+            "quality": quality,
+            "latency_ms": latency_ms,
+            "cost_usd": actual_cost_usd,
+            "ts_mean": round(ts_mean, 3),
+        })
+        if len(self._history) > self._history_maxlen:
+            self._history = self._history[-self._history_maxlen:]
 
         from meshflow.agents.adaptation import RoutingOutcome
         outcome = RoutingOutcome.build(
@@ -769,14 +824,25 @@ class AdaptiveModelTierRouter(ModelTierRouter):
             f"  last_adapted: {self._last_adapted_at or 'never'}",
             f"  Thompson Sampling posteriors (α=successes, β=failures):",
         ]
+        bucket_idx = min(int(ts.composite * self._ts_n_buckets), self._ts_n_buckets - 1)
         for i, t in enumerate(self._tiers):
-            alpha = self._ts_alpha[i]
-            beta_ = self._ts_beta_[i]
-            n_obs = alpha + beta_ - 2   # subtract uniform prior
-            mean  = alpha / (alpha + beta_)
+            # Global posterior
+            g_alpha = self._ts_alpha[i]
+            g_beta  = self._ts_beta_[i]
+            g_n_obs = g_alpha + g_beta - 2
+            g_mean  = g_alpha / (g_alpha + g_beta)
+            # Bucket posterior for current task's composite range
+            b_alpha = self._ts_alpha_b[i][bucket_idx]
+            b_beta  = self._ts_beta_b[i][bucket_idx]
+            b_n_obs = b_alpha + b_beta - 2
+            b_mean  = b_alpha / (b_alpha + b_beta)
+            using_bucket = b_n_obs >= self._ts_bucket_min_obs
+            active = "bucket" if using_bucket else "global"
             lines.append(
-                f"    [{t.name:8s}] α={alpha:.1f} β={beta_:.1f}  "
-                f"mean={mean:.2f}  n_obs={n_obs:.0f}"
+                f"    [{t.name:8s}] global: α={g_alpha:.0f} β={g_beta:.0f} "
+                f"mean={g_mean:.2f} n={g_n_obs:.0f}  "
+                f"bucket[{bucket_idx}]: α={b_alpha:.0f} β={b_beta:.0f} "
+                f"mean={b_mean:.2f} n={b_n_obs:.0f}  ← {active}"
             )
         return "\n".join(lines)
 
@@ -794,6 +860,34 @@ class AdaptiveModelTierRouter(ModelTierRouter):
             exploration_rate_actual=explorations / total if total else 0.0,
             last_adapted_at=self._last_adapted_at,
         )
+
+    def history(self, n: int = 10) -> list[dict[str, Any]]:
+        """Return the last *n* routing decisions with their Thompson Sampling context.
+
+        Each entry is a dict with:
+
+        .. code-block:: python
+
+            {
+                "routing_id":      str,   # UUID used to match with record_outcome()
+                "tier":            str,   # "fast" | "smart" | "large" | …
+                "model":           str,   # model identifier
+                "composite":       float, # task complexity score (0–1)
+                "was_exploration": bool,  # TS chose different tier than greedy
+                "effective_success": bool,
+                "quality":         float | None,
+                "latency_ms":      float,
+                "cost_usd":        float,
+                "ts_mean":         float, # posterior mean for this tier at decision time
+            }
+
+        Usage::
+
+            for entry in router.history(5):
+                print(f"{entry['tier']:8s} composite={entry['composite']:.2f}"
+                      f" ts_mean={entry['ts_mean']:.2f}")
+        """
+        return list(self._history[-n:])
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
@@ -843,6 +937,8 @@ class AdaptiveModelTierRouter(ModelTierRouter):
             # Thompson Sampling posteriors — persist learned success/failure counts
             "ts_alpha": list(self._ts_alpha),
             "ts_beta": list(self._ts_beta_),
+            "ts_alpha_b": [list(row) for row in self._ts_alpha_b],
+            "ts_beta_b":  [list(row) for row in self._ts_beta_b],
             "tiers": [
                 {
                     "name": t.name,
@@ -910,12 +1006,19 @@ class AdaptiveModelTierRouter(ModelTierRouter):
         router._last_adapted_at = data.get("last_adapted_at")
         # Restore Thompson Sampling posteriors if present
         n = len(router._tiers)
-        saved_alpha = data.get("ts_alpha", [])
-        saved_beta  = data.get("ts_beta",  [])
+        nb = router._ts_n_buckets
+        saved_alpha   = data.get("ts_alpha",   [])
+        saved_beta    = data.get("ts_beta",    [])
+        saved_alpha_b = data.get("ts_alpha_b", [])
+        saved_beta_b  = data.get("ts_beta_b",  [])
         if len(saved_alpha) == n:
             router._ts_alpha = [float(a) for a in saved_alpha]
         if len(saved_beta) == n:
-            router._ts_beta_  = [float(b) for b in saved_beta]
+            router._ts_beta_ = [float(b) for b in saved_beta]
+        if len(saved_alpha_b) == n and all(len(row) == nb for row in saved_alpha_b):
+            router._ts_alpha_b = [[float(a) for a in row] for row in saved_alpha_b]
+        if len(saved_beta_b) == n and all(len(row) == nb for row in saved_beta_b):
+            router._ts_beta_b  = [[float(b) for b in row] for row in saved_beta_b]
         return router
 
     # ── YAML config ───────────────────────────────────────────────────────────

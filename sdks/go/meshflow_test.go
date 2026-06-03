@@ -712,6 +712,124 @@ func TestNewAudioFromBytesOpenAI(t *testing.T) {
 	}
 }
 
+// ── RunAgentStructured ────────────────────────────────────────────────────────
+
+func TestRunAgentStructured(t *testing.T) {
+	var gotBody map[string]interface{}
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		jsonResp(w, map[string]interface{}{
+			"run_id":  "struct-1",
+			"status":  "completed",
+			"output":  `{"title":"Q3 Report","summary":"Revenue up 12%"}`,
+			"parsed_output": map[string]interface{}{
+				"title":   "Q3 Report",
+				"summary": "Revenue up 12%",
+			},
+			"total_cost_usd": 0.0,
+			"total_tokens":   60,
+		})
+	}))
+
+	schema := `{"type":"object","properties":{"title":{"type":"string"},"summary":{"type":"string"}}}`
+	result, err := c.RunAgentStructured(context.Background(),
+		"Write a Q3 market report.",
+		schema,
+	)
+	if err != nil {
+		t.Fatalf("RunAgentStructured: %v", err)
+	}
+	if result.RunID != "struct-1" {
+		t.Errorf("RunID = %q, want struct-1", result.RunID)
+	}
+	if result.ParsedOutput == nil {
+		t.Fatal("ParsedOutput should not be nil")
+	}
+	if result.ParsedOutput["title"] != "Q3 Report" {
+		t.Errorf("title = %v, want Q3 Report", result.ParsedOutput["title"])
+	}
+	// Verify request body sent output_mode=json and schema
+	if gotBody["output_mode"] != "json" {
+		t.Errorf("output_mode = %v, want json", gotBody["output_mode"])
+	}
+	if gotBody["schema"] != schema {
+		t.Errorf("schema not forwarded correctly")
+	}
+}
+
+func TestRunAgentStructuredEmptySchema(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResp(w, map[string]interface{}{
+			"run_id": "s2", "status": "completed", "output": "{}",
+			"total_cost_usd": 0.0, "total_tokens": 10,
+		})
+	}))
+	result, err := c.RunAgentStructured(context.Background(), "task", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RunID != "s2" {
+		t.Errorf("RunID = %q", result.RunID)
+	}
+}
+
+func TestRunAgentStructuredServerError(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	_, err := c.RunAgentStructured(context.Background(), "task", "")
+	if err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
+func TestRunAgentStructuredWithOptions(t *testing.T) {
+	var gotBody map[string]interface{}
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		jsonResp(w, map[string]interface{}{
+			"run_id": "s3", "status": "completed",
+			"total_cost_usd": 0.0, "total_tokens": 0,
+		})
+	}))
+	_, err := c.RunAgentStructured(context.Background(), "task", "",
+		meshflow.WithCostCap(0.10),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, _ := gotBody["policy"].(map[string]interface{})
+	if policy == nil || policy["budget_usd"] != 0.10 {
+		t.Errorf("budget_usd not forwarded, policy=%v", policy)
+	}
+}
+
+func TestStructuredRunResultEmbedRunResult(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResp(w, map[string]interface{}{
+			"run_id": "r", "status": "completed",
+			"total_cost_usd": 0.021, "total_tokens": 400,
+			"cloud_agents": []string{"writer"},
+			"parsed_output": map[string]interface{}{"x": 1},
+		})
+	}))
+	result, err := c.RunAgentStructured(context.Background(), "task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Embedded RunResult fields accessible
+	if result.TotalCostUSD != 0.021 {
+		t.Errorf("TotalCostUSD = %v", result.TotalCostUSD)
+	}
+	if len(result.CloudAgents) != 1 || result.CloudAgents[0] != "writer" {
+		t.Errorf("CloudAgents = %v", result.CloudAgents)
+	}
+	// ParsedOutput accessible
+	if result.ParsedOutput["x"] != float64(1) {
+		t.Errorf("ParsedOutput[x] = %v", result.ParsedOutput["x"])
+	}
+}
+
 // ── BuildContentBlocks ────────────────────────────────────────────────────────
 
 func TestBuildContentBlocksAnthropic(t *testing.T) {

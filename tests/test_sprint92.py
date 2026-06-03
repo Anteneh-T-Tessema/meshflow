@@ -304,8 +304,9 @@ class TestExplainShowsPosteriors:
         r._ts_alpha[0] = 6.0   # α=6 → 5 observed successes (prior was 1)
         r._ts_beta_[0] = 3.0   # β=3 → 2 observed failures
         exp = r.explain("task")
-        # n_obs = α + β - 2 (subtract uniform prior) = 6 + 3 - 2 = 7
-        assert "n_obs=7" in exp
+        # n = α + β - 2 (subtract uniform prior) = 6 + 3 - 2 = 7
+        # Sprint 94 format: "global: α=6 β=3 mean=0.67 n=7"
+        assert "n=7" in exp
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
