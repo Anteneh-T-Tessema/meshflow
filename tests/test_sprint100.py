@@ -714,4 +714,4 @@ class TestVersion:
         path = os.path.join(os.path.dirname(__file__), "..", "pyproject.toml")
         with open(os.path.normpath(path), "rb") as f:
             data = tomllib.load(f)
-        assert data["project"]["version"] == "1.13.0"
+        assert data["project"]["version"] == "1.14.0"

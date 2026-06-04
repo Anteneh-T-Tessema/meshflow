@@ -104,6 +104,7 @@ class TestPromptHubOffline(unittest.TestCase):
         self._env = patch.dict(os.environ, {}, clear=False)
         self._env.start()
         os.environ.pop("MESHFLOW_API_KEY", None)
+        os.environ.pop("MESHFLOW_CLOUD_ENABLED", None)
 
     def tearDown(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
@@ -457,10 +458,6 @@ class TestReportSpans(unittest.TestCase):
         srv = _FakeIngestServer()
         port = srv.start()
         try:
-            c = MeshFlowCloud(
-                api_key="mf_sk_test",
-                base_url=f"http://127.0.0.1:{port}",
-            )
             span = {
                 "run_id": "run-1",
                 "agent_name": "planner",
@@ -472,7 +469,12 @@ class TestReportSpans(unittest.TestCase):
                 "cost_usd": 0.0014,
                 "status": "ok",
             }
-            ok = c.report_spans([span])
+            with patch.dict(os.environ, {"MESHFLOW_CLOUD_ENABLED": "1"}):
+                c = MeshFlowCloud(
+                    api_key="mf_sk_test",
+                    base_url=f"http://127.0.0.1:{port}",
+                )
+                ok = c.report_spans([span])
             self.assertTrue(ok)
             self.assertEqual(len(srv.received), 1)
             body = srv.received[0]["body"]
@@ -511,8 +513,15 @@ class TestInstrumentQueueInjection(unittest.TestCase):
             pass
         self.assertEqual(len(global_event_bus._queues), before)
 
+    def _emit(self, bus: Any, event: Any) -> None:
+        """Drive the injected _CBQueue directly — avoids asyncio.run() cross-loop issues."""
+        for q in list(bus._queues):
+            try:
+                q.put_nowait(event)
+            except Exception:
+                pass
+
     def test_instrument_collects_step_spans(self) -> None:
-        import asyncio
         from meshflow.cloud.client import MeshFlowCloud
         from meshflow.core.events import global_event_bus, WorkflowEvent, EventKind
 
@@ -526,27 +535,19 @@ class TestInstrumentQueueInjection(unittest.TestCase):
 
         with patch.object(MeshFlowCloud, "report_spans", _capture):
             with c.instrument():
-                # Simulate STEP_START
-                asyncio.run(global_event_bus.emit(WorkflowEvent(
-                    kind=EventKind.STEP_START,
-                    run_id="run-x",
-                    node_id="planner",
-                    data={"kind": "executor"},
-                )))
+                self._emit(global_event_bus, WorkflowEvent(
+                    kind=EventKind.STEP_START, run_id="run-x",
+                    node_id="planner", data={"kind": "executor"},
+                ))
                 time.sleep(0.01)
-                # Simulate STEP_COMPLETE
-                asyncio.run(global_event_bus.emit(WorkflowEvent(
-                    kind=EventKind.STEP_COMPLETE,
-                    run_id="run-x",
+                self._emit(global_event_bus, WorkflowEvent(
+                    kind=EventKind.STEP_COMPLETE, run_id="run-x",
                     node_id="planner",
                     data={"tokens": 512, "cost_usd": 0.002, "content_preview": "done"},
-                )))
-                # Simulate WORKFLOW_COMPLETE to flush spans
-                asyncio.run(global_event_bus.emit(WorkflowEvent(
-                    kind=EventKind.WORKFLOW_COMPLETE,
-                    run_id="run-x",
-                    data={},
-                )))
+                ))
+                self._emit(global_event_bus, WorkflowEvent(
+                    kind=EventKind.WORKFLOW_COMPLETE, run_id="run-x", data={},
+                ))
 
         self.assertEqual(len(collected_spans), 1)
         span = collected_spans[0]
@@ -557,7 +558,6 @@ class TestInstrumentQueueInjection(unittest.TestCase):
         self.assertEqual(span["input_tokens"], 512)
 
     def test_instrument_flushes_remaining_spans_on_exit(self) -> None:
-        import asyncio
         from meshflow.cloud.client import MeshFlowCloud
         from meshflow.core.events import global_event_bus, WorkflowEvent, EventKind
 
@@ -571,27 +571,22 @@ class TestInstrumentQueueInjection(unittest.TestCase):
 
         with patch.object(MeshFlowCloud, "report_spans", _capture):
             with c.instrument():
-                # STEP_COMPLETE without WORKFLOW_COMPLETE
-                asyncio.run(global_event_bus.emit(WorkflowEvent(
-                    kind=EventKind.STEP_COMPLETE,
-                    run_id="run-y",
-                    node_id="executor",
-                    data={"tokens": 100},
-                )))
-            # On context exit, pending spans should be flushed
+                self._emit(global_event_bus, WorkflowEvent(
+                    kind=EventKind.STEP_COMPLETE, run_id="run-y",
+                    node_id="executor", data={"tokens": 100},
+                ))
 
         self.assertEqual(len(flushed), 1)
         self.assertEqual(flushed[0]["run_id"], "run-y")
 
     def test_instrument_register_agents_calls_record_run(self) -> None:
-        import asyncio
         from meshflow.cloud.client import MeshFlowCloud
         from meshflow.cloud.agent_registry import CloudAgentRegistry
         from meshflow.core.events import global_event_bus, WorkflowEvent, EventKind
 
         recorded: list[str] = []
 
-        def _fake_record(slug: str, run_count: int = 1) -> bool:  # noqa: ARG001
+        def _fake_record(slug: str, **_kwargs: object) -> bool:
             recorded.append(slug)
             return True
 
@@ -599,24 +594,21 @@ class TestInstrumentQueueInjection(unittest.TestCase):
 
         with patch.object(CloudAgentRegistry, "record_run", staticmethod(_fake_record)):
             with c.instrument(register_agents=True):
-                asyncio.run(global_event_bus.emit(WorkflowEvent(
-                    kind=EventKind.STEP_COMPLETE,
-                    run_id="run-z",
-                    node_id="analyst",
-                    data={"tokens": 50},
-                )))
+                self._emit(global_event_bus, WorkflowEvent(
+                    kind=EventKind.STEP_COMPLETE, run_id="run-z",
+                    node_id="analyst", data={"tokens": 50},
+                ))
 
         self.assertIn("analyst", recorded)
 
     def test_instrument_without_register_agents_skips_record_run(self) -> None:
-        import asyncio
         from meshflow.cloud.client import MeshFlowCloud
         from meshflow.cloud.agent_registry import CloudAgentRegistry
         from meshflow.core.events import global_event_bus, WorkflowEvent, EventKind
 
         recorded: list[str] = []
 
-        def _fake_record(slug: str, run_count: int = 1) -> bool:  # noqa: ARG001
+        def _fake_record(slug: str, **_kwargs: object) -> bool:
             recorded.append(slug)
             return True
 
@@ -624,12 +616,10 @@ class TestInstrumentQueueInjection(unittest.TestCase):
 
         with patch.object(CloudAgentRegistry, "record_run", staticmethod(_fake_record)):
             with c.instrument(register_agents=False):
-                asyncio.run(global_event_bus.emit(WorkflowEvent(
-                    kind=EventKind.STEP_COMPLETE,
-                    run_id="run-z2",
-                    node_id="writer",
-                    data={},
-                )))
+                self._emit(global_event_bus, WorkflowEvent(
+                    kind=EventKind.STEP_COMPLETE, run_id="run-z2",
+                    node_id="writer", data={},
+                ))
 
         self.assertEqual(recorded, [])
 
