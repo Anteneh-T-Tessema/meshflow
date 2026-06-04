@@ -211,9 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Validate an existing .env file")
 
     # deploy
-    p_deploy = sub.add_parser("deploy", help="Build and run MeshFlow via Docker")
-    p_deploy.add_argument("--tag", default="meshflow:latest", help="Docker image tag")
-    p_deploy.add_argument("--port", type=int, default=8000, help="Host port")
+    p_deploy = sub.add_parser("deploy", help="Deploy MeshFlow to Docker or a cloud target (aws/azure/gcp/railway/fly/k8s)")
+    p_deploy.add_argument("--tag", default="meshflow:latest", help="Docker image tag (local) or full image URI (cloud)")
+    p_deploy.add_argument("--port", type=int, default=8000, help="Host port (local Docker only)")
     p_deploy.add_argument("--build-only", action="store_true", help="Build image but don't run")
     p_deploy.add_argument("--no-cache", action="store_true", help="Docker --no-cache")
     p_deploy.add_argument("--compose", action="store_true", help="Use docker compose instead")
@@ -222,6 +222,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_deploy.add_argument("--down", action="store_true", help="Stop and remove containers")
     p_deploy.add_argument("--status", action="store_true", help="Show container status")
     p_deploy.add_argument("--logs", action="store_true", help="Show container logs")
+    # Cloud targets
+    p_deploy.add_argument(
+        "--target", default="",
+        choices=["aws", "azure", "gcp", "railway", "fly", "k8s"],
+        help="Cloud deployment target (skips local Docker)",
+    )
+    p_deploy.add_argument("--name", default="meshflow", help="Service / application name")
+    p_deploy.add_argument("--region", default="", help="Cloud region (provider default if omitted)")
+    p_deploy.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                          help="Environment variable (repeatable: --env KEY=VAL)")
+    p_deploy.add_argument("--iac", action="store_true",
+                          help="Print IaC template (CloudFormation/Bicep/Terraform/fly.toml/k8s YAML) instead of deploying")
 
     # runs (v2 — supports 'ls' and 'inspect' subcommands as well as flat invocation)
     p_runs = sub.add_parser("runs", help="List or inspect workflow runs")
@@ -2707,6 +2719,30 @@ def _cmd_env(args: argparse.Namespace) -> None:
 def _cmd_deploy(args: argparse.Namespace) -> None:
     import json as _json
     from meshflow.deploy.deployer import DockerDeployer
+
+    # ── Cloud target path ─────────────────────────────────────────────────────
+    target = getattr(args, "target", "")
+    if target:
+        from meshflow.deploy.targets import deploy, generate_iac, SUPPORTED_TARGETS
+
+        image = getattr(args, "tag", "ghcr.io/anteneh-t-tessema/meshflow-mcp:1.13.0")
+        name  = getattr(args, "name", "meshflow")
+        region = getattr(args, "region", "")
+        # Parse --env KEY=VALUE pairs
+        env: dict[str, str] = {}
+        for kv in getattr(args, "env", []):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                env[k.strip()] = v.strip()
+
+        if getattr(args, "iac", False):
+            print(generate_iac(target, image, name=name, env=env, region=region))
+            return
+
+        print(f"  Deploying {image!r} → {target} ({region or 'default region'})…")
+        result = deploy(target=target, image=image, name=name, region=region, env=env)
+        print(result)
+        sys.exit(0 if result.ok else 1)
 
     tag = getattr(args, "tag", "meshflow:latest")
     dep = DockerDeployer(tag=tag)
