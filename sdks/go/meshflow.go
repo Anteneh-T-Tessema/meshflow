@@ -33,7 +33,7 @@ import (
 
 const (
 	defaultTimeout = 120 * time.Second
-	sdkVersion     = "1.10.0"
+	sdkVersion     = "1.14.0"
 )
 
 // Client is the MeshFlow API client. Create one with NewClient and reuse it
@@ -777,4 +777,333 @@ func (c *Client) RunAgentStructured(
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ── Cloud ingest ──────────────────────────────────────────────────────────────
+//
+// These methods POST telemetry to the meshflow.dev cloud platform using the
+// x-meshflow-key header rather than Bearer auth.
+
+func (c *Client) cloudDo(ctx context.Context, method, path string, body interface{}, out interface{}) error {
+	var buf bytes.Buffer
+	if body != nil {
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			return fmt.Errorf("meshflow cloud encode: %w", err)
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, &buf)
+	if err != nil {
+		return fmt.Errorf("meshflow cloud request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "meshflow-go-sdk/"+sdkVersion)
+	if c.APIKey != "" {
+		req.Header.Set("x-meshflow-key", c.APIKey)
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("meshflow cloud network: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // caller checks nil out
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("meshflow cloud HTTP %d: %s", resp.StatusCode, string(raw))
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+// CloudSpanInput is a single trace span sent to POST /api/ingest/spans.
+type CloudSpanInput struct {
+	RunID        string                 `json:"run_id"`
+	AgentName    string                 `json:"agent_name"`
+	SpanType     string                 `json:"span_type"` // "llm_call","tool_call","step",...
+	Name         string                 `json:"name"`
+	StartedAt    string                 `json:"started_at"` // ISO-8601
+	DurationMs   int64                  `json:"duration_ms"`
+	InputText    string                 `json:"input_text,omitempty"`
+	OutputText   string                 `json:"output_text,omitempty"`
+	InputTokens  int                    `json:"input_tokens,omitempty"`
+	OutputTokens int                    `json:"output_tokens,omitempty"`
+	CostUSD      float64                `json:"cost_usd,omitempty"`
+	Status       string                 `json:"status,omitempty"`
+	ErrorMsg     string                 `json:"error_msg,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// CloudEvalInput is the payload for POST /api/ingest/eval.
+type CloudEvalInput struct {
+	RunID     string  `json:"run_id"`
+	Suite     string  `json:"suite,omitempty"`
+	Scenario  string  `json:"scenario"`
+	Metric    string  `json:"metric,omitempty"`
+	Score     float64 `json:"score"`
+	Passed    bool    `json:"passed"`
+	Reasoning string  `json:"reasoning,omitempty"`
+	CostUSD   float64 `json:"cost_usd,omitempty"`
+	LatencyMs int64   `json:"latency_ms,omitempty"`
+}
+
+// CloudMcpCallInput is the payload for POST /api/ingest/mcp.
+type CloudMcpCallInput struct {
+	ServerName string  `json:"server_name"`
+	ToolName   string  `json:"tool_name"`
+	Transport  string  `json:"transport,omitempty"`
+	Endpoint   string  `json:"endpoint,omitempty"`
+	LatencyMs  int64   `json:"latency_ms,omitempty"`
+	Success    bool    `json:"success"`
+	CostUSD    float64 `json:"cost_usd,omitempty"`
+	ToolCount  int     `json:"tool_count,omitempty"`
+}
+
+// CloudWorkerJobInput is the payload for POST /api/ingest/worker.
+type CloudWorkerJobInput struct {
+	JobID        string `json:"job_id"`
+	WorkflowName string `json:"workflow_name"`
+	Status       string `json:"status"`
+	Retries      int    `json:"retries,omitempty"`
+	MaxRetries   int    `json:"max_retries,omitempty"`
+	DurationMs   int64  `json:"duration_ms,omitempty"`
+	ErrorMsg     string `json:"error_msg,omitempty"`
+	ScheduledFor string `json:"scheduled_for,omitempty"`
+}
+
+// CloudPromptRecord is returned by GET /api/ingest/prompts?slug=xxx.
+type CloudPromptRecord struct {
+	Slug        string  `json:"slug"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Version     int     `json:"version"`
+	Content     string  `json:"content"`
+	Model       string  `json:"model"`
+	Temperature float64 `json:"temperature"`
+}
+
+// CloudPromptSummary is an item in the list returned by GET /api/ingest/prompts?list=1.
+type CloudPromptSummary struct {
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	UpdatedAt   string `json:"updatedAt"`
+}
+
+// CloudDatasetRow is a single row in a dataset.
+type CloudDatasetRow struct {
+	Input          string                 `json:"input"`
+	ExpectedOutput string                 `json:"expected_output,omitempty"`
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// CloudDatasetSummary is an item in the list returned by GET /api/ingest/datasets.
+type CloudDatasetSummary struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	RowCount    int    `json:"rowCount"`
+	UpdatedAt   string `json:"updatedAt"`
+}
+
+// CloudDatasetPullResponse is the body returned by GET /api/ingest/datasets?name=xxx.
+type CloudDatasetPullResponse struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	RowCount    int               `json:"row_count"`
+	Rows        []CloudDatasetRow `json:"rows"`
+}
+
+// CloudAgentDefinition is an agent entry in the cloud Agent Registry.
+type CloudAgentDefinition struct {
+	ID           string `json:"id"`
+	Slug         string `json:"slug"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Role         string `json:"role"`
+	Model        string `json:"model"`
+	Policy       string `json:"policy"`
+	SystemPrompt string `json:"systemPrompt"`
+	Tags         string `json:"tags"`
+	DeployTarget string `json:"deployTarget"`
+	Version      string `json:"version"`
+	Status       string `json:"status"`
+	TotalRuns    int64  `json:"totalRuns"`
+}
+
+type cloudIngestOK struct {
+	OK       bool `json:"ok"`
+	Ingested int  `json:"ingested"`
+}
+
+// ReportRun posts a completed run summary to /dashboard/runs.
+func (c *Client) ReportRun(ctx context.Context, payload map[string]interface{}) error {
+	var out cloudIngestOK
+	return c.cloudDo(ctx, http.MethodPost, "/api/ingest/run", payload, &out)
+}
+
+// ReportEval pushes one eval result to /dashboard/evals.
+func (c *Client) ReportEval(ctx context.Context, eval CloudEvalInput) error {
+	var out cloudIngestOK
+	return c.cloudDo(ctx, http.MethodPost, "/api/ingest/eval", eval, &out)
+}
+
+// ReportMcpCall records one MCP tool call to /dashboard/mcp.
+func (c *Client) ReportMcpCall(ctx context.Context, call CloudMcpCallInput) error {
+	var out cloudIngestOK
+	return c.cloudDo(ctx, http.MethodPost, "/api/ingest/mcp", call, &out)
+}
+
+// ReportWorkerJob upserts a worker job status event.
+func (c *Client) ReportWorkerJob(ctx context.Context, job CloudWorkerJobInput) error {
+	var out cloudIngestOK
+	return c.cloudDo(ctx, http.MethodPost, "/api/ingest/worker", job, &out)
+}
+
+// ReportSpans sends a batch of per-step trace spans to /dashboard/traces.
+func (c *Client) ReportSpans(ctx context.Context, spans []CloudSpanInput) (int, error) {
+	if len(spans) == 0 {
+		return 0, nil
+	}
+	body := map[string]interface{}{"spans": spans}
+	var out cloudIngestOK
+	if err := c.cloudDo(ctx, http.MethodPost, "/api/ingest/spans", body, &out); err != nil {
+		return 0, err
+	}
+	if out.Ingested > 0 {
+		return out.Ingested, nil
+	}
+	return len(spans), nil
+}
+
+// PromptGet fetches the active (or pinned) version of a prompt by slug.
+// Returns nil when the prompt is not found.
+func (c *Client) PromptGet(ctx context.Context, slug string, version int) (*CloudPromptRecord, error) {
+	path := "/api/ingest/prompts?slug=" + url.QueryEscape(slug)
+	if version > 0 {
+		path += fmt.Sprintf("&version=%d", version)
+	}
+	var out CloudPromptRecord
+	if err := c.cloudDo(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Slug == "" {
+		return nil, nil
+	}
+	return &out, nil
+}
+
+// PromptList lists all prompt slugs for the org.
+func (c *Client) PromptList(ctx context.Context) ([]CloudPromptSummary, error) {
+	var out []CloudPromptSummary
+	if err := c.cloudDo(ctx, http.MethodGet, "/api/ingest/prompts?list=1", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// PromptPush pushes a new version of a prompt (creates it if new).
+func (c *Client) PromptPush(ctx context.Context, slug, content, notes string) (*CloudPromptRecord, error) {
+	body := map[string]interface{}{"slug": slug, "content": content}
+	if notes != "" {
+		body["notes"] = notes
+	}
+	var out CloudPromptRecord
+	if err := c.cloudDo(ctx, http.MethodPost, "/api/ingest/prompts", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DatasetList lists all datasets for the org.
+func (c *Client) DatasetList(ctx context.Context) ([]CloudDatasetSummary, error) {
+	var out []CloudDatasetSummary
+	if err := c.cloudDo(ctx, http.MethodGet, "/api/ingest/datasets", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// DatasetPull fetches rows from a named dataset. Returns nil when not found.
+func (c *Client) DatasetPull(ctx context.Context, name string, limit, offset int) (*CloudDatasetPullResponse, error) {
+	qs := url.Values{"name": {name}}
+	if limit > 0 {
+		qs.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if offset > 0 {
+		qs.Set("offset", fmt.Sprintf("%d", offset))
+	}
+	var out CloudDatasetPullResponse
+	if err := c.cloudDo(ctx, http.MethodGet, "/api/ingest/datasets?"+qs.Encode(), nil, &out); err != nil {
+		return nil, err
+	}
+	if out.ID == "" {
+		return nil, nil
+	}
+	return &out, nil
+}
+
+// DatasetPush appends rows to a named dataset (creates it if new). Returns the dataset ID.
+func (c *Client) DatasetPush(ctx context.Context, name string, rows []CloudDatasetRow, description string) (string, error) {
+	body := map[string]interface{}{"name": name, "rows": rows}
+	if description != "" {
+		body["description"] = description
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := c.cloudDo(ctx, http.MethodPost, "/api/ingest/datasets", body, &out); err != nil {
+		return "", err
+	}
+	return out.ID, nil
+}
+
+// DatasetDelete deletes a dataset and all its rows.
+func (c *Client) DatasetDelete(ctx context.Context, name string) error {
+	return c.cloudDo(ctx, http.MethodDelete, "/api/ingest/datasets?name="+url.QueryEscape(name), nil, nil)
+}
+
+// ListAgents lists all registered agent definitions.
+func (c *Client) ListAgents(ctx context.Context) ([]CloudAgentDefinition, error) {
+	var out []CloudAgentDefinition
+	if err := c.cloudDo(ctx, http.MethodGet, "/api/ingest/agents", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetAgent fetches one agent definition by slug. Returns nil when not found.
+func (c *Client) GetAgent(ctx context.Context, slug string) (*CloudAgentDefinition, error) {
+	var out CloudAgentDefinition
+	if err := c.cloudDo(ctx, http.MethodGet, "/api/ingest/agents?slug="+url.QueryEscape(slug), nil, &out); err != nil {
+		return nil, err
+	}
+	if out.ID == "" {
+		return nil, nil
+	}
+	return &out, nil
+}
+
+// RegisterAgent upserts an agent definition in the cloud Agent Registry.
+func (c *Client) RegisterAgent(ctx context.Context, name, slug, role, model, policy string) (*CloudAgentDefinition, error) {
+	body := map[string]interface{}{"name": name, "slug": slug}
+	if role   != "" { body["role"]   = role }
+	if model  != "" { body["model"]  = model }
+	if policy != "" { body["policy"] = policy }
+	var out CloudAgentDefinition
+	if err := c.cloudDo(ctx, http.MethodPost, "/api/ingest/agents", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RecordAgentRun increments the run counter for a registered agent.
+func (c *Client) RecordAgentRun(ctx context.Context, slug string, runCount int) error {
+	body := map[string]interface{}{"name": slug, "slug": slug, "run_count": runCount}
+	var out cloudIngestOK
+	return c.cloudDo(ctx, http.MethodPost, "/api/ingest/agents", body, &out)
 }

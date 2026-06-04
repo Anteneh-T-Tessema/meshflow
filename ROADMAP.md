@@ -80,6 +80,22 @@ This is the public roadmap. It is a living document — priorities shift based o
 - ✅ **`meshflow routing-report`** — CLI: tier distribution, cost savings vs. always-large, adaptation history; `--state`, `--export`, `--json` flags
 - ✅ **4,963 tests passing** — 81–85 sprints; CI green on Python 3.11 + 3.12
 
+## Shipped — v1.14.0 (June 2026)
+
+**Theme: Cloud platform SDK parity — every dashboard feature backed by an SDK call**
+
+- ✅ **PromptHub** — `PromptHub.get/push/list` — pull versioned prompts at runtime with 60s TTL cache; `POST /api/ingest/prompts` with API-key auth
+- ✅ **DatasetHub** — `DatasetHub.push/pull/list/delete` — eval dataset management SDK; `GET/POST/DELETE /api/ingest/datasets`
+- ✅ **CloudAgentRegistry** — `CloudAgentRegistry.register/record_run/list/get` — `GET/POST /api/ingest/agents`; auto-bump run counter from `instrument(register_agents=True)`
+- ✅ **`instrument()` fixed + span telemetry** — was broken (wrong API); now injects duck-typed queue into `WorkflowEventBus._queues`; sends per-step trace spans to `/api/ingest/spans` on WORKFLOW_COMPLETE
+- ✅ **`MeshFlowCloud.report_spans()`** — batch span ingest; also async variant `areport_spans()`
+- ✅ **TypeScript SDK v1.14.0** — 14 new cloud ingest methods: `reportRun`, `reportEval`, `reportMcpCall`, `reportWorkerJob`, `reportSpans`, `promptGet/Push/List`, `datasetPush/Pull/List/Delete`, `registerAgent/recordAgentRun/listAgents/getAgent`
+- ✅ **Go SDK v1.14.0** — same 14 methods; new `CloudSpanInput`, `CloudEvalInput`, `CloudDatasetRow`, `CloudAgentDefinition` types; `cloudDo()` helper with `x-meshflow-key` auth
+- ✅ **Rust SDK v1.14.0** — same 14 methods added in `client.rs`; new types in `types.rs`
+- ✅ **5,816 tests passing** — 49 new tests for all cloud SDK surfaces; CI green on Python 3.11 + 3.12
+
+---
+
 ## Shipped — v1.10–v1.13.0 (June 2026)
 
 **Theme: Claude ecosystem parity + Forensic audit + Competitive positioning**
@@ -107,11 +123,15 @@ This is the public roadmap. It is a living document — priorities shift based o
 - [ ] Show HN post — `docs/launch/show_hn.md` ready
 - [ ] Product Hunt post — `docs/launch/product_hunt.md` ready
 - [ ] Discord server live — `docs/community/discord_setup.md` + launch checklist ready
-- [ ] Smithery listing — `smithery.yaml` at v1.13.0, submit at smithery.ai
-- [ ] Rust SDK on crates.io — `CARGO_REGISTRY_TOKEN` needed
+- [ ] Show HN post — `docs/launch/show_hn.md` ready
+- [ ] Product Hunt post — `docs/launch/product_hunt.md` ready
+- [ ] Discord server live
+- [ ] Smithery listing — `smithery.yaml` at v1.14.0, submit at smithery.ai
+- [ ] Rust SDK on crates.io — `CARGO_REGISTRY_TOKEN` needed; v1.14.0 ready to publish
+- [ ] npm publish — `meshflow-sdk@1.14.0` TypeScript SDK ready
+- ✅ Go SDK v1.14.0 — `go get github.com/Anteneh-T-Tessema/meshflow/sdks/go@v1.14.0`
 - ✅ `RedisMemoryBackend` — TTL, key prefix, multi-tenant
 - ✅ `FileMemoryBackend` — zero-dep JSON files, atomic writes
-- ✅ Go SDK — `go get github.com/Anteneh-T-Tessema/meshflow/sdks/go@v1.13.0`
 
 ---
 

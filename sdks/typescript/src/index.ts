@@ -620,6 +620,341 @@ export class MeshFlowClient {
     if (!r.ok) throw new MeshFlowError(r.status, "Metrics fetch failed");
     return r.text();
   }
+
+  // ── Cloud ingest — internal helper ────────────────────────────────────────
+
+  /** Headers for cloud ingest endpoints (x-meshflow-key, not Bearer). */
+  private cloudHeaders(): Record<string, string> {
+    const h: Record<string, string> = { "Content-Type": "application/json", "Accept": "application/json" };
+    if (this.apiKey) h["x-meshflow-key"] = this.apiKey;
+    return h;
+  }
+
+  private async cloudPost<T>(path: string, body: unknown): Promise<T> {
+    const r = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: this.cloudHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      throw new MeshFlowError(r.status, `Cloud ingest error at POST ${path}: ${text}`, text);
+    }
+    return r.json() as Promise<T>;
+  }
+
+  private async cloudGet<T>(path: string): Promise<T> {
+    const r = await fetch(`${this.baseUrl}${path}`, {
+      method: "GET",
+      headers: this.cloudHeaders(),
+    });
+    if (!r.ok) {
+      if (r.status === 404) return null as T;
+      const text = await r.text();
+      throw new MeshFlowError(r.status, `Cloud ingest error at GET ${path}: ${text}`, text);
+    }
+    return r.json() as Promise<T>;
+  }
+
+  private async cloudDelete(path: string): Promise<void> {
+    const r = await fetch(`${this.baseUrl}${path}`, {
+      method: "DELETE",
+      headers: this.cloudHeaders(),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      throw new MeshFlowError(r.status, `Cloud ingest error at DELETE ${path}: ${text}`, text);
+    }
+  }
+
+  // ── Cloud ingest — runs, evals, MCP, workers ──────────────────────────────
+
+  /** Send a completed run summary to /dashboard/runs. */
+  async reportRun(payload: Record<string, unknown>): Promise<boolean> {
+    const r = await this.cloudPost<{ ok?: boolean }>("/api/ingest/run", payload);
+    return r.ok !== false;
+  }
+
+  /** Push one eval result to /dashboard/evals. */
+  async reportEval(eval_: CloudEvalInput): Promise<boolean> {
+    const r = await this.cloudPost<{ ok?: boolean }>("/api/ingest/eval", eval_);
+    return r.ok !== false;
+  }
+
+  /** Record one MCP tool call to /dashboard/mcp. */
+  async reportMcpCall(call: CloudMcpCallInput): Promise<boolean> {
+    const r = await this.cloudPost<{ ok?: boolean }>("/api/ingest/mcp", call);
+    return r.ok !== false;
+  }
+
+  /** Upsert a worker job status event to /dashboard/workers. */
+  async reportWorkerJob(job: CloudWorkerJobInput): Promise<boolean> {
+    const r = await this.cloudPost<{ ok?: boolean }>("/api/ingest/worker", job);
+    return r.ok !== false;
+  }
+
+  // ── Cloud ingest — trace spans ─────────────────────────────────────────────
+
+  /**
+   * Send a batch of per-step trace spans to /dashboard/traces.
+   *
+   * @example
+   * ```ts
+   * await client.reportSpans([{
+   *   run_id: "run-123", agent_name: "planner", span_type: "step",
+   *   name: "plan", started_at: new Date().toISOString(), duration_ms: 420,
+   *   input_tokens: 512, cost_usd: 0.0014,
+   * }]);
+   * ```
+   */
+  async reportSpans(spans: CloudSpanInput[]): Promise<number> {
+    if (!spans.length) return 0;
+    const r = await this.cloudPost<{ ok?: boolean; ingested?: number }>("/api/ingest/spans", { spans });
+    return r.ingested ?? spans.length;
+  }
+
+  // ── Prompt Hub ─────────────────────────────────────────────────────────────
+
+  /**
+   * Fetch the active (or pinned) version of a prompt by slug.
+   * Returns `null` when not found.
+   *
+   * @example
+   * ```ts
+   * const p = await client.promptGet("hipaa-intake-processor");
+   * if (p) console.log(p.content);
+   * ```
+   */
+  async promptGet(slug: string, version?: number): Promise<CloudPromptRecord | null> {
+    let path = `/api/ingest/prompts?slug=${encodeURIComponent(slug)}`;
+    if (version !== undefined) path += `&version=${version}`;
+    return this.cloudGet<CloudPromptRecord | null>(path);
+  }
+
+  /** List all prompt slugs for the org. */
+  async promptList(): Promise<CloudPromptSummary[]> {
+    return this.cloudGet<CloudPromptSummary[]>("/api/ingest/prompts?list=1") ?? [];
+  }
+
+  /**
+   * Push a new version of a prompt (creates the prompt if new).
+   *
+   * @example
+   * ```ts
+   * await client.promptPush("hipaa-intake-processor", "You are a HIPAA specialist…");
+   * ```
+   */
+  async promptPush(
+    slug: string,
+    content: string,
+    options: { name?: string; notes?: string; model?: string; temperature?: number } = {},
+  ): Promise<CloudPromptRecord> {
+    return this.cloudPost<CloudPromptRecord>("/api/ingest/prompts", { slug, content, ...options });
+  }
+
+  // ── Dataset Hub ────────────────────────────────────────────────────────────
+
+  /** List all datasets for the org. */
+  async datasetList(): Promise<CloudDatasetSummary[]> {
+    return this.cloudGet<CloudDatasetSummary[]>("/api/ingest/datasets") ?? [];
+  }
+
+  /**
+   * Fetch rows from a named dataset.
+   * Returns `null` when the dataset is not found.
+   */
+  async datasetPull(
+    name: string,
+    options: { limit?: number; offset?: number } = {},
+  ): Promise<CloudDatasetPullResponse | null> {
+    const qs = new URLSearchParams({ name });
+    if (options.limit  !== undefined) qs.set("limit",  String(options.limit));
+    if (options.offset !== undefined) qs.set("offset", String(options.offset));
+    return this.cloudGet<CloudDatasetPullResponse | null>(`/api/ingest/datasets?${qs}`);
+  }
+
+  /**
+   * Append rows to a named dataset (creates it if new).
+   *
+   * @example
+   * ```ts
+   * await client.datasetPush("hipaa-qa-v1", [
+   *   { input: "What is PHI?", expected_output: "Protected Health Information." },
+   * ]);
+   * ```
+   */
+  async datasetPush(
+    name: string,
+    rows: CloudDatasetRow[],
+    description?: string,
+  ): Promise<{ id: string; rows_added: number }> {
+    return this.cloudPost("/api/ingest/datasets", { name, rows, description });
+  }
+
+  /** Delete a dataset and all its rows. */
+  async datasetDelete(name: string): Promise<void> {
+    await this.cloudDelete(`/api/ingest/datasets?name=${encodeURIComponent(name)}`);
+  }
+
+  // ── Agent Registry ─────────────────────────────────────────────────────────
+
+  /** List all registered agent definitions. */
+  async listAgents(): Promise<CloudAgentDefinition[]> {
+    return this.cloudGet<CloudAgentDefinition[]>("/api/ingest/agents") ?? [];
+  }
+
+  /** Fetch one agent definition by slug. Returns `null` when not found. */
+  async getAgent(slug: string): Promise<CloudAgentDefinition | null> {
+    return this.cloudGet<CloudAgentDefinition | null>(
+      `/api/ingest/agents?slug=${encodeURIComponent(slug)}`,
+    );
+  }
+
+  /**
+   * Upsert an agent definition in the cloud registry.
+   *
+   * @example
+   * ```ts
+   * await client.registerAgent("HIPAA Intake", "hipaa-intake", {
+   *   role: "executor", model: "claude-sonnet-4-6", policy: "hipaa",
+   * });
+   * ```
+   */
+  async registerAgent(
+    name: string,
+    slug: string,
+    options: {
+      role?: string; model?: string; policy?: string;
+      systemPrompt?: string; tags?: string; deployTarget?: string;
+      version?: string; status?: string;
+    } = {},
+  ): Promise<CloudAgentDefinition> {
+    return this.cloudPost("/api/ingest/agents", {
+      name, slug,
+      system_prompt: options.systemPrompt,
+      deploy_target: options.deployTarget,
+      ...options,
+    });
+  }
+
+  /** Increment the run counter for a registered agent. */
+  async recordAgentRun(slug: string, runCount = 1): Promise<boolean> {
+    const r = await this.cloudPost<{ ok?: boolean }>(
+      "/api/ingest/agents",
+      { name: slug, slug, run_count: runCount },
+    );
+    return r.ok !== false;
+  }
+}
+
+// ── Cloud ingest types ────────────────────────────────────────────────────────
+
+export interface CloudSpanInput {
+  run_id: string;
+  agent_name: string;
+  /** "llm_call" | "tool_call" | "guardrail" | "policy_check" | "step" */
+  span_type: string;
+  name: string;
+  /** ISO-8601 timestamp */
+  started_at: string;
+  duration_ms: number;
+  input_text?: string;
+  output_text?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cost_usd?: number;
+  status?: string;
+  error_msg?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CloudEvalInput {
+  run_id: string;
+  suite?: string;
+  scenario: string;
+  metric?: string;
+  score: number;
+  passed: boolean;
+  reasoning?: string;
+  cost_usd?: number;
+  latency_ms?: number;
+}
+
+export interface CloudMcpCallInput {
+  server_name: string;
+  tool_name: string;
+  transport?: string;
+  endpoint?: string;
+  latency_ms?: number;
+  success?: boolean;
+  cost_usd?: number;
+  tool_count?: number;
+}
+
+export interface CloudWorkerJobInput {
+  job_id: string;
+  workflow_name: string;
+  status: string;
+  retries?: number;
+  max_retries?: number;
+  duration_ms?: number;
+  error_msg?: string;
+  scheduled_for?: string;
+}
+
+export interface CloudPromptRecord {
+  slug: string;
+  name: string;
+  description: string;
+  version: number;
+  content: string;
+  model: string;
+  temperature: number;
+}
+
+export interface CloudPromptSummary {
+  slug: string;
+  name: string;
+  description: string;
+  updatedAt: string;
+}
+
+export interface CloudDatasetRow {
+  input: string;
+  expected_output?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CloudDatasetPullResponse {
+  id: string;
+  name: string;
+  description: string;
+  row_count: number;
+  rows: Array<{ id: string; input: string; expected_output: string; metadata: Record<string, unknown> }>;
+}
+
+export interface CloudDatasetSummary {
+  id: string;
+  name: string;
+  description: string;
+  rowCount: number;
+  updatedAt: string;
+}
+
+export interface CloudAgentDefinition {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  role: string;
+  model: string;
+  policy: string;
+  systemPrompt: string;
+  tags: string;
+  deployTarget: string;
+  version: string;
+  status: string;
+  totalRuns: number;
 }
 
 // ── Webhook signature verification ───────────────────────────────────────────
