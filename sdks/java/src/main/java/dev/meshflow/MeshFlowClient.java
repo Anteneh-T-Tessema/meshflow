@@ -38,7 +38,7 @@ import java.util.function.Consumer;
  */
 public final class MeshFlowClient {
 
-    private static final String SDK_VERSION = "1.5.0";
+    private static final String SDK_VERSION = "1.14.0";
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(120);
 
     private final String baseUrl;
@@ -527,4 +527,388 @@ public final class MeshFlowClient {
         }
         return sb.toString();
     }
+
+    // ── Cloud ingest helpers ───────────────────────────────────────────────────
+
+    /** Request builder for cloud ingest endpoints (x-meshflow-key, not Bearer). */
+    private HttpRequest.Builder cloudRequestBuilder(String path) {
+        HttpRequest.Builder b = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .timeout(DEFAULT_TIMEOUT)
+                .header("Accept", "application/json")
+                .header("User-Agent", "meshflow-java-sdk/" + SDK_VERSION);
+        if (apiKey != null && !apiKey.isEmpty()) {
+            b.header("x-meshflow-key", apiKey);
+        }
+        return b;
+    }
+
+    private String cloudDoPost(String path, String jsonBody) throws IOException {
+        HttpRequest req = cloudRequestBuilder(path)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+                .build();
+        HttpResponse<String> resp;
+        try {
+            resp = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("meshflow cloud: request interrupted", e);
+        }
+        if (resp.statusCode() < 200 || resp.statusCode() > 299) {
+            throw new MeshFlowException(resp.statusCode(), "POST", path,
+                    resp.body() == null ? "" : resp.body().strip());
+        }
+        return resp.body();
+    }
+
+    private String cloudDoGet(String path) throws IOException {
+        HttpRequest req = cloudRequestBuilder(path).GET().build();
+        HttpResponse<String> resp;
+        try {
+            resp = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("meshflow cloud: request interrupted", e);
+        }
+        if (resp.statusCode() == 404) return null;
+        if (resp.statusCode() < 200 || resp.statusCode() > 299) {
+            throw new MeshFlowException(resp.statusCode(), "GET", path,
+                    resp.body() == null ? "" : resp.body().strip());
+        }
+        return resp.body();
+    }
+
+    private void cloudDoDelete(String path) throws IOException {
+        HttpRequest req = cloudRequestBuilder(path)
+                .DELETE().build();
+        HttpResponse<String> resp;
+        try {
+            resp = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("meshflow cloud: request interrupted", e);
+        }
+        if (resp.statusCode() < 200 || resp.statusCode() > 299) {
+            throw new MeshFlowException(resp.statusCode(), "DELETE", path,
+                    resp.body() == null ? "" : resp.body().strip());
+        }
+    }
+
+    // ── Cloud ingest — runs, evals, MCP, workers ──────────────────────────────
+
+    /**
+     * Posts a completed run summary to the cloud dashboard (/dashboard/runs).
+     *
+     * @param payload map of run fields (run_id, workflow_name, status, total_cost_usd, …)
+     * @return {@code true} on success
+     * @throws IOException on network or non-2xx response
+     */
+    public boolean reportRun(Map<String, Object> payload) throws IOException {
+        cloudDoPost("/api/ingest/run", JsonSerializer.serializeMap(payload));
+        return true;
+    }
+
+    /**
+     * Pushes one eval result to /dashboard/evals.
+     *
+     * @param runId     the run being evaluated
+     * @param scenario  scenario name
+     * @param score     0.0–1.0
+     * @param passed    whether the score meets threshold
+     * @param reasoning optional explanation (may be null)
+     * @throws IOException on network or non-2xx response
+     */
+    public boolean reportEval(String runId, String scenario, double score,
+                              boolean passed, String reasoning) throws IOException {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("run_id", runId);
+        p.put("scenario", scenario);
+        p.put("score", score);
+        p.put("passed", passed);
+        if (reasoning != null) p.put("reasoning", reasoning);
+        cloudDoPost("/api/ingest/eval", JsonSerializer.serializeMap(p));
+        return true;
+    }
+
+    /**
+     * Records one MCP tool call to /dashboard/mcp.
+     *
+     * @param serverName  MCP server name
+     * @param toolName    tool invoked
+     * @param latencyMs   round-trip latency in milliseconds
+     * @param success     whether the call succeeded
+     * @throws IOException on network or non-2xx response
+     */
+    public boolean reportMcpCall(String serverName, String toolName,
+                                 long latencyMs, boolean success) throws IOException {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("server_name", serverName);
+        p.put("tool_name", toolName);
+        p.put("transport", "stdio");
+        p.put("latency_ms", latencyMs);
+        p.put("success", success);
+        cloudDoPost("/api/ingest/mcp", JsonSerializer.serializeMap(p));
+        return true;
+    }
+
+    /**
+     * Upserts a worker job status event to /dashboard/workers.
+     *
+     * @param jobId        unique job identifier
+     * @param workflowName workflow this job belongs to
+     * @param status       "queued" | "running" | "completed" | "failed" | "retrying"
+     * @param durationMs   elapsed time in milliseconds
+     * @throws IOException on network or non-2xx response
+     */
+    public boolean reportWorkerJob(String jobId, String workflowName,
+                                   String status, long durationMs) throws IOException {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("job_id", jobId);
+        p.put("workflow_name", workflowName);
+        p.put("status", status);
+        p.put("duration_ms", durationMs);
+        cloudDoPost("/api/ingest/worker", JsonSerializer.serializeMap(p));
+        return true;
+    }
+
+    // ── Cloud ingest — spans ───────────────────────────────────────────────────
+
+    /**
+     * Sends a batch of per-step trace spans to /dashboard/traces.
+     *
+     * <p>Each span map must contain at minimum:
+     * {@code run_id}, {@code agent_name}, {@code span_type}, {@code name},
+     * {@code started_at} (ISO-8601), {@code duration_ms}.
+     *
+     * @param spans list of span payload maps
+     * @return number of spans ingested
+     * @throws IOException on network or non-2xx response
+     */
+    public int reportSpans(List<Map<String, Object>> spans) throws IOException {
+        if (spans == null || spans.isEmpty()) return 0;
+        StringBuilder sb = new StringBuilder("{\"spans\":[");
+        for (int i = 0; i < spans.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(JsonSerializer.serializeMap(spans.get(i)));
+        }
+        sb.append("]}");
+        String resp = cloudDoPost("/api/ingest/spans", sb.toString());
+        Map<String, Object> r = JsonParser.parseObject(resp);
+        return asInt(r.get("ingested"));
+    }
+
+    // ── Prompt Hub ─────────────────────────────────────────────────────────────
+
+    /**
+     * Fetches the active version of a prompt by slug.
+     * Returns {@code null} when the slug is not found.
+     *
+     * @param slug    the prompt slug
+     * @param version specific version number, or 0 for the active version
+     * @return a map with keys: slug, name, content, version, model, temperature
+     * @throws IOException on network or non-2xx response
+     */
+    public Map<String, Object> promptGet(String slug, int version) throws IOException {
+        String path = "/api/ingest/prompts?slug=" + urlEncode(slug);
+        if (version > 0) path += "&version=" + version;
+        String body = cloudDoGet(path);
+        if (body == null) return null;
+        return JsonParser.parseObject(body);
+    }
+
+    /**
+     * Lists all prompt slugs registered for the org.
+     *
+     * @return list of maps, each containing: slug, name, description, updatedAt
+     * @throws IOException on network or non-2xx response
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> promptList() throws IOException {
+        String body = cloudDoGet("/api/ingest/prompts?list=1");
+        if (body == null) return List.of();
+        List<Object> raw = JsonParser.parseArray(body);
+        List<Map<String, Object>> result = new ArrayList<>(raw.size());
+        for (Object item : raw) {
+            if (item instanceof Map) result.add((Map<String, Object>) item);
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    /**
+     * Pushes a new version of a prompt (creates the prompt if it doesn't exist).
+     *
+     * @param slug    the prompt slug
+     * @param content the prompt text
+     * @param notes   optional version notes (may be null)
+     * @return map with slug, version, content
+     * @throws IOException on network or non-2xx response
+     */
+    public Map<String, Object> promptPush(String slug, String content, String notes)
+            throws IOException {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("slug", slug);
+        p.put("content", content);
+        if (notes != null && !notes.isEmpty()) p.put("notes", notes);
+        String resp = cloudDoPost("/api/ingest/prompts", JsonSerializer.serializeMap(p));
+        return JsonParser.parseObject(resp);
+    }
+
+    // ── Dataset Hub ────────────────────────────────────────────────────────────
+
+    /**
+     * Lists all datasets for the org.
+     *
+     * @return list of dataset summary maps (id, name, description, rowCount, updatedAt)
+     * @throws IOException on network or non-2xx response
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> datasetList() throws IOException {
+        String body = cloudDoGet("/api/ingest/datasets");
+        if (body == null) return List.of();
+        List<Object> raw = JsonParser.parseArray(body);
+        List<Map<String, Object>> result = new ArrayList<>(raw.size());
+        for (Object item : raw) {
+            if (item instanceof Map) result.add((Map<String, Object>) item);
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    /**
+     * Fetches rows from a named dataset. Returns {@code null} when not found.
+     *
+     * @param name   dataset name
+     * @param limit  max rows to return (0 for default 1000)
+     * @param offset row offset for pagination (0 for start)
+     * @return map with id, name, row_count, rows[]
+     * @throws IOException on network or non-2xx response
+     */
+    public Map<String, Object> datasetPull(String name, int limit, int offset)
+            throws IOException {
+        StringBuilder path = new StringBuilder("/api/ingest/datasets?name=")
+                .append(urlEncode(name));
+        if (limit  > 0) path.append("&limit=").append(limit);
+        if (offset > 0) path.append("&offset=").append(offset);
+        String body = cloudDoGet(path.toString());
+        if (body == null) return null;
+        return JsonParser.parseObject(body);
+    }
+
+    /**
+     * Appends rows to a named dataset, creating it if it doesn't exist.
+     *
+     * <p>Each row map must contain at minimum {@code input}. Optional keys:
+     * {@code expected_output}, {@code metadata}.
+     *
+     * @param name        dataset name
+     * @param rows        rows to append
+     * @param description optional description for new datasets (may be null)
+     * @return the dataset id
+     * @throws IOException on network or non-2xx response
+     */
+    public String datasetPush(String name, List<Map<String, Object>> rows,
+                              String description) throws IOException {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("name", name);
+        if (description != null && !description.isEmpty()) p.put("description", description);
+        // Serialize rows array manually
+        StringBuilder sb = new StringBuilder("{");
+        sb.append("\"name\":").append(JsonSerializer.quoteString(name));
+        if (description != null && !description.isEmpty()) {
+            sb.append(",\"description\":").append(JsonSerializer.quoteString(description));
+        }
+        sb.append(",\"rows\":[");
+        for (int i = 0; i < rows.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(JsonSerializer.serializeMap(rows.get(i)));
+        }
+        sb.append("]}");
+        String resp = cloudDoPost("/api/ingest/datasets", sb.toString());
+        Map<String, Object> r = JsonParser.parseObject(resp);
+        return asString(r.get("id"));
+    }
+
+    /**
+     * Deletes a dataset and all its rows.
+     *
+     * @param name dataset name
+     * @throws IOException on network or non-2xx response
+     */
+    public void datasetDelete(String name) throws IOException {
+        cloudDoDelete("/api/ingest/datasets?name=" + urlEncode(name));
+    }
+
+    // ── Agent Registry ─────────────────────────────────────────────────────────
+
+    /**
+     * Lists all registered agent definitions.
+     *
+     * @return list of agent definition maps
+     * @throws IOException on network or non-2xx response
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> listAgents() throws IOException {
+        String body = cloudDoGet("/api/ingest/agents");
+        if (body == null) return List.of();
+        List<Object> raw = JsonParser.parseArray(body);
+        List<Map<String, Object>> result = new ArrayList<>(raw.size());
+        for (Object item : raw) {
+            if (item instanceof Map) result.add((Map<String, Object>) item);
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    /**
+     * Fetches one agent definition by slug. Returns {@code null} when not found.
+     *
+     * @param slug the agent slug
+     * @return agent definition map, or null
+     * @throws IOException on network or non-2xx response
+     */
+    public Map<String, Object> getAgent(String slug) throws IOException {
+        String body = cloudDoGet("/api/ingest/agents?slug=" + urlEncode(slug));
+        if (body == null) return null;
+        return JsonParser.parseObject(body);
+    }
+
+    /**
+     * Upserts an agent definition in the cloud Agent Registry.
+     *
+     * @param name   human-readable name
+     * @param slug   kebab-case identifier used in code
+     * @param role   "executor" | "planner" | "researcher" | "critic"
+     * @param model  model ID (e.g. "claude-sonnet-4-6")
+     * @param policy governance policy ("standard" | "hipaa" | "sox" | …)
+     * @return agent definition map
+     * @throws IOException on network or non-2xx response
+     */
+    public Map<String, Object> registerAgent(String name, String slug,
+                                             String role, String model,
+                                             String policy) throws IOException {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("name", name);
+        p.put("slug", slug);
+        if (role   != null && !role.isEmpty())   p.put("role",   role);
+        if (model  != null && !model.isEmpty())  p.put("model",  model);
+        if (policy != null && !policy.isEmpty()) p.put("policy", policy);
+        String resp = cloudDoPost("/api/ingest/agents", JsonSerializer.serializeMap(p));
+        return JsonParser.parseObject(resp);
+    }
+
+    /**
+     * Increments the run counter for a registered agent.
+     *
+     * @param slug     the agent slug
+     * @param runCount number of runs to add (usually 1)
+     * @throws IOException on network or non-2xx response
+     */
+    public boolean recordAgentRun(String slug, int runCount) throws IOException {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("name", slug);
+        p.put("slug", slug);
+        p.put("run_count", runCount);
+        cloudDoPost("/api/ingest/agents", JsonSerializer.serializeMap(p));
+        return true;
+    }
+
 }
