@@ -236,6 +236,54 @@ class MeshFlowCloud:
     async def areport_worker_job(self, **kwargs: Any) -> bool:
         return await self._apost("/api/ingest/worker", kwargs)
 
+    # ── report_compliance ──────────────────────────────────────────────────────
+
+    def report_compliance(
+        self,
+        framework: str,
+        passed: bool,
+        *,
+        run_id: str | None = None,
+        score: float | None = None,
+        evidence: dict[str, Any] | None = None,
+        generated_at: str | None = None,
+    ) -> bool:
+        """Push a compliance evidence report to /dashboard/compliance.
+
+        Designed to be called after :class:`~meshflow.core.compliance.ComplianceProfile`
+        or :class:`~meshflow.security.soc2.SOC2Checker` generates a report.
+
+        Parameters
+        ----------
+        framework:
+            Compliance framework: ``"hipaa"``, ``"sox"``, ``"gdpr"``, ``"pci"``,
+            ``"nerc"``, ``"soc2"``, ``"eu_ai_act"``.
+        passed:
+            Whether the overall check passed.
+        run_id:
+            Optional: scope the report to a single run.
+        score:
+            0.0–1.0 overall compliance score. Computed from *evidence* if omitted.
+        evidence:
+            Dict mapping control IDs to ``{passed, title, details}`` dicts.
+        generated_at:
+            ISO-8601 timestamp of when the report was generated.
+        """
+        payload: dict[str, Any] = {"framework": framework, "passed": passed}
+        if run_id:
+            payload["run_id"] = run_id
+        if score is not None:
+            payload["score"] = score
+        if evidence:
+            payload["evidence"] = evidence
+        if generated_at:
+            payload["generated_at"] = generated_at
+        return self._post("/api/ingest/compliance", payload)
+
+    async def areport_compliance(self, **kwargs: Any) -> bool:
+        """Async variant of :meth:`report_compliance`."""
+        return await self._apost("/api/ingest/compliance", kwargs)
+
     # ── report_spans ───────────────────────────────────────────────────────────
 
     def report_spans(self, spans: list[dict[str, Any]]) -> bool:
@@ -454,3 +502,27 @@ def report_mcp_call(**kwargs: Any) -> bool:
 def report_worker_job(**kwargs: Any) -> bool:
     """Module-level shorthand for :meth:`MeshFlowCloud.report_worker_job`."""
     return get_cloud_client().report_worker_job(**kwargs)
+
+
+def report_compliance(
+    framework: str,
+    passed: bool,
+    **kwargs: Any,
+) -> bool:
+    """Module-level shorthand for :meth:`MeshFlowCloud.report_compliance`.
+
+    Usage::
+
+        from meshflow.cloud import cloud_report_compliance
+        from meshflow import SOC2Checker
+
+        report = SOC2Checker().check()
+        cloud_report_compliance(
+            framework="soc2",
+            passed=report.passed,
+            score=report.score,
+            evidence={c.control_id: {"passed": c.passed, "details": c.details}
+                      for c in report.controls},
+        )
+    """
+    return get_cloud_client().report_compliance(framework, passed, **kwargs)

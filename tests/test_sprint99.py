@@ -642,8 +642,11 @@ class TestLaunchPostsUpdated:
         content = self._read("show_hn.md")
         assert "SpawnableAgent" in content or "spawnable" in content.lower()
         assert "@traceable" in content or "traceable" in content.lower()
-        # v1.13.0 updated test count
-        assert "5,711" in content or "5711" in content or "5,500" in content or "5500" in content or "5,4" in content
+        # test count bumped with each release — accept any value >= 5,400
+        import re
+        counts = re.findall(r'(\d[\d,]+)\s*tests?', content)
+        assert any(int(c.replace(',', '')) >= 5400 for c in counts), \
+            f"No test count >= 5400 found in show_hn.md; found: {counts}"
 
     def test_show_hn_updated_version(self) -> None:
         content = self._read("show_hn.md")
@@ -652,8 +655,10 @@ class TestLaunchPostsUpdated:
 
     def test_product_hunt_updated_version(self) -> None:
         content = self._read("product_hunt.md")
-        # v1.13.0 supersedes v1.12.0
-        assert "v1.13.0" in content or "v1.12.0" in content or "v1.11" in content or "v1.12" in content
+        import re
+        versions = re.findall(r'v1\.(\d+)', content)
+        assert any(int(v) >= 13 for v in versions), \
+            f"No version >= v1.13 found in product_hunt.md; found: {versions}"
 
     def test_product_hunt_mentions_new_features(self) -> None:
         content = self._read("product_hunt.md")

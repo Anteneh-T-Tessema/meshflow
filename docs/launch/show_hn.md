@@ -1,6 +1,6 @@
 # Show HN: MeshFlow — production multi-agent orchestration for regulated industries
 
-**HN title:** Show HN: MeshFlow – open-source agent orchestration with HIPAA/SOX/GDPR built in, 5,711 tests
+**HN title:** Show HN: MeshFlow – open-source agent orchestration with HIPAA/SOX/GDPR built in, 5,816 tests
 
 ---
 
@@ -30,6 +30,14 @@ print(result.output)
 2. **Self-improving cost routing.** `AdaptiveModelTierRouter` starts with the cheapest model (local llama3.2, $0.00) and escalates only when agent confidence is too low. Thresholds adapt automatically every 50 routes based on actual outcomes — no training data required.
 
 3. **Framework parity, not lock-in.** The same governance kernel wraps LangGraph graphs, CrewAI Crews, and AutoGen conversations. You can migrate incrementally.
+
+**v1.14.0 — Cloud Platform SDK parity:**
+
+- **PromptHub** — `PromptHub.get("slug")` pulls versioned prompts at runtime with a 60 s TTL cache. No more hardcoded system prompts in source.
+- **DatasetHub** — `DatasetHub.push/pull/list` — ship eval datasets from CI; pull them back locally for quick iteration.
+- **CloudAgentRegistry** — `CloudAgentRegistry.register/record_run` — every agent run bumps the dashboard counter automatically via `instrument(register_agents=True)`.
+- **Span-level trace telemetry** — `instrument()` now ships per-step spans to `/dashboard/traces` (was silently broken — wrong event bus API; fixed with a duck-typed queue injection).
+- **Cross-SDK parity** — TypeScript, Go, Rust, Java SDKs all have the same 14 cloud ingest methods. Published: `npm install meshflow-sdk@1.14.0`, `cargo add meshflow-sdk@1.14.0`, `pip install meshflow==1.14.0`, `io.github.anteneh-t-tessema:meshflow-sdk:1.14.0` on Maven Central.
 
 **v1.13.0 highlights (Sprints 95–102):**
 
@@ -61,7 +69,7 @@ print(result.output)
 - Code interpreter (sandboxed subprocess, module allow-list)
 - Multi-modal: image, document, audio inputs
 - BaseStore / SQLiteStore cross-session shared memory (LangGraph parity)
-- 5,711 tests, CI green on Python 3.11 + 3.12
+- 5,816 tests, CI green on Python 3.11 + 3.12
 
 **Cost profile on a typical workload with the cascade router:**
 

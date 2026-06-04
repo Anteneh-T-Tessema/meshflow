@@ -1,4 +1,4 @@
-# Product Hunt Launch — MeshFlow v1.13.0
+# Product Hunt Launch — MeshFlow v1.14.0
 
 ## Submission Metadata
 
@@ -24,7 +24,7 @@ I'm Anteneh, the maker of MeshFlow. Thanks for checking it out.
 
 **The problem I kept hitting:** You build a multi-agent pipeline, hardcode `gpt-4o` everywhere because it's the safe choice, and then watch your API bill climb while 70% of your tasks could have been handled by a free local model.
 
-**What v1.13.0 adds** (sprints 95–102):
+**What v1.14.0 adds** (sprints 95–102):
 
 ```python
 # 1. Functional API (@task / @entrypoint — LangGraph-style)
@@ -82,7 +82,7 @@ CronTrigger(cron="0 9 * * *").add(process_report, report_id="daily")
 
 vs. always-gpt-4o: same quality, ~10× cheaper.
 
-**New in v1.13.0:**
+**New in v1.14.0:**
 - `AdvisorAgent` / `AdvisorRouter` — advisor-tool pattern, adaptive use threshold
 - `DynamicWorkflow` — runtime agent spawning from planner output
 - `ContextCompactor` — Claude-native + sliding-window + summary strategies
@@ -183,5 +183,5 @@ async def stream(task: str):
 - GitHub: https://github.com/Anteneh-T-Tessema/meshflow
 - Docs: https://meshflow.dev/docs
 - PyPI: https://pypi.org/project/meshflow/
-- Docker: `docker pull ghcr.io/anteneh-t-tessema/meshflow-mcp:1.13.0`
+- Docker: `docker pull ghcr.io/anteneh-t-tessema/meshflow-mcp:1.14.0`
 - QUICKSTART.md: https://github.com/Anteneh-T-Tessema/meshflow/blob/main/QUICKSTART.md
