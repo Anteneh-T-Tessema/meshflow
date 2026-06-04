@@ -46,7 +46,8 @@ from meshflow_forensic.schemas import (
     RiskTier,
     ForensicPolicy,
 )
-from meshflow_forensic.report import ForensicReport, IncidentTimeline
+from meshflow_forensic.report import ForensicReport, IncidentTimeline, ComplianceSection
+from meshflow_forensic.timestamp import TimestampAnchor, TimestampClient
 from meshflow_forensic.eu_ai_act import EUAIActChecker, EUAIActResult, HighRiskCategory
 
 __version__ = "1.0.0"
@@ -66,6 +67,10 @@ __all__ = [
     # Reporting
     "ForensicReport",
     "IncidentTimeline",
+    "ComplianceSection",
+    # Timestamps
+    "TimestampAnchor",
+    "TimestampClient",
     # EU AI Act
     "EUAIActChecker",
     "EUAIActResult",

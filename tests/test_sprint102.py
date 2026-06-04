@@ -441,3 +441,143 @@ class TestCostRegressionGate:
         from meshflow import CostRegressionGate, CostRegressionError, CostRegressionReport, CostBaseline
         assert CostRegressionGate is not None
         assert CostRegressionError is not None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# E — RFC 3161 timestamp anchoring + compliance sections
+# ══════════════════════════════════════════════════════════════════════════════
+
+import asyncio
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "packages", "meshflow-forensic"))
+
+
+class TestTimestampAnchor:
+    def test_round_trip(self) -> None:
+        from meshflow_forensic import TimestampAnchor
+        a = TimestampAnchor(
+            anchor_id="abc", chain_head_hash="d" * 64, tsa_url="https://freetsa.org/tsr",
+            anchored_at="2026-06-03T00:00:00+00:00", tsr_base64="", nonce_hex="0x1",
+            status=0, verified=True,
+        )
+        assert TimestampAnchor.from_dict(a.to_dict()) == a
+
+    def test_is_granted_status_0(self) -> None:
+        from meshflow_forensic import TimestampAnchor
+        a = TimestampAnchor(anchor_id="x", chain_head_hash="a"*64, tsa_url="",
+                            anchored_at="", tsr_base64="", nonce_hex="0x0",
+                            status=0, verified=True)
+        assert a.is_granted() is True
+
+    def test_is_granted_false_for_rejection(self) -> None:
+        from meshflow_forensic import TimestampAnchor
+        a = TimestampAnchor(anchor_id="x", chain_head_hash="a"*64, tsa_url="",
+                            anchored_at="", tsr_base64="", nonce_hex="0x0",
+                            status=2, verified=False)
+        assert a.is_granted() is False
+
+
+class TestTimestampClientOffline:
+    def test_stamp_fails_gracefully_on_no_network(self) -> None:
+        from meshflow_forensic import TimestampClient
+        client = TimestampClient(tsa_url="http://127.0.0.1:19998/ts", timeout_s=1)
+        anchor = client.stamp("a" * 64)
+        assert anchor.chain_head_hash == "a" * 64
+        assert anchor.verified is False
+        assert anchor.error
+
+    def test_verify_anchor_hash_mismatch(self) -> None:
+        from meshflow_forensic import TimestampClient, TimestampAnchor
+        client = TimestampClient()
+        a = TimestampAnchor(anchor_id="x", chain_head_hash="a"*64, tsa_url="",
+                            anchored_at="", tsr_base64="", nonce_hex="0x0",
+                            status=0, verified=True)
+        assert client.verify_anchor(a, "b" * 64) is False  # wrong hash
+
+
+class TestAuditLedgerAnchoring:
+    def test_anchor_stored_in_db(self) -> None:
+        from meshflow_forensic import DascGate, Intent, RiskTier
+        async def _run():
+            gate = DascGate.create(run_id="anch_test")
+            await gate.evaluate(Intent(action="read", agent_id="a", risk_tier=RiskTier.READ_ONLY))
+            anch = gate.anchor(tsa_url="http://127.0.0.1:19998/ts", timeout_s=1)
+            assert anch.chain_head_hash == gate._ledger._last_hash
+            assert len(gate.all_anchors()) == 1
+            return gate
+        asyncio.run(_run())
+
+    def test_anchor_does_not_break_chain(self) -> None:
+        from meshflow_forensic import DascGate, Intent, RiskTier
+        async def _run():
+            gate = DascGate.create(run_id="chain_test")
+            await gate.evaluate(Intent(action="read", agent_id="a", risk_tier=RiskTier.READ_ONLY))
+            gate.anchor(tsa_url="http://127.0.0.1:19998/ts", timeout_s=1)
+            await gate.evaluate(Intent(action="write", agent_id="a", risk_tier=RiskTier.EXTERNAL_IO))
+            assert gate.verify_ledger() is True
+        asyncio.run(_run())
+
+    def test_verify_with_timestamps_returns_dict(self) -> None:
+        from meshflow_forensic import DascGate, Intent, RiskTier
+        async def _run():
+            gate = DascGate.create(run_id="vts_test")
+            await gate.evaluate(Intent(action="read", agent_id="a", risk_tier=RiskTier.READ_ONLY))
+            gate.anchor(tsa_url="http://127.0.0.1:19998/ts", timeout_s=1)
+            r = gate.verify_with_timestamps()
+            assert r["chain_valid"] is True
+            assert r["anchors_checked"] == 1
+        asyncio.run(_run())
+
+
+class TestComplianceSections:
+    def _gate(self) -> "DascGate":  # type: ignore[name-defined]
+        from meshflow_forensic import DascGate, Intent, RiskTier
+        async def _run():
+            gate = DascGate.create(run_id="cs_test")
+            await gate.evaluate(Intent(action="read", agent_id="analyst", risk_tier=RiskTier.READ_ONLY))
+            await gate.evaluate(Intent(action="write_file", agent_id="writer", risk_tier=RiskTier.EXTERNAL_IO))
+            return gate
+        return asyncio.run(_run())
+
+    def test_report_has_four_compliance_sections(self) -> None:
+        from meshflow_forensic import ForensicReport, ComplianceSection
+        report = ForensicReport.from_gate(self._gate())
+        assert len(report.compliance_sections) == 4
+        for sec in report.compliance_sections:
+            assert isinstance(sec, ComplianceSection)
+
+    def test_hipaa_gap_when_no_anchor(self) -> None:
+        from meshflow_forensic import ForensicReport
+        report = ForensicReport.from_gate(self._gate())
+        hipaa = next(s for s in report.compliance_sections if "HIPAA" in s.regulation)
+        assert any("RFC 3161" in g for g in hipaa.gaps)
+        assert hipaa.status == "GAP"
+
+    def test_compliance_status_helper(self) -> None:
+        from meshflow_forensic import ForensicReport
+        report = ForensicReport.from_gate(self._gate())
+        assert report.compliance_status("HIPAA") in {"SATISFIED", "PARTIAL", "GAP"}
+        assert report.compliance_status("nonexistent") == "NOT_ASSESSED"
+
+    def test_html_contains_all_regulations(self) -> None:
+        from meshflow_forensic import ForensicReport
+        html = ForensicReport.from_gate(self._gate()).to_html()
+        for reg in ("HIPAA", "SOC 2", "GDPR", "EU AI Act", "RFC 3161"):
+            assert reg in html, f"Missing {reg!r} in HTML report"
+
+    def test_timestamp_anchors_in_report(self) -> None:
+        from meshflow_forensic import DascGate, Intent, RiskTier, ForensicReport
+        async def _run():
+            gate = DascGate.create(run_id="anch_report")
+            await gate.evaluate(Intent(action="read", agent_id="a", risk_tier=RiskTier.READ_ONLY))
+            gate.anchor(tsa_url="http://127.0.0.1:19998/ts", timeout_s=1)
+            return ForensicReport.from_gate(gate)
+        report = asyncio.run(_run())
+        assert len(report.timestamp_anchors) == 1
+        assert report.anchors_verified() == 0   # offline TSA → not verified
+
+    def test_exported(self) -> None:
+        from meshflow_forensic import ComplianceSection, TimestampAnchor, TimestampClient
+        assert ComplianceSection is not None
+        assert TimestampAnchor is not None
+        assert TimestampClient is not None

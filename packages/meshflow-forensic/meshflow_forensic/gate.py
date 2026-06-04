@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
+from meshflow_forensic.timestamp import TimestampAnchor, TimestampClient
 from meshflow_forensic.schemas import (
     ActionVerdict,
     CompensationPlan,
@@ -89,7 +90,7 @@ class CompensationExecutor:
 
 
 class AuditLedger:
-    """SHA-256 hash-chained append-only ledger."""
+    """SHA-256 hash-chained append-only ledger with RFC 3161 timestamp anchoring."""
 
     def __init__(self, db_path: str = ":memory:") -> None:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -100,6 +101,19 @@ class AuditLedger:
                 agent_id TEXT, agent_did TEXT, action TEXT,
                 effective_tier INTEGER, verdict TEXT, reason TEXT,
                 timestamp TEXT, prev_hash TEXT, entry_hash TEXT
+            )
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS anchors (
+                anchor_id TEXT PRIMARY KEY,
+                chain_head_hash TEXT NOT NULL,
+                tsa_url TEXT,
+                anchored_at TEXT,
+                tsr_base64 TEXT,
+                nonce_hex TEXT,
+                status INTEGER,
+                verified INTEGER,
+                error TEXT
             )
         """)
         self._conn.commit()
@@ -136,6 +150,88 @@ class AuditLedger:
                 return False
             prev = row_hash
         return True
+
+    def anchor(
+        self,
+        tsa_url: str = "https://freetsa.org/tsr",
+        timeout_s: int = 10,
+    ) -> TimestampAnchor:
+        """Request an RFC 3161 trusted timestamp for the current chain head.
+
+        Sends the current ``entry_hash`` chain head to a public TSA and
+        stores the raw ``TimeStampResp`` DER token in the ``anchors`` table.
+        The stored TSR can be verified independently with::
+
+            openssl ts -verify -in anchor.tsr -data <hash> -CAfile tsa.crt
+
+        Parameters
+        ----------
+        tsa_url:
+            TSA endpoint.  Default: FreeTSA (free, no account required).
+        timeout_s:
+            HTTP timeout in seconds.
+
+        Returns
+        -------
+        TimestampAnchor
+            The anchor.  ``anchor.verified`` is ``True`` when the TSA
+            returned PKIStatus 0 (granted).  On network failure the anchor
+            is stored with ``error`` populated and ``verified=False`` so the
+            run can continue — the chain integrity is unaffected.
+        """
+        client = TimestampClient(tsa_url=tsa_url, timeout_s=timeout_s)
+        anchor = client.stamp(self._last_hash)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO anchors VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                anchor.anchor_id, anchor.chain_head_hash, anchor.tsa_url,
+                anchor.anchored_at, anchor.tsr_base64, anchor.nonce_hex,
+                anchor.status, int(anchor.verified), anchor.error,
+            ),
+        )
+        self._conn.commit()
+        return anchor
+
+    def all_anchors(self) -> list[TimestampAnchor]:
+        """Return all stored timestamp anchors ordered by insertion time."""
+        cols = ["anchor_id", "chain_head_hash", "tsa_url", "anchored_at",
+                "tsr_base64", "nonce_hex", "status", "verified", "error"]
+        rows = self._conn.execute(
+            "SELECT * FROM anchors ORDER BY rowid"
+        ).fetchall()
+        result = []
+        for row in rows:
+            d = dict(zip(cols, row))
+            d["verified"] = bool(d["verified"])
+            result.append(TimestampAnchor(**d))
+        return result
+
+    def verify_with_timestamps(self) -> dict[str, Any]:
+        """Verify both the hash chain and all RFC 3161 anchors.
+
+        Returns
+        -------
+        dict
+            ``{"chain_valid": bool, "anchors_checked": int,
+               "anchors_verified": int, "broken_anchors": list[str]}``
+        """
+        chain_ok = self.verify_chain()
+        anchors = self.all_anchors()
+        client = TimestampClient()
+        broken: list[str] = []
+        verified_count = 0
+        for a in anchors:
+            ok = client.verify_anchor(a, a.chain_head_hash)
+            if ok:
+                verified_count += 1
+            else:
+                broken.append(a.anchor_id)
+        return {
+            "chain_valid": chain_ok,
+            "anchors_checked": len(anchors),
+            "anchors_verified": verified_count,
+            "broken_anchors": broken,
+        }
 
     def all_entries(self) -> list[dict[str, Any]]:
         cols = ["entry_id","run_id","intent_id","agent_id","agent_did","action",
@@ -221,3 +317,45 @@ class DascGate:
 
     def verify_ledger(self) -> bool:
         return self._ledger.verify_chain()
+
+    def anchor(
+        self,
+        tsa_url: str = "https://freetsa.org/tsr",
+        timeout_s: int = 10,
+    ) -> TimestampAnchor:
+        """Request an RFC 3161 trusted timestamp for the current chain head.
+
+        Call this at the end of a run (or at any checkpoint) to anchor the
+        ledger's hash chain to a trusted external clock.  The raw TSR token
+        is stored in the ledger's ``anchors`` table and included in
+        :meth:`ForensicReport.from_gate`.
+
+        Parameters
+        ----------
+        tsa_url:
+            TSA endpoint.  Default: FreeTSA (free, no account required).
+        timeout_s:
+            HTTP timeout.
+
+        Returns
+        -------
+        TimestampAnchor
+            ``anchor.verified`` is ``True`` when the TSA returned
+            PKIStatus 0 (granted).
+        """
+        return self._ledger.anchor(tsa_url=tsa_url, timeout_s=timeout_s)
+
+    def all_anchors(self) -> list[TimestampAnchor]:
+        """Return all RFC 3161 timestamp anchors stored for this run."""
+        return self._ledger.all_anchors()
+
+    def verify_with_timestamps(self) -> dict[str, Any]:
+        """Verify the hash chain and all RFC 3161 anchors.
+
+        Returns
+        -------
+        dict
+            ``{"chain_valid": bool, "anchors_checked": int,
+               "anchors_verified": int, "broken_anchors": list[str]}``
+        """
+        return self._ledger.verify_with_timestamps()
