@@ -450,3 +450,263 @@ pub(crate) struct HitlDecisionBody<'a> {
     #[serde(skip_serializing_if = "str::is_empty")]
     pub notes: &'a str,
 }
+
+// ── Cloud ingest — response types ─────────────────────────────────────────────
+
+/// Generic `{ ok: true }` response from cloud ingest endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestOk {
+    pub ok: Option<bool>,
+    #[serde(default)]
+    pub ingested: Option<u32>,
+}
+
+// ── Cloud ingest — span ───────────────────────────────────────────────────────
+
+/// A single trace span sent to `POST /api/ingest/spans`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpanInput {
+    pub run_id: String,
+    pub agent_name: String,
+    /// `"llm_call"`, `"tool_call"`, `"guardrail"`, `"policy_check"`, `"step"`.
+    pub span_type: String,
+    pub name: String,
+    /// ISO-8601 timestamp when the span started.
+    pub started_at: String,
+    pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// `"ok"` or `"error"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_msg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Builder for [`SpanInput`].
+impl SpanInput {
+    pub fn new(
+        run_id: impl Into<String>,
+        agent_name: impl Into<String>,
+        name: impl Into<String>,
+        started_at: impl Into<String>,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            run_id: run_id.into(),
+            agent_name: agent_name.into(),
+            span_type: "step".into(),
+            name: name.into(),
+            started_at: started_at.into(),
+            duration_ms,
+            input_text: None,
+            output_text: None,
+            input_tokens: None,
+            output_tokens: None,
+            cost_usd: None,
+            status: None,
+            error_msg: None,
+            metadata: None,
+        }
+    }
+
+    pub fn span_type(mut self, t: impl Into<String>) -> Self {
+        self.span_type = t.into();
+        self
+    }
+    pub fn input_tokens(mut self, n: u32) -> Self { self.input_tokens = Some(n); self }
+    pub fn output_tokens(mut self, n: u32) -> Self { self.output_tokens = Some(n); self }
+    pub fn cost_usd(mut self, c: f64) -> Self { self.cost_usd = Some(c); self }
+    pub fn output_text(mut self, t: impl Into<String>) -> Self { self.output_text = Some(t.into()); self }
+    pub fn input_text(mut self, t: impl Into<String>) -> Self { self.input_text = Some(t.into()); self }
+}
+
+// ── Cloud ingest — eval ───────────────────────────────────────────────────────
+
+/// Payload for `POST /api/ingest/eval`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalInput {
+    pub run_id: String,
+    #[serde(default)]
+    pub suite: String,
+    pub scenario: String,
+    #[serde(default)]
+    pub metric: String,
+    pub score: f64,
+    pub passed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default)]
+    pub latency_ms: u64,
+}
+
+// ── Cloud ingest — MCP ────────────────────────────────────────────────────────
+
+/// Payload for `POST /api/ingest/mcp`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpCallInput {
+    pub server_name: String,
+    pub tool_name: String,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub latency_ms: u64,
+    #[serde(default = "default_true")]
+    pub success: bool,
+    #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default)]
+    pub tool_count: u32,
+}
+
+fn default_true() -> bool { true }
+
+// ── Cloud ingest — worker job ─────────────────────────────────────────────────
+
+/// Payload for `POST /api/ingest/worker`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerJobInput {
+    pub job_id: String,
+    pub workflow_name: String,
+    /// `"queued"`, `"running"`, `"completed"`, `"failed"`, `"retrying"`.
+    pub status: String,
+    #[serde(default)]
+    pub retries: u32,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_msg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_for: Option<String>,
+}
+
+fn default_max_retries() -> u32 { 3 }
+
+// ── Prompt Hub ────────────────────────────────────────────────────────────────
+
+/// Prompt record returned by `GET /api/ingest/prompts?slug=xxx`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptRecord {
+    pub slug: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub version: u32,
+    pub content: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub temperature: f64,
+}
+
+/// Summary item returned by `GET /api/ingest/prompts?list=1`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptSummary {
+    pub slug: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(rename = "updatedAt", default)]
+    pub updated_at: String,
+}
+
+// ── Dataset Hub ───────────────────────────────────────────────────────────────
+
+/// A single dataset row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetRow {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub input: String,
+    #[serde(default, rename = "expected_output")]
+    pub expected_output: String,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+impl DatasetRow {
+    pub fn new(input: impl Into<String>) -> Self {
+        Self {
+            id: None,
+            input: input.into(),
+            expected_output: String::new(),
+            metadata: serde_json::Value::Object(Default::default()),
+        }
+    }
+    pub fn expected_output(mut self, v: impl Into<String>) -> Self {
+        self.expected_output = v.into();
+        self
+    }
+}
+
+/// Dataset pull response from `GET /api/ingest/datasets?name=xxx`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetPullResponse {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, rename = "row_count")]
+    pub row_count: u32,
+    #[serde(default)]
+    pub rows: Vec<DatasetRow>,
+}
+
+/// Summary item from `GET /api/ingest/datasets`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetSummary {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, rename = "rowCount")]
+    pub row_count: u32,
+    #[serde(rename = "updatedAt", default)]
+    pub updated_at: String,
+}
+
+// ── Agent Registry ────────────────────────────────────────────────────────────
+
+/// Agent definition returned by the cloud Agent Registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDefinition {
+    pub id: String,
+    pub slug: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub policy: String,
+    #[serde(default, rename = "systemPrompt")]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub tags: String,
+    #[serde(default, rename = "deployTarget")]
+    pub deploy_target: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default, rename = "totalRuns")]
+    pub total_runs: u64,
+}

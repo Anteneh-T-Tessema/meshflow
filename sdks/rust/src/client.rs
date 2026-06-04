@@ -22,8 +22,10 @@ use futures_util::StreamExt;
 use reqwest::{header, Response};
 
 use crate::types::{
-    HealthResponse, HitlDecisionBody, MeshFlowError, PausedRun, ProbeResponse, RunOptions,
-    RunRequestBody, RunResult, StreamEvent, Trace, ZTStatus,
+    AgentDefinition, DatasetPullResponse, DatasetRow, DatasetSummary, EvalInput, HealthResponse,
+    HitlDecisionBody, IngestOk, McpCallInput, MeshFlowError, PausedRun, ProbeResponse,
+    PromptRecord, PromptSummary, RunOptions, RunRequestBody, RunResult, SpanInput, StreamEvent,
+    Trace, WorkerJobInput, ZTStatus,
 };
 
 const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -90,6 +92,65 @@ impl MeshFlowClient {
         } else {
             rb
         }
+    }
+
+    /// Apply `x-meshflow-key` auth used by cloud ingest endpoints.
+    fn apply_cloud_auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if self.api_key.is_empty() {
+            rb
+        } else {
+            rb.header("x-meshflow-key", &self.api_key)
+        }
+    }
+
+    /// POST to a cloud ingest path with `x-meshflow-key` auth.
+    async fn cloud_post<T>(&self, path: &str, body: &impl serde::Serialize) -> Result<T, MeshFlowError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let url = format!("{}{}", self.base_url, path);
+        let rb = self
+            .client
+            .post(&url)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json")
+            .header(header::USER_AGENT, format!("meshflow-rust-sdk/{SDK_VERSION}"))
+            .json(body);
+        let rb = self.apply_cloud_auth(rb);
+        let resp = rb.send().await?;
+        self.decode_response(resp).await
+    }
+
+    /// GET a cloud ingest path with `x-meshflow-key` auth.
+    async fn cloud_get<T>(&self, path: &str) -> Result<T, MeshFlowError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let url = format!("{}{}", self.base_url, path);
+        let rb = self
+            .client
+            .get(&url)
+            .header(header::ACCEPT, "application/json")
+            .header(header::USER_AGENT, format!("meshflow-rust-sdk/{SDK_VERSION}"));
+        let rb = self.apply_cloud_auth(rb);
+        let resp = rb.send().await?;
+        self.decode_response(resp).await
+    }
+
+    /// DELETE a cloud ingest path with `x-meshflow-key` auth.
+    async fn cloud_delete<T>(&self, path: &str) -> Result<T, MeshFlowError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let url = format!("{}{}", self.base_url, path);
+        let rb = self
+            .client
+            .delete(&url)
+            .header(header::ACCEPT, "application/json")
+            .header(header::USER_AGENT, format!("meshflow-rust-sdk/{SDK_VERSION}"));
+        let rb = self.apply_cloud_auth(rb);
+        let resp = rb.send().await?;
+        self.decode_response(resp).await
     }
 
     /// Build and send a JSON request; decode the 2xx response body into `T`.
@@ -442,6 +503,221 @@ impl MeshFlowClient {
             });
         }
         resp.text().await.map_err(|e| MeshFlowError::Network(e.to_string()))
+    }
+
+    // ── Cloud ingest — runs, evals, MCP, workers ──────────────────────────────
+
+    /// `POST /api/ingest/run` — report a completed workflow run to the cloud
+    /// dashboard. Returns `true` on success.
+    pub async fn report_run(&self, payload: &serde_json::Value) -> Result<bool, MeshFlowError> {
+        let r: IngestOk = self.cloud_post("/api/ingest/run", payload).await?;
+        Ok(r.ok.unwrap_or(true))
+    }
+
+    /// `POST /api/ingest/eval` — push one eval result to `/dashboard/evals`.
+    pub async fn report_eval(&self, eval: &EvalInput) -> Result<bool, MeshFlowError> {
+        let r: IngestOk = self.cloud_post("/api/ingest/eval", eval).await?;
+        Ok(r.ok.unwrap_or(true))
+    }
+
+    /// `POST /api/ingest/mcp` — record one MCP tool call to `/dashboard/mcp`.
+    pub async fn report_mcp_call(&self, call: &McpCallInput) -> Result<bool, MeshFlowError> {
+        let r: IngestOk = self.cloud_post("/api/ingest/mcp", call).await?;
+        Ok(r.ok.unwrap_or(true))
+    }
+
+    /// `POST /api/ingest/worker` — upsert a worker job status event.
+    pub async fn report_worker_job(&self, job: &WorkerJobInput) -> Result<bool, MeshFlowError> {
+        let r: IngestOk = self.cloud_post("/api/ingest/worker", job).await?;
+        Ok(r.ok.unwrap_or(true))
+    }
+
+    // ── Cloud ingest — trace spans ────────────────────────────────────────────
+
+    /// `POST /api/ingest/spans` — send a batch of per-step trace spans to
+    /// `/dashboard/traces`.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use meshflow_sdk::{MeshFlowClient, SpanInput};
+    /// let client = MeshFlowClient::new("https://meshflow.dev", "mf_sk_...");
+    /// let span = SpanInput::new("run-123", "planner", "plan", "2026-06-04T10:00:00Z", 420)
+    ///     .span_type("step")
+    ///     .input_tokens(512)
+    ///     .output_tokens(128)
+    ///     .cost_usd(0.0014);
+    /// client.report_spans(vec![span]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn report_spans(&self, spans: Vec<SpanInput>) -> Result<u32, MeshFlowError> {
+        #[derive(serde::Serialize)]
+        struct Body { spans: Vec<SpanInput> }
+        let r: IngestOk = self.cloud_post("/api/ingest/spans", &Body { spans }).await?;
+        Ok(r.ingested.unwrap_or(0))
+    }
+
+    // ── Prompt Hub ────────────────────────────────────────────────────────────
+
+    /// `GET /api/ingest/prompts?slug=xxx` — fetch the active (or pinned) version
+    /// of a prompt.
+    ///
+    /// Returns `None` when the slug is not found rather than an error.
+    pub async fn prompt_get(
+        &self,
+        slug: &str,
+        version: Option<u32>,
+    ) -> Result<Option<PromptRecord>, MeshFlowError> {
+        let mut path = format!(
+            "/api/ingest/prompts?slug={}",
+            urlencoding::encode(slug)
+        );
+        if let Some(v) = version {
+            path.push_str(&format!("&version={v}"));
+        }
+        match self.cloud_get::<PromptRecord>(&path).await {
+            Ok(p) => Ok(Some(p)),
+            Err(MeshFlowError::Http { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `GET /api/ingest/prompts?list=1` — list all prompt slugs for the org.
+    pub async fn prompt_list(&self) -> Result<Vec<PromptSummary>, MeshFlowError> {
+        self.cloud_get("/api/ingest/prompts?list=1").await
+    }
+
+    /// `POST /api/ingest/prompts` — push a new version of a prompt (creates the
+    /// prompt if it doesn't exist yet).
+    pub async fn prompt_push(
+        &self,
+        slug: &str,
+        content: &str,
+        name: Option<&str>,
+        notes: Option<&str>,
+    ) -> Result<PromptRecord, MeshFlowError> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            slug: &'a str,
+            content: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            name: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            notes: Option<&'a str>,
+        }
+        self.cloud_post("/api/ingest/prompts", &Body { slug, content, name, notes }).await
+    }
+
+    // ── Dataset Hub ───────────────────────────────────────────────────────────
+
+    /// `GET /api/ingest/datasets` — list all datasets for the org.
+    pub async fn dataset_list(&self) -> Result<Vec<DatasetSummary>, MeshFlowError> {
+        self.cloud_get("/api/ingest/datasets").await
+    }
+
+    /// `GET /api/ingest/datasets?name=xxx` — pull rows from a named dataset.
+    pub async fn dataset_pull(
+        &self,
+        name: &str,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<Option<DatasetPullResponse>, MeshFlowError> {
+        let mut path = format!("/api/ingest/datasets?name={}", urlencoding::encode(name));
+        if let Some(l) = limit { path.push_str(&format!("&limit={l}")); }
+        if let Some(o) = offset { path.push_str(&format!("&offset={o}")); }
+        match self.cloud_get::<DatasetPullResponse>(&path).await {
+            Ok(d) => Ok(Some(d)),
+            Err(MeshFlowError::Http { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `POST /api/ingest/datasets` — append rows to a named dataset (creates it
+    /// if it doesn't exist yet).
+    pub async fn dataset_push(
+        &self,
+        name: &str,
+        rows: Vec<DatasetRow>,
+        description: Option<&str>,
+    ) -> Result<String, MeshFlowError> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            name: &'a str,
+            rows: Vec<DatasetRow>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: Option<&'a str>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Resp { id: String }
+        let r: Resp = self.cloud_post("/api/ingest/datasets", &Body { name, rows, description }).await?;
+        Ok(r.id)
+    }
+
+    /// `DELETE /api/ingest/datasets?name=xxx` — delete a dataset and all its
+    /// rows.
+    pub async fn dataset_delete(&self, name: &str) -> Result<bool, MeshFlowError> {
+        let path = format!("/api/ingest/datasets?name={}", urlencoding::encode(name));
+        let r: IngestOk = self.cloud_delete(&path).await?;
+        Ok(r.ok.unwrap_or(true))
+    }
+
+    // ── Agent Registry ────────────────────────────────────────────────────────
+
+    /// `GET /api/ingest/agents` — list all registered agent definitions.
+    pub async fn list_agents(&self) -> Result<Vec<AgentDefinition>, MeshFlowError> {
+        self.cloud_get("/api/ingest/agents").await
+    }
+
+    /// `GET /api/ingest/agents?slug=xxx` — fetch one agent definition.
+    ///
+    /// Returns `None` when the slug is not found.
+    pub async fn get_agent(&self, slug: &str) -> Result<Option<AgentDefinition>, MeshFlowError> {
+        let path = format!("/api/ingest/agents?slug={}", urlencoding::encode(slug));
+        match self.cloud_get::<AgentDefinition>(&path).await {
+            Ok(a) => Ok(Some(a)),
+            Err(MeshFlowError::Http { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `POST /api/ingest/agents` — upsert an agent definition in the cloud
+    /// registry. Creates the entry on first call; subsequent calls update it.
+    pub async fn register_agent(
+        &self,
+        name: &str,
+        slug: &str,
+        role: Option<&str>,
+        model: Option<&str>,
+        policy: Option<&str>,
+    ) -> Result<AgentDefinition, MeshFlowError> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            name: &'a str,
+            slug: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            role: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            model: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            policy: Option<&'a str>,
+        }
+        self.cloud_post("/api/ingest/agents", &Body { name, slug, role, model, policy }).await
+    }
+
+    /// Increment the run counter for a registered agent.
+    ///
+    /// Pass `run_count = 1` after each successful run to keep the
+    /// `/dashboard/agents` stats current.
+    pub async fn record_agent_run(&self, slug: &str, run_count: u32) -> Result<bool, MeshFlowError> {
+        let name = slug;
+        #[derive(serde::Serialize)]
+        struct Body<'a> { name: &'a str, slug: &'a str, run_count: u32 }
+        let r: IngestOk = self
+            .cloud_post("/api/ingest/agents", &Body { name, slug, run_count })
+            .await?;
+        Ok(r.ok.unwrap_or(true))
     }
 }
 

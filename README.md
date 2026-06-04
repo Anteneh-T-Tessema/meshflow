@@ -2,8 +2,8 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![v1.13.0](https://img.shields.io/badge/version-1.13.0-blue.svg)](pyproject.toml)
-[![5,711 tests](https://img.shields.io/badge/tests-5%2C711%20passing-brightgreen.svg)](tests/)
+[![v1.14.0](https://img.shields.io/badge/version-1.14.0-blue.svg)](pyproject.toml)
+[![5,816 tests](https://img.shields.io/badge/tests-5%2C816%20passing-brightgreen.svg)](tests/)
 [![Production/Stable](https://img.shields.io/badge/status-Production%2FStable-brightgreen.svg)](README.md)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-purple.svg)](docs/integrations/mcp_clients.md)
 [![Claude Tool](https://img.shields.io/badge/Claude-tool%20ready-orange.svg)](docs/integrations/mcp_clients.md)

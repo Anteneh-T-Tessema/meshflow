@@ -5,6 +5,133 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.14.0] — 2026-06-04
+
+### Cloud platform SDK — full ingest API parity
+
+**Python + Rust SDKs now match every endpoint on meshflow.dev.**
+
+This release ships three new cloud SDK modules (`PromptHub`, `DatasetHub`,
+`CloudAgentRegistry`), fixes the `instrument()` auto-instrumentation context
+manager, adds span-level telemetry, and brings the Rust SDK up to full
+ingest API parity.
+
+#### `PromptHub` — pull versioned prompts at runtime
+
+```python
+from meshflow import PromptHub
+
+# Fetch the active version (TTL-cached, 60 s by default)
+system_prompt = PromptHub.get("hipaa-intake-processor")
+
+# Pin a specific version
+system_prompt = PromptHub.get("hipaa-intake-processor", version=3)
+
+# Push a new version from code
+PromptHub.push("hipaa-intake-processor", content="You are …", notes="tightened PII rules")
+
+# List all prompt slugs registered for the org
+slugs = PromptHub.list()
+```
+
+#### `DatasetHub` — push/pull eval datasets
+
+```python
+from meshflow import DatasetHub
+
+DatasetHub.push("hipaa-qa-v1", rows=[
+    {"input": "What is PHI?", "expected_output": "Protected Health Information…"},
+])
+
+rows = DatasetHub.pull("hipaa-qa-v1")
+names = DatasetHub.list()              # [{"name": "hipaa-qa-v1", "row_count": 42, ...}]
+DatasetHub.delete("hipaa-qa-v1")
+```
+
+#### `CloudAgentRegistry` — register and track agents
+
+```python
+from meshflow import CloudAgentRegistry
+
+CloudAgentRegistry.register(
+    name="HIPAA Intake Processor",
+    slug="hipaa-intake-processor",
+    role="executor",
+    model="claude-sonnet-4-6",
+    policy="hipaa",
+)
+CloudAgentRegistry.record_run("hipaa-intake-processor")   # increments run counter
+agents = CloudAgentRegistry.list()
+```
+
+#### `MeshFlowCloud.instrument()` — fixed and extended
+
+The context manager was previously broken (used a non-existent callback API
+on `WorkflowEventBus`). It is now fixed via a duck-typed queue injected
+directly into the bus, and extended to:
+
+- Send per-step **trace spans** to `/api/ingest/spans` on workflow completion
+- Auto-register agent nodes to the cloud registry with `register_agents=True`
+
+```python
+with cloud.instrument(register_agents=True):
+    result = wf.run("process intake form")
+# → run summary + per-step spans + agent registry bumped
+```
+
+#### `MeshFlowCloud.report_spans()` — new method
+
+```python
+cloud.report_spans([
+    {"run_id": "…", "agent_name": "planner", "span_type": "step", …},
+])
+```
+
+#### Rust SDK — full cloud ingest parity
+
+`meshflow-sdk` v1.14.0 adds 14 new async methods matching every Python cloud
+ingest method:
+
+```rust
+// Spans
+client.report_spans(vec![SpanInput::new(run_id, agent, name, started_at, duration_ms)
+    .input_tokens(512).cost_usd(0.0014)]).await?;
+
+// Evals
+client.report_eval(&EvalInput { run_id, scenario, score: 0.94, passed: true, .. }).await?;
+
+// Prompt Hub
+let prompt = client.prompt_get("hipaa-intake-processor", None).await?;
+client.prompt_push("hipaa-intake-processor", "You are …", None, None).await?;
+let slugs = client.prompt_list().await?;
+
+// Dataset Hub
+client.dataset_push("hipaa-qa-v1", rows, None).await?;
+let ds = client.dataset_pull("hipaa-qa-v1", None, None).await?;
+client.dataset_list().await?;
+
+// Agent Registry
+client.register_agent("HIPAA Intake", "hipaa-intake-processor", Some("executor"), None, None).await?;
+client.record_agent_run("hipaa-intake-processor", 1).await?;
+client.list_agents().await?;
+```
+
+Also added: `report_mcp_call`, `report_worker_job`, `dataset_delete`.
+
+#### New site ingest endpoints (meshflow.dev)
+
+| Endpoint | Method | Auth | Purpose |
+|---|---|---|---|
+| `/api/ingest/prompts` | GET | `x-meshflow-key` | Fetch prompt by slug (or list=1) |
+| `/api/ingest/prompts` | POST | `x-meshflow-key` | Push new prompt version |
+| `/api/ingest/datasets` | GET | `x-meshflow-key` | List datasets or pull rows |
+| `/api/ingest/datasets` | POST | `x-meshflow-key` | Append rows to a dataset |
+| `/api/ingest/datasets` | DELETE | `x-meshflow-key` | Delete dataset |
+| `/api/ingest/agents` | GET | `x-meshflow-key` | List or fetch agent definitions |
+| `/api/ingest/agents` | POST | `x-meshflow-key` | Upsert agent / bump run counter |
+
+---
+
 ## [1.10.0] — 2026-06-02
 
 ### Self-improving mixed-model routing system

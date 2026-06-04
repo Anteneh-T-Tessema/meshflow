@@ -33,6 +33,9 @@ from meshflow.cloud.client import (
     report_mcp_call as cloud_report_mcp_call,
     report_worker_job as cloud_report_worker_job,
 )
+from meshflow.cloud.prompt_hub import PromptHub
+from meshflow.cloud.dataset_hub import DatasetHub
+from meshflow.cloud.agent_registry import CloudAgentRegistry
 
 __all__ = [
     "report_run", "is_enabled",
@@ -40,4 +43,7 @@ __all__ = [
     "MeshFlowCloud", "get_cloud_client",
     "cloud_report_run", "cloud_report_eval",
     "cloud_report_mcp_call", "cloud_report_worker_job",
+    "PromptHub",
+    "DatasetHub",
+    "CloudAgentRegistry",
 ]

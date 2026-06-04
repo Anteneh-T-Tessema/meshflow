@@ -598,6 +598,9 @@ from meshflow.cloud import (
     cloud_report_eval,
     cloud_report_mcp_call,
     cloud_report_worker_job,
+    PromptHub,
+    DatasetHub,
+    CloudAgentRegistry,
 )
 # ── Sprint 98: Agent Evals v2 ─────────────────────────────────────────────────
 from meshflow.eval.judge_v2 import (
@@ -652,7 +655,7 @@ from meshflow.workers import (
     SQLiteJobStore,
 )
 
-__version__ = "1.13.0"
+__version__ = "1.14.0"
 __all__ = [
     # ── Agent creation ────────────────────────────────────────────────────────
     "Agent",
@@ -1367,6 +1370,9 @@ __all__ = [
     "cloud_report_eval",
     "cloud_report_mcp_call",
     "cloud_report_worker_job",
+    "PromptHub",
+    "DatasetHub",
+    "CloudAgentRegistry",
     # ── Sprint 98: Agent Evals v2 ─────────────────────────────────────────────
     "StructuredJudge",
     "StructuredJudgeResult",

@@ -42,6 +42,8 @@ pub mod zt_policy;
 // Re-export the most commonly used items at the crate root for ergonomics.
 pub use client::MeshFlowClient;
 pub use types::{
-    HealthResponse, MeshFlowError, PausedRun, ProbeResponse, RunOptions, RunResult, RunStatus,
-    StreamEvent, Trace, TraceSummary, TraceStep, ZTStatus,
+    AgentDefinition, DatasetPullResponse, DatasetRow, DatasetSummary, EvalInput,
+    HealthResponse, IngestOk, McpCallInput, MeshFlowError, PausedRun, ProbeResponse,
+    PromptRecord, PromptSummary, RunOptions, RunResult, RunStatus, SpanInput,
+    StreamEvent, Trace, TraceSummary, TraceStep, WorkerJobInput, ZTStatus,
 };

@@ -54,7 +54,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Generator
 
 
@@ -236,38 +236,154 @@ class MeshFlowCloud:
     async def areport_worker_job(self, **kwargs: Any) -> bool:
         return await self._apost("/api/ingest/worker", kwargs)
 
+    # ── report_spans ───────────────────────────────────────────────────────────
+
+    def report_spans(self, spans: list[dict[str, Any]]) -> bool:
+        """Send a batch of trace spans to /dashboard/traces.
+
+        Each span dict must include at minimum ``run_id``, ``agent_name``,
+        ``span_type``, ``name``, ``started_at`` (ISO-8601), and ``duration_ms``.
+        """
+        if not spans:
+            return True
+        return self._post("/api/ingest/spans", {"spans": spans})
+
+    async def areport_spans(self, spans: list[dict[str, Any]]) -> bool:
+        if not spans:
+            return True
+        return await self._apost("/api/ingest/spans", {"spans": spans})
+
     # ── Auto-instrumentation context manager ──────────────────────────────────
 
     @contextmanager
-    def instrument(self) -> Generator[None, None, None]:
-        """Context manager that automatically reports every Workflow run.
+    def instrument(self, *, register_agents: bool = False) -> Generator[None, None, None]:
+        """Context manager that automatically reports every Workflow run and
+        all per-step trace spans to the dashboard.
+
+        Parameters
+        ----------
+        register_agents:
+            When ``True``, every agent node seen in a ``STEP_COMPLETE`` event
+            is upserted to the cloud Agent Registry so it appears in
+            ``/dashboard/agents``.
 
         Usage::
 
             with cloud.instrument():
                 result = wf.run("task")
-            # result was automatically sent to the dashboard
+            # run summary + span-level traces sent automatically
+
+            with cloud.instrument(register_agents=True):
+                result = wf.run("task")
+            # also registers each agent node in /dashboard/agents
         """
+        import datetime
         from meshflow.core.events import global_event_bus, EventKind
         from meshflow.core.workflow import WorkflowResult
 
         reported: list[str] = []
+        # span accumulator: run_id -> list of span dicts
+        _pending_spans: dict[str, list[dict[str, Any]]] = {}
+        # step start times: (run_id, node_id) -> (started_iso, monotonic_start)
+        _step_starts: dict[tuple[str, str], tuple[str, float]] = {}
+
+        def _iso() -> str:
+            return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         def _on_event(event: Any) -> None:
-            if getattr(event, "kind", None) == EventKind.RUN_COMPLETED:
-                result = getattr(event, "payload", None)
-                if isinstance(result, WorkflowResult) and result.run_id not in reported:
-                    reported.append(result.run_id)
-                    self.report_run(result)
+            kind    = getattr(event, "kind", None)
+            run_id  = getattr(event, "run_id", "") or ""
+            node_id = getattr(event, "node_id", "") or ""
+            data    = getattr(event, "data", {}) or {}
 
-        sub_id = global_event_bus.subscribe(_on_event)
+            if kind == EventKind.STEP_START:
+                _step_starts[(run_id, node_id)] = (_iso(), time.monotonic())
+
+            elif kind == EventKind.STEP_COMPLETE:
+                start_info = _step_starts.pop((run_id, node_id), None)
+                started_at = start_info[0] if start_info else _iso()
+                mono_start = start_info[1] if start_info else time.monotonic()
+                duration_ms = int((time.monotonic() - mono_start) * 1000)
+
+                span: dict[str, Any] = {
+                    "run_id":      run_id,
+                    "agent_name":  node_id,
+                    "span_type":   data.get("kind", "step"),
+                    "name":        node_id,
+                    "started_at":  started_at,
+                    "duration_ms": duration_ms,
+                    "input_tokens":  int(data.get("tokens", 0)),
+                    "output_tokens": 0,
+                    "cost_usd":    float(data.get("cost_usd", 0.0)),
+                    "status":      "ok",
+                    "output_text": data.get("content_preview", ""),
+                    "metadata":    {"uncertainty": data.get("uncertainty", 0.0)},
+                }
+                _pending_spans.setdefault(run_id, []).append(span)
+
+                if register_agents and node_id:
+                    try:
+                        from meshflow.cloud.agent_registry import CloudAgentRegistry
+                        CloudAgentRegistry.record_run(node_id, run_count=1)
+                    except Exception:
+                        pass
+
+            elif kind == EventKind.WORKFLOW_COMPLETE:
+                result = getattr(event, "data", {})
+                if run_id not in reported:
+                    reported.append(run_id)
+                    # Report the run summary using event data or payload
+                    payload = getattr(event, "payload", None)
+                    if isinstance(payload, WorkflowResult):
+                        self.report_run(payload)
+                    else:
+                        self._post("/api/ingest/run", {
+                            "run_id":         run_id,
+                            "workflow_name":  result.get("workflow_name", "unknown"),
+                            "agent_count":    result.get("agent_count", 0),
+                            "total_cost_usd": result.get("total_cost_usd", 0.0),
+                            "total_tokens":   result.get("total_tokens", 0),
+                            "cache_hit_rate": 0.0,
+                            "policy":         "standard",
+                            "status":         "completed",
+                            "duration_ms":    result.get("duration_ms", 0),
+                            "violations":     0,
+                        })
+                    # Flush spans for this run
+                    spans = _pending_spans.pop(run_id, [])
+                    if spans:
+                        self.report_spans(spans)
+
+        class _CBQueue:
+            """Duck-typed asyncio.Queue injected into the bus's _queues list.
+
+            WorkflowEventBus.emit() calls q.put_nowait(event) on every
+            registered queue; we intercept that to drive a sync callback
+            without touching the bus's public API.
+            """
+            maxsize = 0
+
+            def put_nowait(_self, event: Any) -> None:  # noqa: N805
+                if event is not None:
+                    try:
+                        _on_event(event)
+                    except Exception:
+                        pass
+
+        cb_queue = _CBQueue()
+        global_event_bus._queues.append(cb_queue)  # type: ignore[attr-defined]
         try:
             yield
         finally:
             try:
-                global_event_bus.unsubscribe(sub_id)
-            except Exception:
+                global_event_bus._queues.remove(cb_queue)  # type: ignore[attr-defined]
+            except (ValueError, AttributeError):
                 pass
+            # Flush spans from runs that finished without WORKFLOW_COMPLETE
+            for rid, spans in _pending_spans.items():
+                if spans:
+                    self.report_spans(spans)
+            _pending_spans.clear()
 
     @property
     def enabled(self) -> bool:
