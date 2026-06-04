@@ -14,8 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
-      OSSRH_USERNAME:       ${{ secrets.OSSRH_USERNAME }}
-      OSSRH_PASSWORD:       ${{ secrets.OSSRH_PASSWORD }}
+      CENTRAL_USERNAME:     ${{ secrets.OSSRH_USERNAME }}
+      CENTRAL_PASSWORD:     ${{ secrets.OSSRH_PASSWORD }}
 
     defaults:
       run:
@@ -28,9 +28,10 @@ jobs:
         with:
           java-version: "17"
           distribution: "temurin"
-          server-id: ossrh
-          server-username: OSSRH_USERNAME
-          server-password: OSSRH_PASSWORD
+          # server-id must match central-publishing-maven-plugin publishingServerId
+          server-id: central
+          server-username: CENTRAL_USERNAME
+          server-password: CENTRAL_PASSWORD
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
@@ -47,8 +48,8 @@ jobs:
       - name: Build and run tests
         run: mvn --no-transfer-progress verify
 
-      - name: Publish to Maven Central (OSSRH)
-        if: env.OSSRH_USERNAME != '' && env.OSSRH_PASSWORD != ''
+      - name: Publish to Maven Central (Central Portal)
+        if: env.CENTRAL_USERNAME != '' && env.CENTRAL_PASSWORD != ''
         run: |
           mvn --no-transfer-progress \
             --batch-mode \
@@ -57,19 +58,13 @@ jobs:
             -P release \
             -DskipTests
         env:
-          OSSRH_USERNAME:       ${{ secrets.OSSRH_USERNAME }}
-          OSSRH_PASSWORD:       ${{ secrets.OSSRH_PASSWORD }}
+          CENTRAL_USERNAME:     ${{ secrets.OSSRH_USERNAME }}
+          CENTRAL_PASSWORD:     ${{ secrets.OSSRH_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
 
-      - name: Skip — missing OSSRH credentials
-        if: env.OSSRH_USERNAME == '' || env.OSSRH_PASSWORD == ''
+      - name: Skip — missing Central Portal credentials
+        if: env.CENTRAL_USERNAME == '' || env.CENTRAL_PASSWORD == ''
         run: |
           echo "::warning::OSSRH_USERNAME or OSSRH_PASSWORD not set — skipping Maven Central publish."
-          echo "Add Sonatype OSSRH credentials as repo secrets to enable:"
-          echo "  OSSRH_USERNAME       — your Sonatype JIRA / Central Portal username"
-          echo "  OSSRH_PASSWORD       — your token / password"
-          echo "  MAVEN_GPG_PRIVATE_KEY — exported GPG private key (ascii-armored)"
-          echo "  MAVEN_GPG_PASSPHRASE  — GPG key passphrase"
-          echo ""
-          echo "Create a Sonatype account at: https://central.sonatype.com/"
+          echo "Get a user token at: https://central.sonatype.com/account"
           echo "Namespace to claim: dev.meshflow"
