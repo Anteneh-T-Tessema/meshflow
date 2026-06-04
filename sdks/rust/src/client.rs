@@ -719,6 +719,21 @@ impl MeshFlowClient {
             .await?;
         Ok(r.ok.unwrap_or(true))
     }
+
+    // ── Compliance ────────────────────────────────────────────────────────────
+
+    /// `POST /api/ingest/compliance` — push a compliance evidence report to
+    /// `/dashboard/compliance`.
+    ///
+    /// Call after a `SOC2Checker` or framework audit to persist the full
+    /// evidence pack in the cloud.
+    pub async fn report_compliance(
+        &self,
+        payload: &serde_json::Value,
+    ) -> Result<bool, MeshFlowError> {
+        let r: IngestOk = self.cloud_post("/api/ingest/compliance", payload).await?;
+        Ok(r.ok.unwrap_or(true))
+    }
 }
 
 // ── URL encoding helper (no extra dep) ───────────────────────────────────────

@@ -1107,3 +1107,32 @@ func (c *Client) RecordAgentRun(ctx context.Context, slug string, runCount int) 
 	var out cloudIngestOK
 	return c.cloudDo(ctx, http.MethodPost, "/api/ingest/agents", body, &out)
 }
+
+// ── Compliance ────────────────────────────────────────────────────────────────
+
+// CloudComplianceInput is the payload for POST /api/ingest/compliance.
+type CloudComplianceInput struct {
+	Framework   string                            `json:"framework"`            // "hipaa","sox","gdpr","pci","nerc","soc2","eu_ai_act"
+	Passed      bool                              `json:"passed"`
+	RunID       string                            `json:"run_id,omitempty"`
+	Score       float64                           `json:"score,omitempty"`
+	Evidence    map[string]CloudControlResult     `json:"evidence,omitempty"`
+	GeneratedAt string                            `json:"generated_at,omitempty"` // ISO-8601
+}
+
+// CloudControlResult is a single control result inside a compliance report.
+type CloudControlResult struct {
+	Passed  bool   `json:"passed"`
+	Title   string `json:"title,omitempty"`
+	Details string `json:"details,omitempty"`
+	Score   float64 `json:"score,omitempty"`
+}
+
+// ReportCompliance pushes a full compliance evidence pack to /dashboard/compliance.
+//
+// Call after SOC2Checker.check() or any framework audit to persist evidence
+// in the cloud dashboard.
+func (c *Client) ReportCompliance(ctx context.Context, report CloudComplianceInput) error {
+	var out cloudIngestOK
+	return c.cloudDo(ctx, http.MethodPost, "/api/ingest/compliance", report, &out)
+}

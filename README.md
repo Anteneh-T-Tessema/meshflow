@@ -3,7 +3,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![v1.14.0](https://img.shields.io/badge/version-1.14.0-blue.svg)](pyproject.toml)
-[![5,816 tests](https://img.shields.io/badge/tests-5%2C816%20passing-brightgreen.svg)](tests/)
+[![5,800 tests](https://img.shields.io/badge/tests-5%2C800%20passing-brightgreen.svg)](tests/)
 [![Production/Stable](https://img.shields.io/badge/status-Production%2FStable-brightgreen.svg)](README.md)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-purple.svg)](docs/integrations/mcp_clients.md)
 [![Claude Tool](https://img.shields.io/badge/Claude-tool%20ready-orange.svg)](docs/integrations/mcp_clients.md)
@@ -86,7 +86,7 @@ built in, always on, never bolted on.
 | Secret vault | ✅ | ✗ | ✗ | ✗ |
 | Tenant isolation | ✅ | ✗ | ✗ | ✗ |
 | MCP server auto-generation | ✅ | ✗ | ✗ | ✗ |
-| 5,711 passing tests | ✅ | — | — | — |
+| 5,816 passing tests | ✅ | — | — | — |
 
 ---
 
@@ -947,7 +947,7 @@ cd meshflow
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-make test                 # run all 5,711 tests
+make test                 # run all 5,816 tests
 make check                # lint + typecheck + tests
 make run-quickstart       # simulated run, no API key needed
 make run-live             # real LLM run — requires ANTHROPIC_API_KEY in .env

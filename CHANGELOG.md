@@ -7,14 +7,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.14.0] — 2026-06-04
 
-### Cloud platform SDK — full ingest API parity
+### Cloud platform SDK — full ingest API parity + compliance evidence push
 
-**Python + Rust SDKs now match every endpoint on meshflow.dev.**
+**All 5 SDKs (Python, TypeScript, Go, Rust, Java) now match every endpoint on meshflow.dev.**
 
 This release ships three new cloud SDK modules (`PromptHub`, `DatasetHub`,
 `CloudAgentRegistry`), fixes the `instrument()` auto-instrumentation context
-manager, adds span-level telemetry, and brings the Rust SDK up to full
-ingest API parity.
+manager, adds span-level telemetry, brings all SDKs to full cloud ingest
+parity, and adds `report_compliance()` — the SDK method for pushing full
+SOC2/HIPAA/GDPR compliance evidence to the cloud dashboard.
+
+#### `report_compliance()` — compliance evidence push (all 5 SDKs)
+
+```python
+from meshflow import SOC2Checker
+from meshflow.cloud import MeshFlowCloud
+
+report = SOC2Checker().check()
+cloud  = MeshFlowCloud()
+cloud.report_compliance(
+    framework="soc2",
+    passed=report.passed,
+    score=report.score,
+    evidence={c.control_id: {"passed": c.passed, "title": c.title, "details": c.details}
+              for c in report.controls},
+)
+```
+
+The cloud platform stores a SHA-256 hash of each evidence payload for
+tamper-evident compliance records, visible in `/dashboard/compliance`.
 
 #### `PromptHub` — pull versioned prompts at runtime
 

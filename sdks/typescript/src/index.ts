@@ -845,6 +845,47 @@ export class MeshFlowClient {
     );
     return r.ok !== false;
   }
+
+  // ── Compliance ─────────────────────────────────────────────────────────────
+
+  /**
+   * Push a compliance evidence report to `/dashboard/compliance`.
+   *
+   * Call after `SOC2Checker`, `ComplianceProfile.generate_report()`, or any
+   * framework audit to persist the full evidence pack in the cloud.
+   *
+   * @example
+   * ```ts
+   * await client.reportCompliance("hipaa", true, {
+   *   runId: "run-123",
+   *   score: 0.94,
+   *   evidence: {
+   *     "access-control": { passed: true, title: "Access Control", details: "MFA enforced" },
+   *     "audit-logs":     { passed: true, title: "Audit Logs",     details: "SHA-256 chain" },
+   *   },
+   * });
+   * ```
+   */
+  async reportCompliance(
+    framework: string,
+    passed: boolean,
+    options: {
+      runId?: string;
+      score?: number;
+      evidence?: Record<string, { passed: boolean; title?: string; details?: string }>;
+      generatedAt?: string;
+    } = {},
+  ): Promise<boolean> {
+    const r = await this.cloudPost<{ ok?: boolean }>("/api/ingest/compliance", {
+      framework,
+      passed,
+      run_id:       options.runId,
+      score:        options.score,
+      evidence:     options.evidence,
+      generated_at: options.generatedAt,
+    });
+    return r.ok !== false;
+  }
 }
 
 // ── Cloud ingest types ────────────────────────────────────────────────────────

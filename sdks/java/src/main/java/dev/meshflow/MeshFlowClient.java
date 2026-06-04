@@ -911,4 +911,36 @@ public final class MeshFlowClient {
         return true;
     }
 
+    // ── Compliance ─────────────────────────────────────────────────────────────
+
+    /**
+     * Push a compliance evidence report to /dashboard/compliance.
+     *
+     * <p>Call after a {@code SOC2Checker} or framework audit to persist the full
+     * evidence pack in the cloud. {@code evidence} maps control IDs to
+     * {@code {passed, title, details}} maps.
+     *
+     * @param framework   "hipaa" | "sox" | "gdpr" | "pci" | "nerc" | "soc2" | "eu_ai_act"
+     * @param passed      overall pass/fail
+     * @param score       0.0–1.0 overall compliance score (0 if unknown)
+     * @param evidence    per-control results (may be null for a summary-only report)
+     * @param runId       optional: scope the report to a single run (may be null)
+     * @throws IOException on network or non-2xx response
+     */
+    public boolean reportCompliance(
+            String framework,
+            boolean passed,
+            double score,
+            @SuppressWarnings("rawtypes") Map<String, Map> evidence,
+            String runId) throws IOException {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("framework", framework);
+        p.put("passed", passed);
+        if (score > 0) p.put("score", score);
+        if (evidence != null && !evidence.isEmpty()) p.put("evidence", evidence);
+        if (runId != null && !runId.isEmpty()) p.put("run_id", runId);
+        cloudDoPost("/api/ingest/compliance", JsonSerializer.serializeMap(p));
+        return true;
+    }
+
 }

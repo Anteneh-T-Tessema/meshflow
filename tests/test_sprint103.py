@@ -647,5 +647,62 @@ class TestTopLevelExports(unittest.TestCase):
         from meshflow.cloud import PromptHub, DatasetHub, CloudAgentRegistry  # noqa: F401
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MeshFlowCloud.report_compliance()
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestReportCompliance(unittest.TestCase):
+    def test_disabled_client_returns_true(self) -> None:
+        from meshflow.cloud.client import MeshFlowCloud
+        c = MeshFlowCloud(enabled=False)
+        self.assertTrue(c.report_compliance("hipaa", True))
+
+    def test_disabled_returns_true_with_evidence(self) -> None:
+        from meshflow.cloud.client import MeshFlowCloud
+        c = MeshFlowCloud(enabled=False)
+        evidence = {
+            "access-control": {"passed": True, "title": "Access Control"},
+            "audit-logs":     {"passed": True, "title": "Audit Logs"},
+        }
+        self.assertTrue(c.report_compliance("soc2", True, score=0.92, evidence=evidence))
+
+    def test_posts_to_correct_endpoint(self) -> None:
+        from meshflow.cloud.client import MeshFlowCloud
+        srv = _FakeIngestServer()
+        port = srv.start()
+        try:
+            with patch.dict(os.environ, {"MESHFLOW_CLOUD_ENABLED": "1"}):
+                c = MeshFlowCloud(
+                    api_key="mf_sk_test",
+                    base_url=f"http://127.0.0.1:{port}",
+                )
+                evidence = {"phi-access": {"passed": True, "title": "PHI Access Control"}}
+                ok = c.report_compliance(
+                    "hipaa", True,
+                    score=0.95,
+                    run_id="run-123",
+                    evidence=evidence,
+                )
+            self.assertTrue(ok)
+            self.assertEqual(len(srv.received), 1)
+            body = srv.received[0]["body"]
+            self.assertEqual(body["framework"], "hipaa")
+            self.assertTrue(body["passed"])
+            self.assertAlmostEqual(body["score"], 0.95)
+            self.assertEqual(body["run_id"], "run-123")
+            self.assertIn("phi-access", body["evidence"])
+        finally:
+            srv.stop()
+
+    def test_module_level_shorthand_importable(self) -> None:
+        from meshflow.cloud.client import report_compliance  # noqa: F401
+        from meshflow.cloud import cloud_report_compliance    # noqa: F401
+
+    def test_async_variant_exists(self) -> None:
+        from meshflow.cloud.client import MeshFlowCloud
+        c = MeshFlowCloud(enabled=False)
+        self.assertTrue(hasattr(c, "areport_compliance"))
+
+
 if __name__ == "__main__":
     unittest.main()
