@@ -1,9 +1,7 @@
 {
   "snyk.advanced.autoSelectOrganization": false,
-
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "python.terminal.activateEnvironment": true,
-
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
@@ -15,7 +13,6 @@
   "ruff.enable": true,
   "ruff.organizeImports": true,
   "ruff.fixAll": true,
-
   "python.analysis.typeCheckingMode": "basic",
   "python.analysis.autoImportCompletions": true,
   "python.analysis.completeFunctionParens": true,
@@ -24,19 +21,21 @@
     "--ignore-missing-imports",
     "--warn-unused-configs"
   ],
-
   "python.testing.pytestEnabled": true,
-  "python.testing.pytestArgs": ["tests/", "-q"],
+  "python.testing.pytestArgs": [
+    "tests/",
+    "-q"
+  ],
   "python.testing.unittestEnabled": false,
   "python.testing.autoTestDiscoverOnSaveEnabled": true,
-
-  "editor.rulers": [100],
+  "editor.rulers": [
+    100
+  ],
   "editor.tabSize": 4,
   "editor.insertSpaces": true,
   "editor.trimAutoWhitespace": true,
   "files.trimTrailingWhitespace": true,
   "files.insertFinalNewline": true,
-
   "files.exclude": {
     "**/__pycache__": true,
     "**/*.pyc": true,
@@ -52,5 +51,6 @@
     "**/*.pyc": true,
     "**/dist": true,
     "**/.venv": true
-  }
+  },
+  "java.configuration.updateBuildConfiguration": "interactive"
 }

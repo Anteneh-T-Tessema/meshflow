@@ -49,7 +49,10 @@
       "Bash(python -c \"import subprocess, sys; r = subprocess.run\\([sys.executable, '-m', 'pytest', 'tests/test_sprint17.py', '--tb=line', '-q'], capture_output=True, text=True, timeout=120\\); print\\(r.stdout[-2000:]\\); print\\(r.stderr[-500:]\\)\")",
       "Bash(python -m pytest tests/ --tb=no -q --ignore=tests/test_sprint17.py)",
       "Bash(python -m pytest tests/test_sprint17.py --tb=short -q)",
-      "Bash(python -m pytest tests/test_sprint17.py::TestSprint17ServerRoutes tests/test_sprint17.py::TestSprint17CLI tests/test_sprint17.py::TestRateLimiter -v)"
+      "Bash(python -m pytest tests/test_sprint17.py::TestSprint17ServerRoutes tests/test_sprint17.py::TestSprint17CLI tests/test_sprint17.py::TestRateLimiter -v)",
+      "Bash(git -C /Users/antenehtessema/developer/meshflow add smithery.yaml docs/launch/show_hn.md docs/launch/product_hunt.md meshflow/cloud/__init__.py meshflow/cloud/client.py tests/test_sprint99.py tests/test_sprint100.py)",
+      "Bash(git -C /Users/antenehtessema/developer/meshflow commit -m ' *)",
+      "Bash(.venv/bin/pytest tests/test_sprint103.py -v --tb=short -q)"
     ]
   }
 }
