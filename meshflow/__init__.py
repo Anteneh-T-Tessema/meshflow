@@ -27,6 +27,7 @@ from meshflow.core.flows import Flow, FlowState, FlowResult, start as flow_start
 from meshflow.core.prebuilt import MessagesState, ToolNode, create_react_agent, create_tool_calling_agent
 from meshflow.core.config import MeshFlowConfig, load, loads
 from meshflow.core.ledger import (
+    AsyncLedgerWriter,
     LedgerArchiveResult,
     LedgerBackend,
     PostgresLedgerBackend,
@@ -737,6 +738,7 @@ __all__ = [
     "StepRuntime",
     "RuntimeOutcome",
     # ── Ledger ────────────────────────────────────────────────────────────────
+    "AsyncLedgerWriter",
     "ReplayLedger",
     "RunDiff",
     "LedgerArchiveResult",

@@ -65,9 +65,42 @@ class _TraceHandler(http.server.BaseHTTPRequestHandler):
         except FileNotFoundError:
             self.send_error(404)
 
+    def _file(self, path: str, content_type: str) -> None:
+        try:
+            with open(path, "rb") as fh:
+                body = fh.read()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except FileNotFoundError:
+            self.send_error(404)
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        if path == "/realtime":
+            realtime_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "dashboard", "realtime"
+            )
+            self._file(os.path.join(realtime_dir, "index.html"), "text/html; charset=utf-8")
+            return
+
+        if parsed.path == "/realtime/style.css":
+            realtime_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "dashboard", "realtime"
+            )
+            self._file(os.path.join(realtime_dir, "style.css"), "text/css; charset=utf-8")
+            return
+
+        if path == "/ws/events":
+            qs = parse_qs(parsed.query)
+            run_id = qs.get("run_id", [None])[0]
+            from meshflow.streaming.ws_handler import handle_websocket_connection
+            handle_websocket_connection(self, run_id=run_id)
+            return
 
         if path in ("", "/", "/trace"):
             self._html(os.path.join(_TEMPLATE_DIR, "trace.html"))
@@ -210,7 +243,7 @@ class TraceServer:
     def __init__(self, db: str = "meshflow_runs.db", port: int = 7788) -> None:
         self._db = db
         self._port = port
-        self._server: http.server.HTTPServer | None = None
+        self._server: http.server.ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     # ── Server lifecycle ───────────────────────────────────────────────────────
@@ -221,7 +254,7 @@ class TraceServer:
         class BoundHandler(_TraceHandler):
             server_instance = self
 
-        self._server = http.server.HTTPServer(("127.0.0.1", self._port), BoundHandler)
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", self._port), BoundHandler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=daemon)
         self._thread.start()
 

@@ -8,6 +8,7 @@ from meshflow.streaming.partial_output import (
     stream_structured,
 )
 from meshflow.streaming.run_hub import RunStreamHub, get_run_hub, reset_run_hub
+from meshflow.streaming.ws_handler import handle_websocket_connection
 
 __all__ = [
     "BackpressureQueue",
@@ -20,4 +21,5 @@ __all__ = [
     "RunStreamHub",
     "get_run_hub",
     "reset_run_hub",
+    "handle_websocket_connection",
 ]
