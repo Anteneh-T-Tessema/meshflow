@@ -133,11 +133,12 @@ class WorkflowEventBus:
                     if run_id is None or event.run_id == run_id:
                         yield event
             while True:
-                event = await q.get()
-                if event is None:
+                evt = await q.get()
+                if evt is None:
                     break
-                if run_id is None or event.run_id == run_id:
-                    yield event
+                if run_id is None or evt.run_id == run_id:
+                    yield evt
+
         finally:
             if q in self._queues:
                 self._queues.remove(q)
