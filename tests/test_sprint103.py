@@ -9,6 +9,7 @@ Covers:
 - instrument(register_agents=True) — agent run counter bump
 - Version bump guard (pyproject.toml == meshflow.__version__)
 """
+
 from __future__ import annotations
 
 import json
@@ -22,6 +23,7 @@ from unittest.mock import patch
 
 
 # ── Shared local HTTP server fixture ─────────────────────────────────────────
+
 
 class _FakeIngestServer:
     """Minimal HTTP server that records POSTs and returns canned GET responses."""
@@ -79,27 +81,32 @@ class _FakeIngestServer:
 # Version guard
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestVersionConsistency(unittest.TestCase):
     def test_module_version_matches_pyproject(self) -> None:
         import meshflow
         import tomllib  # stdlib in 3.11+
+
         root = os.path.join(os.path.dirname(__file__), "..", "pyproject.toml")
         with open(root, "rb") as fh:
             meta = tomllib.load(fh)
         self.assertEqual(meshflow.__version__, meta["project"]["version"])
 
-    def test_version_is_1_14_0(self) -> None:
+    def test_version_is_1_15_0(self) -> None:
         import meshflow
-        self.assertEqual(meshflow.__version__, "1.14.0")
+
+        self.assertEqual(meshflow.__version__, "1.15.0")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PromptHub — offline (no API key)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestPromptHubOffline(unittest.TestCase):
     def setUp(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         PromptHub.clear_cache()
         self._env = patch.dict(os.environ, {}, clear=False)
         self._env.start()
@@ -108,43 +115,52 @@ class TestPromptHubOffline(unittest.TestCase):
 
     def tearDown(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         PromptHub.clear_cache()
         self._env.stop()
 
     def test_get_returns_default_when_no_key(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         self.assertEqual(PromptHub.get("my-prompt", default="fallback"), "fallback")
 
     def test_get_returns_empty_string_by_default(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         self.assertEqual(PromptHub.get("any-slug"), "")
 
     def test_push_returns_false_when_no_key(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         self.assertFalse(PromptHub.push("slug", "content"))
 
     def test_list_returns_empty_when_no_key(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         self.assertEqual(PromptHub.list(), [])
 
     def test_clear_cache_is_idempotent(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         PromptHub.clear_cache()
         PromptHub.clear_cache()
 
     def test_cfg_disabled_when_no_key(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         _, _, enabled = PromptHub._cfg()
         self.assertFalse(enabled)
 
     def test_cfg_disabled_when_cloud_disabled_env(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         with patch.dict(os.environ, {"MESHFLOW_API_KEY": "key", "MESHFLOW_CLOUD_ENABLED": "0"}):
             _, _, enabled = PromptHub._cfg()
         self.assertFalse(enabled)
 
     def test_cfg_enabled_when_key_present(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         with patch.dict(os.environ, {"MESHFLOW_API_KEY": "mf_sk_test"}):
             key, _, enabled = PromptHub._cfg()
         self.assertTrue(enabled)
@@ -155,9 +171,11 @@ class TestPromptHubOffline(unittest.TestCase):
 # PromptHub — local HTTP server
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestPromptHubWithServer(unittest.TestCase):
     def setUp(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         PromptHub.clear_cache()
         self._srv = _FakeIngestServer()
         port = self._srv.start()
@@ -165,18 +183,28 @@ class TestPromptHubWithServer(unittest.TestCase):
 
     def tearDown(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         PromptHub.clear_cache()
         self._srv.stop()
 
     def _env(self) -> dict[str, str]:
-        return {"MESHFLOW_API_KEY": "mf_sk_test", "MESHFLOW_CLOUD_URL": self._base,
-                "MESHFLOW_CLOUD_ENABLED": "1"}
+        return {
+            "MESHFLOW_API_KEY": "mf_sk_test",
+            "MESHFLOW_CLOUD_URL": self._base,
+            "MESHFLOW_CLOUD_ENABLED": "1",
+        }
 
     def test_get_returns_content(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         self._srv.get_responses["/api/ingest/prompts?slug=my-prompt"] = {
-            "slug": "my-prompt", "name": "My Prompt", "description": "",
-            "version": 2, "content": "You are an expert.", "model": "", "temperature": 0.5,
+            "slug": "my-prompt",
+            "name": "My Prompt",
+            "description": "",
+            "version": 2,
+            "content": "You are an expert.",
+            "model": "",
+            "temperature": 0.5,
         }
         with patch.dict(os.environ, self._env()):
             result = PromptHub.get("my-prompt", ttl=0)
@@ -184,12 +212,18 @@ class TestPromptHubWithServer(unittest.TestCase):
 
     def test_get_caches_result(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         self._srv.get_responses["/api/ingest/prompts?slug=cached"] = {
-            "slug": "cached", "name": "C", "description": "", "version": 1,
-            "content": "cached content", "model": "", "temperature": 0.5,
+            "slug": "cached",
+            "name": "C",
+            "description": "",
+            "version": 1,
+            "content": "cached content",
+            "model": "",
+            "temperature": 0.5,
         }
         with patch.dict(os.environ, self._env()):
-            first  = PromptHub.get("cached", ttl=60)
+            first = PromptHub.get("cached", ttl=60)
             second = PromptHub.get("cached", ttl=60)
         self.assertEqual(first, second)
         # Only one GET should have been made
@@ -197,12 +231,14 @@ class TestPromptHubWithServer(unittest.TestCase):
 
     def test_get_returns_default_on_404(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         with patch.dict(os.environ, self._env()):
             result = PromptHub.get("missing-slug", default="fallback", ttl=0)
         self.assertEqual(result, "fallback")
 
     def test_push_sends_post(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         self._srv.get_responses = {}  # POST returns 201 {ok: True}
         with patch.dict(os.environ, self._env()):
             ok = PromptHub.push("my-slug", "new content", notes="v2")
@@ -216,9 +252,15 @@ class TestPromptHubWithServer(unittest.TestCase):
 
     def test_push_invalidates_cache(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         self._srv.get_responses["/api/ingest/prompts?slug=slug-x"] = {
-            "slug": "slug-x", "name": "X", "description": "", "version": 1,
-            "content": "v1", "model": "", "temperature": 0.5,
+            "slug": "slug-x",
+            "name": "X",
+            "description": "",
+            "version": 1,
+            "content": "v1",
+            "model": "",
+            "temperature": 0.5,
         }
         with patch.dict(os.environ, self._env()):
             PromptHub.get("slug-x", ttl=300)
@@ -228,6 +270,7 @@ class TestPromptHubWithServer(unittest.TestCase):
 
     def test_list_returns_slugs(self) -> None:
         from meshflow.cloud.prompt_hub import PromptHub
+
         self._srv.get_responses["/api/ingest/prompts?list=1"] = [
             {"slug": "a", "name": "A", "description": "", "updatedAt": ""},
             {"slug": "b", "name": "B", "description": "", "updatedAt": ""},
@@ -241,6 +284,7 @@ class TestPromptHubWithServer(unittest.TestCase):
 # DatasetHub — offline
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestDatasetHubOffline(unittest.TestCase):
     def setUp(self) -> None:
         self._env = patch.dict(os.environ, {}, clear=False)
@@ -252,18 +296,22 @@ class TestDatasetHubOffline(unittest.TestCase):
 
     def test_push_returns_false_when_no_key(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
+
         self.assertFalse(DatasetHub.push("ds", [{"input": "q"}]))
 
     def test_pull_returns_empty_when_no_key(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
+
         self.assertEqual(DatasetHub.pull("ds"), [])
 
     def test_list_returns_empty_when_no_key(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
+
         self.assertEqual(DatasetHub.list(), [])
 
     def test_delete_returns_false_when_no_key(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
+
         self.assertFalse(DatasetHub.delete("ds"))
 
 
@@ -271,19 +319,23 @@ class TestDatasetHubOffline(unittest.TestCase):
 # DatasetHub — local HTTP server
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestDatasetHubWithServer(unittest.TestCase):
     def setUp(self) -> None:
         self._srv = _FakeIngestServer()
         port = self._srv.start()
-        self._env = {"MESHFLOW_API_KEY": "mf_sk_test",
-                     "MESHFLOW_CLOUD_URL": f"http://127.0.0.1:{port}",
-                     "MESHFLOW_CLOUD_ENABLED": "1"}
+        self._env = {
+            "MESHFLOW_API_KEY": "mf_sk_test",
+            "MESHFLOW_CLOUD_URL": f"http://127.0.0.1:{port}",
+            "MESHFLOW_CLOUD_ENABLED": "1",
+        }
 
     def tearDown(self) -> None:
         self._srv.stop()
 
     def test_push_sends_correct_payload(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
+
         with patch.dict(os.environ, self._env):
             ok = DatasetHub.push("my-ds", [{"input": "What is PHI?", "expected_output": "..."}])
         self.assertIsInstance(ok, bool)
@@ -295,6 +347,7 @@ class TestDatasetHubWithServer(unittest.TestCase):
 
     def test_push_with_description(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
+
         with patch.dict(os.environ, self._env):
             DatasetHub.push("my-ds", [], description="HIPAA eval set")
         body = self._srv.received[0]["body"]
@@ -302,12 +355,14 @@ class TestDatasetHubWithServer(unittest.TestCase):
 
     def test_push_empty_rows_sends_request(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
+
         with patch.dict(os.environ, self._env):
             DatasetHub.push("empty-ds", [])
         self.assertEqual(len(self._srv.received), 1)
 
     def test_list_returns_summaries(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
+
         self._srv.get_responses["/api/ingest/datasets"] = [
             {"id": "1", "name": "ds-a", "description": "", "rowCount": 10, "updatedAt": ""},
         ]
@@ -319,9 +374,13 @@ class TestDatasetHubWithServer(unittest.TestCase):
     def test_pull_returns_rows(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
         import urllib.parse
+
         name_enc = urllib.parse.quote("my-ds")
         self._srv.get_responses[f"/api/ingest/datasets?name={name_enc}&limit=1000&offset=0"] = {
-            "id": "x", "name": "my-ds", "description": "", "row_count": 2,
+            "id": "x",
+            "name": "my-ds",
+            "description": "",
+            "row_count": 2,
             "rows": [
                 {"id": "r1", "input": "q1", "expected_output": "a1", "metadata": {}},
                 {"id": "r2", "input": "q2", "expected_output": "a2", "metadata": {}},
@@ -334,12 +393,14 @@ class TestDatasetHubWithServer(unittest.TestCase):
 
     def test_pull_returns_empty_on_404(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
+
         with patch.dict(os.environ, self._env):
             rows = DatasetHub.pull("nonexistent")
         self.assertEqual(rows, [])
 
     def test_delete_sends_delete_request(self) -> None:
         from meshflow.cloud.dataset_hub import DatasetHub
+
         with patch.dict(os.environ, self._env):
             DatasetHub.delete("my-ds")
         self.assertEqual(len(self._srv.received), 1)
@@ -352,6 +413,7 @@ class TestDatasetHubWithServer(unittest.TestCase):
 # CloudAgentRegistry — offline
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestCloudAgentRegistryOffline(unittest.TestCase):
     def setUp(self) -> None:
         self._env = patch.dict(os.environ, {}, clear=False)
@@ -363,18 +425,22 @@ class TestCloudAgentRegistryOffline(unittest.TestCase):
 
     def test_register_returns_false_when_no_key(self) -> None:
         from meshflow.cloud.agent_registry import CloudAgentRegistry
+
         self.assertFalse(CloudAgentRegistry.register("My Agent", "my-agent"))
 
     def test_record_run_returns_false_when_no_key(self) -> None:
         from meshflow.cloud.agent_registry import CloudAgentRegistry
+
         self.assertFalse(CloudAgentRegistry.record_run("my-agent"))
 
     def test_list_returns_empty_when_no_key(self) -> None:
         from meshflow.cloud.agent_registry import CloudAgentRegistry
+
         self.assertEqual(CloudAgentRegistry.list(), [])
 
     def test_get_returns_none_when_no_key(self) -> None:
         from meshflow.cloud.agent_registry import CloudAgentRegistry
+
         self.assertIsNone(CloudAgentRegistry.get("my-agent"))
 
 
@@ -382,19 +448,23 @@ class TestCloudAgentRegistryOffline(unittest.TestCase):
 # CloudAgentRegistry — local HTTP server
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestCloudAgentRegistryWithServer(unittest.TestCase):
     def setUp(self) -> None:
         self._srv = _FakeIngestServer()
         port = self._srv.start()
-        self._env = {"MESHFLOW_API_KEY": "mf_sk_test",
-                     "MESHFLOW_CLOUD_URL": f"http://127.0.0.1:{port}",
-                     "MESHFLOW_CLOUD_ENABLED": "1"}
+        self._env = {
+            "MESHFLOW_API_KEY": "mf_sk_test",
+            "MESHFLOW_CLOUD_URL": f"http://127.0.0.1:{port}",
+            "MESHFLOW_CLOUD_ENABLED": "1",
+        }
 
     def tearDown(self) -> None:
         self._srv.stop()
 
     def test_register_sends_correct_fields(self) -> None:
         from meshflow.cloud.agent_registry import CloudAgentRegistry
+
         with patch.dict(os.environ, self._env):
             CloudAgentRegistry.register(
                 "HIPAA Intake",
@@ -412,6 +482,7 @@ class TestCloudAgentRegistryWithServer(unittest.TestCase):
 
     def test_record_run_sends_run_count(self) -> None:
         from meshflow.cloud.agent_registry import CloudAgentRegistry
+
         with patch.dict(os.environ, self._env):
             CloudAgentRegistry.record_run("hipaa-intake", run_count=3)
         body = self._srv.received[0]["body"]
@@ -420,11 +491,23 @@ class TestCloudAgentRegistryWithServer(unittest.TestCase):
 
     def test_list_returns_agents(self) -> None:
         from meshflow.cloud.agent_registry import CloudAgentRegistry
+
         self._srv.get_responses["/api/ingest/agents"] = [
-            {"id": "1", "slug": "a", "name": "Agent A", "role": "executor",
-             "model": "claude-sonnet-4-6", "policy": "standard", "status": "active",
-             "description": "", "systemPrompt": "", "tags": "",
-             "deployTarget": "local", "version": "1.0.0", "totalRuns": 0},
+            {
+                "id": "1",
+                "slug": "a",
+                "name": "Agent A",
+                "role": "executor",
+                "model": "claude-sonnet-4-6",
+                "policy": "standard",
+                "status": "active",
+                "description": "",
+                "systemPrompt": "",
+                "tags": "",
+                "deployTarget": "local",
+                "version": "1.0.0",
+                "totalRuns": 0,
+            },
         ]
         with patch.dict(os.environ, self._env):
             agents = CloudAgentRegistry.list()
@@ -433,6 +516,7 @@ class TestCloudAgentRegistryWithServer(unittest.TestCase):
 
     def test_get_returns_none_on_404(self) -> None:
         from meshflow.cloud.agent_registry import CloudAgentRegistry
+
         with patch.dict(os.environ, self._env):
             agent = CloudAgentRegistry.get("missing-slug")
         self.assertIsNone(agent)
@@ -442,19 +526,23 @@ class TestCloudAgentRegistryWithServer(unittest.TestCase):
 # MeshFlowCloud.report_spans()
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestReportSpans(unittest.TestCase):
     def test_empty_list_returns_true_without_http(self) -> None:
         from meshflow.cloud.client import MeshFlowCloud
+
         c = MeshFlowCloud(enabled=False)
         self.assertTrue(c.report_spans([]))
 
     def test_disabled_client_returns_true(self) -> None:
         from meshflow.cloud.client import MeshFlowCloud
+
         c = MeshFlowCloud(enabled=False)
         self.assertTrue(c.report_spans([{"run_id": "x", "agent_name": "a"}]))
 
     def test_sends_spans_to_ingest_endpoint(self) -> None:
         from meshflow.cloud.client import MeshFlowCloud
+
         srv = _FakeIngestServer()
         port = srv.start()
         try:
@@ -489,10 +577,12 @@ class TestReportSpans(unittest.TestCase):
 # MeshFlowCloud.instrument() — duck-typed queue injection
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestInstrumentQueueInjection(unittest.TestCase):
     def test_queue_injected_and_removed(self) -> None:
         from meshflow.cloud.client import MeshFlowCloud
         from meshflow.core.events import global_event_bus
+
         before = len(global_event_bus._queues)
         c = MeshFlowCloud(enabled=False)
         with c.instrument():
@@ -504,6 +594,7 @@ class TestInstrumentQueueInjection(unittest.TestCase):
     def test_queue_removed_even_on_exception(self) -> None:
         from meshflow.cloud.client import MeshFlowCloud
         from meshflow.core.events import global_event_bus
+
         before = len(global_event_bus._queues)
         c = MeshFlowCloud(enabled=False)
         try:
@@ -535,19 +626,33 @@ class TestInstrumentQueueInjection(unittest.TestCase):
 
         with patch.object(MeshFlowCloud, "report_spans", _capture):
             with c.instrument():
-                self._emit(global_event_bus, WorkflowEvent(
-                    kind=EventKind.STEP_START, run_id="run-x",
-                    node_id="planner", data={"kind": "executor"},
-                ))
+                self._emit(
+                    global_event_bus,
+                    WorkflowEvent(
+                        kind=EventKind.STEP_START,
+                        run_id="run-x",
+                        node_id="planner",
+                        data={"kind": "executor"},
+                    ),
+                )
                 time.sleep(0.01)
-                self._emit(global_event_bus, WorkflowEvent(
-                    kind=EventKind.STEP_COMPLETE, run_id="run-x",
-                    node_id="planner",
-                    data={"tokens": 512, "cost_usd": 0.002, "content_preview": "done"},
-                ))
-                self._emit(global_event_bus, WorkflowEvent(
-                    kind=EventKind.WORKFLOW_COMPLETE, run_id="run-x", data={},
-                ))
+                self._emit(
+                    global_event_bus,
+                    WorkflowEvent(
+                        kind=EventKind.STEP_COMPLETE,
+                        run_id="run-x",
+                        node_id="planner",
+                        data={"tokens": 512, "cost_usd": 0.002, "content_preview": "done"},
+                    ),
+                )
+                self._emit(
+                    global_event_bus,
+                    WorkflowEvent(
+                        kind=EventKind.WORKFLOW_COMPLETE,
+                        run_id="run-x",
+                        data={},
+                    ),
+                )
 
         self.assertEqual(len(collected_spans), 1)
         span = collected_spans[0]
@@ -571,10 +676,15 @@ class TestInstrumentQueueInjection(unittest.TestCase):
 
         with patch.object(MeshFlowCloud, "report_spans", _capture):
             with c.instrument():
-                self._emit(global_event_bus, WorkflowEvent(
-                    kind=EventKind.STEP_COMPLETE, run_id="run-y",
-                    node_id="executor", data={"tokens": 100},
-                ))
+                self._emit(
+                    global_event_bus,
+                    WorkflowEvent(
+                        kind=EventKind.STEP_COMPLETE,
+                        run_id="run-y",
+                        node_id="executor",
+                        data={"tokens": 100},
+                    ),
+                )
 
         self.assertEqual(len(flushed), 1)
         self.assertEqual(flushed[0]["run_id"], "run-y")
@@ -594,10 +704,15 @@ class TestInstrumentQueueInjection(unittest.TestCase):
 
         with patch.object(CloudAgentRegistry, "record_run", staticmethod(_fake_record)):
             with c.instrument(register_agents=True):
-                self._emit(global_event_bus, WorkflowEvent(
-                    kind=EventKind.STEP_COMPLETE, run_id="run-z",
-                    node_id="analyst", data={"tokens": 50},
-                ))
+                self._emit(
+                    global_event_bus,
+                    WorkflowEvent(
+                        kind=EventKind.STEP_COMPLETE,
+                        run_id="run-z",
+                        node_id="analyst",
+                        data={"tokens": 50},
+                    ),
+                )
 
         self.assertIn("analyst", recorded)
 
@@ -616,10 +731,15 @@ class TestInstrumentQueueInjection(unittest.TestCase):
 
         with patch.object(CloudAgentRegistry, "record_run", staticmethod(_fake_record)):
             with c.instrument(register_agents=False):
-                self._emit(global_event_bus, WorkflowEvent(
-                    kind=EventKind.STEP_COMPLETE, run_id="run-z2",
-                    node_id="writer", data={},
-                ))
+                self._emit(
+                    global_event_bus,
+                    WorkflowEvent(
+                        kind=EventKind.STEP_COMPLETE,
+                        run_id="run-z2",
+                        node_id="writer",
+                        data={},
+                    ),
+                )
 
         self.assertEqual(recorded, [])
 
@@ -627,6 +747,7 @@ class TestInstrumentQueueInjection(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════════════════
 # Top-level import parity (from meshflow import …)
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestTopLevelExports(unittest.TestCase):
     def test_prompt_hub_importable(self) -> None:
@@ -640,6 +761,7 @@ class TestTopLevelExports(unittest.TestCase):
 
     def test_all_includes_new_exports(self) -> None:
         import meshflow
+
         for name in ("PromptHub", "DatasetHub", "CloudAgentRegistry"):
             self.assertIn(name, meshflow.__all__, f"{name} missing from __all__")
 
@@ -651,23 +773,27 @@ class TestTopLevelExports(unittest.TestCase):
 # MeshFlowCloud.report_compliance()
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestReportCompliance(unittest.TestCase):
     def test_disabled_client_returns_true(self) -> None:
         from meshflow.cloud.client import MeshFlowCloud
+
         c = MeshFlowCloud(enabled=False)
         self.assertTrue(c.report_compliance("hipaa", True))
 
     def test_disabled_returns_true_with_evidence(self) -> None:
         from meshflow.cloud.client import MeshFlowCloud
+
         c = MeshFlowCloud(enabled=False)
         evidence = {
             "access-control": {"passed": True, "title": "Access Control"},
-            "audit-logs":     {"passed": True, "title": "Audit Logs"},
+            "audit-logs": {"passed": True, "title": "Audit Logs"},
         }
         self.assertTrue(c.report_compliance("soc2", True, score=0.92, evidence=evidence))
 
     def test_posts_to_correct_endpoint(self) -> None:
         from meshflow.cloud.client import MeshFlowCloud
+
         srv = _FakeIngestServer()
         port = srv.start()
         try:
@@ -678,7 +804,8 @@ class TestReportCompliance(unittest.TestCase):
                 )
                 evidence = {"phi-access": {"passed": True, "title": "PHI Access Control"}}
                 ok = c.report_compliance(
-                    "hipaa", True,
+                    "hipaa",
+                    True,
                     score=0.95,
                     run_id="run-123",
                     evidence=evidence,
@@ -696,10 +823,11 @@ class TestReportCompliance(unittest.TestCase):
 
     def test_module_level_shorthand_importable(self) -> None:
         from meshflow.cloud.client import report_compliance  # noqa: F401
-        from meshflow.cloud import cloud_report_compliance    # noqa: F401
+        from meshflow.cloud import cloud_report_compliance  # noqa: F401
 
     def test_async_variant_exists(self) -> None:
         from meshflow.cloud.client import MeshFlowCloud
+
         c = MeshFlowCloud(enabled=False)
         self.assertTrue(hasattr(c, "areport_compliance"))
 

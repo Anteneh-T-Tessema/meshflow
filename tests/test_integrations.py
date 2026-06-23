@@ -97,6 +97,27 @@ class TestLangGraphIntegration:
         node = node_from_langgraph(graph, "test_node")
         assert isinstance(node, MeshNode)
 
+    @pytest.mark.asyncio
+    async def test_govern_langgraph(self, tmp_path):
+        from meshflow.integrations.langgraph import govern_langgraph
+        import sqlite3
+
+        graph = self._make_lc_graph()
+        db_path = str(tmp_path / "test_ledger.db")
+        governed = govern_langgraph(graph, policy="dev", ledger_path=db_path)
+
+        result = await governed({"input": "Analyze contract"})
+        assert "graph result for: Analyze contract" in str(result)
+
+        # Verify a record was written to the ledger
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT node_kind, input_task FROM step_records")
+        rows = cur.fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "langgraph"
+        assert "Analyze contract" in rows[0][1]
+
 
 # ── CrewAI ────────────────────────────────────────────────────────────────────
 

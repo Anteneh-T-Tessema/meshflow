@@ -288,6 +288,26 @@ class EvalSuite:
         scenarios = [EvalScenario.from_dict(s) for s in data.get("scenarios", [])]
         return cls(name=name, scenarios=scenarios, policy=policy)
 
+    @classmethod
+    def from_dataset_hub(cls, dataset_name: str, policy: str = "dev") -> "EvalSuite":
+        """Load an EvalSuite by pulling an evaluation dataset from MeshFlow Cloud."""
+        from meshflow.cloud.dataset_hub import DatasetHub
+        from meshflow.core.schemas import policy_for_mode
+
+        rows = DatasetHub.pull(dataset_name)
+        scenarios = []
+        for i, row in enumerate(rows):
+            expected = row.get("expected_output")
+            scen = EvalScenario(
+                name=f"{dataset_name}_row_{i}",
+                input=row.get("input", ""),
+                expected_contains=[expected] if expected else [],
+                context=row.get("metadata", {}),
+            )
+            scenarios.append(scen)
+            
+        return cls(name=dataset_name, scenarios=scenarios, policy=policy_for_mode(policy))
+
     def filter(self, tags: list[str]) -> "EvalSuite":
         """Return a new suite with only scenarios matching any of the given tags."""
         filtered = [s for s in self.scenarios if any(t in s.tags for t in tags)]

@@ -89,6 +89,12 @@ class InjectionScanner:
     """
 
     def scan(self, text: str, source_trust: str = "untrusted") -> InjectionScanResult:
+        from meshflow.security.guardrail_engine import _SAFETY_CACHE
+        cache_key = (text, source_trust)
+        cached = _SAFETY_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
         matched: list[str] = []
         for pattern in _INJECTION_PATTERNS:
             if pattern.search(text):
@@ -100,21 +106,25 @@ class InjectionScanner:
                     matched.append(f"rag:{pattern.pattern}")
 
         if not matched:
-            return InjectionScanResult(
+            scan_res = InjectionScanResult(
                 result=InjectionResult.CLEAN,
                 matched_patterns=[],
                 confidence=0.99,
             )
+            _SAFETY_CACHE.set(cache_key, scan_res)
+            return scan_res
 
         confidence = min(0.5 + len(matched) * 0.15, 0.99)
         result = InjectionResult.BLOCKED if len(matched) >= 2 else InjectionResult.SUSPICIOUS
 
-        return InjectionScanResult(
+        scan_res = InjectionScanResult(
             result=result,
             matched_patterns=matched,
             confidence=confidence,
             action_taken="blocked" if result == InjectionResult.BLOCKED else "flagged",
         )
+        _SAFETY_CACHE.set(cache_key, scan_res)
+        return scan_res
 
     def sanitize(self, text: str) -> str:
         """Best-effort sanitization — strip known injection triggers."""

@@ -130,6 +130,44 @@ class MeshFlowCloud:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._post, path, payload)
 
+    def _get(self, path: str) -> dict[str, Any] | None:
+        """GET request to path; returns JSON dict on success, None on error."""
+        if not self._cfg.enabled:
+            return None
+        url  = f"{self._cfg.base_url}{path}"
+        req  = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "x-meshflow-key": self._cfg.api_key,
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._cfg.timeout) as response:
+                return json.loads(response.read().decode())
+        except urllib.error.URLError:
+            return None
+        except Exception:
+            return None
+
+    async def _aget(self, path: str) -> dict[str, Any] | None:
+        """Async wrapper — runs _get in a thread pool executor."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._get, path)
+
+    # ── Config Fetching ────────────────────────────────────────────────────────
+
+    def get_policy(self) -> dict[str, Any] | None:
+        """Fetch the organization's ZeroTrustPolicy from the cloud."""
+        return self._get("/api/config/policy")
+
+    def get_model_routers(self) -> list[dict[str, Any]] | None:
+        """Fetch the organization's Model Routers from the cloud."""
+        res = self._get("/api/config/routers")
+        return res.get("routers") if isinstance(res, dict) else None
+
+
     # ── report_run ─────────────────────────────────────────────────────────────
 
     def report_run(self, result: Any, workflow_name: str = "") -> bool:

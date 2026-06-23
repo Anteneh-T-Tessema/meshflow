@@ -12,6 +12,7 @@ analysis is recommended for confirmation in high-stakes contexts.
 from __future__ import annotations
 
 import math
+import re
 import statistics
 from collections import deque
 from dataclasses import dataclass
@@ -155,6 +156,154 @@ class ObjectiveDivergenceTracker:
         )
 
 
+def _calculate_shannon_entropy(text: str) -> float:
+    """Calculate character Shannon entropy of a string."""
+    if not text:
+        return 0.0
+    counts: dict[str, int] = {}
+    for char in text:
+        counts[char] = counts.get(char, 0) + 1
+    entropy = 0.0
+    total = len(text)
+    for count in counts.values():
+        p = count / total
+        entropy -= p * math.log2(p)
+    return entropy
+
+
+def _mask_structural_boilerplate(text: str) -> str:
+    """Strip formatting boilerplate (brackets, braces, delimiters, common keywords)
+
+    if a structured context (JSON, SQL, HTML/XML) is detected.
+    """
+    stripped = text.strip()
+    is_json = (
+        (stripped.startswith("{") and stripped.endswith("}")) or
+        (stripped.startswith("[") and stripped.endswith("]")) or
+        ('"' in text and ':' in text)
+    )
+    is_sql = any(
+        kw in text.upper()
+        for kw in ["SELECT ", "INSERT ", "UPDATE ", "DELETE ", "CREATE TABLE", "DROP TABLE"]
+    )
+    is_xml = bool(re.search(r"<[^>]+>", text))
+
+    if is_json or is_sql or is_xml:
+        cleaned = text
+        if is_json:
+            cleaned = re.sub(r'[\{\}\[\]\(\)\,\:\;\"\'\\]', ' ', cleaned)
+            cleaned = re.sub(r'\b(true|false|null)\b', ' ', cleaned, flags=re.IGNORECASE)
+        if is_sql:
+            cleaned = re.sub(r'[\(\)\,\;\=\+\-\*\/]', ' ', cleaned)
+            sql_kws = r'\b(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|JOIN|AND|OR|ON|INTO|VALUES|CREATE|TABLE|DROP|INDEX|ON|IN|AS)\b'
+            cleaned = re.sub(sql_kws, ' ', cleaned, flags=re.IGNORECASE)
+        if is_xml:
+            cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
+        
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        return cleaned
+    
+    return text
+
+
+def _get_entropy_sensitivity_factor(role: str, text: str) -> float:
+    """Returns a baseline threshold multiplier/factor based on role or text content."""
+    role_lower = role.lower() if role else ""
+    
+    # Cryptographic Key Exchange / encrypted payloads: skip profiling entirely (factor = 0.0)
+    if "crypt" in role_lower or "key_exchange" in role_lower or "signature" in role_lower:
+        return 0.0
+    if "BEGIN PUBLIC KEY" in text or "BEGIN PRIVATE KEY" in text or "ssh-rsa" in text:
+        return 0.0
+        
+    # Financial Ledger/Code: scaled-down sensitivity (factor = 0.5)
+    if "finance" in role_lower or "ledger" in role_lower or "code" in role_lower or "developer" in role_lower:
+        return 0.5
+        
+    # Detect if text content contains structural code/ledger cues
+    is_code = (
+        "def " in text or "class " in text or "import " in text or
+        ("{" in text and "}" in text and (":" in text or "function" in text))
+    )
+    is_ledger = (
+        "$" in text or "USD" in text or "balance" in role_lower or
+        len(re.findall(r'\b\d+\.\d{2}\b', text)) > 3
+    )
+    if is_code or is_ledger:
+        return 0.5
+        
+    return 1.0
+
+
+class BigramPerplexityTracker:
+    """English token perplexity tracker using a Laplace-smoothed bigram probability matrix."""
+
+    def __init__(self) -> None:
+        self.unigrams: dict[str, int] = {}
+        self.bigrams: dict[tuple[str, str], int] = {}
+        self.vocab: set[str] = set()
+        self.alpha = 0.1
+        
+        # Train on a baseline English corpus snippet to establish expected probabilities
+        sample_text = (
+            "the quick brown fox jumps over the lazy dog. this is a standard test sentence for "
+            "evaluating english language model perplexity. meshflow is a powerful agentic framework "
+            "designed to build scalable and reliable agent teams. agents communicate with each other "
+            "using natural language or structured formats. we want to detect collusion and coordinated "
+            "behavior. step runtime executes tasks and records actions in an append only ledger. "
+            "compliance policies ensure zero trust security. steganography detection monitors word choice "
+            "and output lengths. we want to prevent false positives when agents output structured json "
+            "or sql queries. a robust system balances security and performance. debugging distributed "
+            "systems requires tracing, metrics, and logs. always verify the integrity of the chain."
+        )
+        self.train(sample_text)
+        
+    def train(self, text: str) -> None:
+        tokens = self._tokenize(text)
+        if not tokens:
+            return
+        for tok in tokens:
+            self.unigrams[tok] = self.unigrams.get(tok, 0) + 1
+            self.vocab.add(tok)
+            
+        for i in range(len(tokens) - 1):
+            bg = (tokens[i], tokens[i+1])
+            self.bigrams[bg] = self.bigrams.get(bg, 0) + 1
+
+    def _tokenize(self, text: str) -> list[str]:
+        cleaned = re.sub(r'[^a-zA-Z0-9\s]', '', text.lower())
+        return cleaned.split()
+
+    def calculate_perplexity(self, text: str) -> float:
+        tokens = self._tokenize(text)
+        if not tokens:
+            return 0.0
+            
+        vocab_size = len(self.vocab)
+        log_prob = 0.0
+        
+        # P(w_1)
+        w1 = tokens[0]
+        c_w1 = self.unigrams.get(w1, 0)
+        total_words = sum(self.unigrams.values())
+        prob_w1 = (c_w1 + self.alpha) / (total_words + self.alpha * vocab_size)
+        log_prob += math.log(prob_w1)
+        
+        for i in range(len(tokens) - 1):
+            w_prev, w_curr = tokens[i], tokens[i+1]
+            c_prev = self.unigrams.get(w_prev, 0)
+            c_bg = self.bigrams.get((w_prev, w_curr), 0)
+            
+            prob = (c_bg + self.alpha) / (c_prev + self.alpha * vocab_size)
+            log_prob += math.log(prob)
+            
+        avg_log_prob = log_prob / len(tokens)
+        try:
+            return math.exp(-avg_log_prob)
+        except OverflowError:
+            return float('inf')
+
+
 class SteganographicChannelDetector:
     """Detects covert channels in inter-agent communication.
 
@@ -182,12 +331,26 @@ class SteganographicChannelDetector:
     def __init__(self) -> None:
         self._lengths: dict[str, list[int]] = {}  # agent_id → output lengths
         self._schelling: dict[str, list[float]] = {}  # agent_id → schelling density
+        self._entropies: dict[str, list[float]] = {}  # agent_id → masked Shannon entropy
+        self._perplexities: dict[str, list[float]] = {}  # agent_id → bigram perplexity
+        self._sensitivity_factors: dict[str, list[float]] = {}  # agent_id → baseline factors
+        self._perplexity_tracker = BigramPerplexityTracker()
 
-    def record_output(self, agent_id: str, text: str) -> None:
+    def record_output(self, agent_id: str, text: str, role: str = "natural_language") -> None:
         self._lengths.setdefault(agent_id, []).append(len(text))
         words = text.lower().split()
         density = sum(1 for w in words if w in self.SCHELLING_WORDS) / max(len(words), 1)
         self._schelling.setdefault(agent_id, []).append(density)
+
+        masked_text = _mask_structural_boilerplate(text)
+        ent = _calculate_shannon_entropy(masked_text)
+        self._entropies.setdefault(agent_id, []).append(ent)
+
+        perp = self._perplexity_tracker.calculate_perplexity(text)
+        self._perplexities.setdefault(agent_id, []).append(perp)
+
+        factor = _get_entropy_sensitivity_factor(role, text)
+        self._sensitivity_factors.setdefault(agent_id, []).append(factor)
 
     def _pearson(self, a: list[float], b: list[float]) -> float:
         n = min(len(a), len(b))
@@ -212,10 +375,40 @@ class SteganographicChannelDetector:
             word_corr = abs(self._pearson(wa, wb))
 
             score = max(len_corr, word_corr)
-            is_alert = (
-                len_corr > self.LENGTH_CORRELATION_THRESHOLD
-                or word_corr > self.WORD_CORRELATION_THRESHOLD
-            )
+            
+            # Collusion triggers only if character-level entropy drops while semantic perplexity concurrently spikes.
+            # We look at the latest output for both agents.
+            ent_a = self._entropies.get(a, [4.5])[-1] if self._entropies.get(a) else 4.5
+            ent_b = self._entropies.get(b, [4.5])[-1] if self._entropies.get(b) else 4.5
+            perp_a = self._perplexities.get(a, [10.0])[-1] if self._perplexities.get(a) else 10.0
+            perp_b = self._perplexities.get(b, [10.0])[-1] if self._perplexities.get(b) else 10.0
+            
+            fact_a = self._sensitivity_factors.get(a, [1.0])[-1] if self._sensitivity_factors.get(a) else 1.0
+            fact_b = self._sensitivity_factors.get(b, [1.0])[-1] if self._sensitivity_factors.get(b) else 1.0
+            
+            # Skip profiling entirely if either agent has key exchange/cryptography active
+            if fact_a == 0.0 or fact_b == 0.0:
+                is_alert = False
+            else:
+                f = min(fact_a, fact_b)
+                # Calibrate thresholds: scaled down sensitivity lowers the entropy drop baseline
+                # and increases the perplexity spike threshold.
+                adj_entropy_threshold = 3.9 * f
+                adj_perplexity_threshold = 35.0 / f
+                
+                # Check for entropy drop and perplexity spike (either agent)
+                entropy_drop = (ent_a < adj_entropy_threshold) or (ent_b < adj_entropy_threshold)
+                perplexity_spike = (perp_a > adj_perplexity_threshold) or (perp_b > adj_perplexity_threshold)
+                
+                # Adjusted correlation thresholds
+                adj_len_threshold = min(0.99, self.LENGTH_CORRELATION_THRESHOLD + (1.0 - f) * 0.15)
+                adj_word_threshold = min(0.99, self.WORD_CORRELATION_THRESHOLD + (1.0 - f) * 0.15)
+                
+                len_corr_ok = len_corr > adj_len_threshold
+                word_corr_ok = word_corr > adj_word_threshold
+                
+                is_alert = (len_corr_ok or word_corr_ok) and entropy_drop and perplexity_spike
+
             alerts.append(
                 CollusionAlert(
                     detector="SteganographicChannelDetector",
@@ -224,7 +417,10 @@ class SteganographicChannelDetector:
                     threshold=max(
                         self.LENGTH_CORRELATION_THRESHOLD, self.WORD_CORRELATION_THRESHOLD
                     ),
-                    details=(f"len_corr={len_corr:.3f}, word_corr={word_corr:.3f}, pair=({a},{b})"),
+                    details=(
+                        f"len_corr={len_corr:.3f}, word_corr={word_corr:.3f}, pair=({a},{b}), "
+                        f"ent=({ent_a:.2f},{ent_b:.2f}), perp=({perp_a:.1f},{perp_b:.1f})"
+                    ),
                     is_alert=is_alert,
                 )
             )
@@ -248,8 +444,8 @@ class CollusionAuditor:
     def record_alignment(self, agent_id: str, score: float) -> None:
         self._drift.record_alignment(agent_id, score)
 
-    def record_output(self, agent_id: str, text: str) -> None:
-        self._steg.record_output(agent_id, text)
+    def record_output(self, agent_id: str, text: str, role: str = "natural_language") -> None:
+        self._steg.record_output(agent_id, text, role)
 
     def audit(self, agents: list[str]) -> list[CollusionAlert]:
         alerts: list[CollusionAlert] = []

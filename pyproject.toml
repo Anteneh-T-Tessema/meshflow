@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meshflow"
-version = "1.14.0"
+version = "1.15.0"
 description = "The production-safe infrastructure layer for multi-agent systems — Zero Trust built in, HIPAA/SOX/GDPR compliance, SHA-256 audit chain, hard cost caps, 70-85% token savings. 7 lines to ship."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -71,9 +71,12 @@ mcp       = ["pydantic>=2.7.0"]
 # SwarmTRM neural consensus engine (7M-param RecursiveUnit + 53 domain verifiers)
 swarm     = ["torch>=2.0.0", "pydantic>=2.7.0"]
 
+# Redis job store backend
+redis     = ["redis>=5.0.0"]
+
 # Everything except dev tooling
 full      = [
-    "meshflow[openai,gemini,bedrock,rag,postgres,s3,otel,mcp,swarm]",
+    "meshflow[openai,gemini,bedrock,rag,postgres,s3,otel,mcp,swarm,redis]",
 ]
 
 # Development tooling
@@ -88,6 +91,7 @@ dev = [
     "openai>=1.50.0",  # needed for OpenAI provider tests
     "opentelemetry-api>=1.24.0",  # needed for telemetry tests
     "opentelemetry-sdk>=1.24.0",  # needed for telemetry tests
+    "redis>=5.0.0",               # needed for redis worker tests
 ]
 
 [project.scripts]

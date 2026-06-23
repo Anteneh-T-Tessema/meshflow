@@ -166,6 +166,55 @@ SKILLS: dict[str, Skill] = {
 }
 
 
+# ── Auto-detection ────────────────────────────────────────────────────────────
+
+# Keyword triggers used by detect_skills() to infer relevant skills from
+# free-text task descriptions — e.g. routing "review this SQL migration for
+# injection risk" toward both "sql" and "security".
+_DETECTION_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "python": ("python", "pep-8", "pep8", "asyncio", "django", "flask", "pip install"),
+    "javascript": ("javascript", "typescript", "react", "node.js", "npm", "es202"),
+    "data_analysis": ("data analysis", "dataset", "statistic", "correlation", "pandas", "metrics"),
+    "sql": ("sql", "query", "database", "postgres", "mysql", "schema", "migration"),
+    "web_search": ("search the web", "look up", "find sources", "research online", "cite sources"),
+    "code_review": ("code review", "review this code", "pull request", "pr feedback"),
+    "writing": ("write a", "draft", "blog post", "documentation", "copywriting"),
+    "legal": ("contract", "clause", "regulatory", "legal", "terms of service", "compliance review"),
+    "medical": ("diagnosis", "patient", "clinical", "medical", "symptom", "phi", "hipaa"),
+    "security": ("vulnerability", "exploit", "injection", "owasp", "security review", "pentest", "threat model"),
+    "api_design": ("rest api", "endpoint", "openapi", "api design", "swagger"),
+    "devops": ("docker", "kubernetes", "ci/cd", "terraform", "helm", "deployment pipeline"),
+    "machine_learning": ("machine learning", "model training", "neural network", "mlops", "fine-tun"),
+    "finance": ("financial", "accounting", "gaap", "ifrs", "sox", "balance sheet", "audit"),
+    "product": ("roadmap", "user story", "prioritiz", "rice score", "moscow"),
+}
+
+
+def detect_skills(text: str, *, limit: int = 3) -> list[str]:
+    """Infer relevant built-in skill names from free-text task content.
+
+    Scans ``text`` for keyword triggers associated with each skill in
+    :data:`SKILLS` and returns the names with the most hits, most-relevant
+    first (ties keep the registry's declaration order). Skills with zero
+    keyword matches are omitted.
+
+    Pair with :func:`skill_prompt` to auto-augment a system prompt::
+
+        skills = detect_skills(task_description)
+        system_prompt = base_prompt + "\\n\\n" + skill_prompt(skills)
+
+    Returns at most ``limit`` names (default 3) so prompts stay focused.
+    """
+    lowered = text.lower()
+    scored = [
+        (sum(1 for kw in keywords if kw in lowered), name)
+        for name, keywords in _DETECTION_KEYWORDS.items()
+    ]
+    matches = [(hits, name) for hits, name in scored if hits > 0]
+    matches.sort(key=lambda pair: -pair[0])
+    return [name for _, name in matches[:limit]]
+
+
 def skill_prompt(skills: list[str]) -> str:
     """Return a combined system-prompt snippet for the given skill names.
 

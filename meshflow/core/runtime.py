@@ -208,6 +208,12 @@ class StepRuntime:
         step_id = str(uuid.uuid4())[:8]
         start = time.monotonic()
 
+        _guardian_alert_cursor = (
+            len(self._guardian.alerts())
+            if self._guardian is not None and hasattr(self._guardian, "alerts")
+            else 0
+        )
+
         # W3C Trace Context — propagate or create
         try:
             from meshflow.observability.trace_context import TraceContext
@@ -365,6 +371,11 @@ class StepRuntime:
             else 0
         )
 
+        if self._guardian is not None:
+            node_input.context["_guardian"] = self._guardian
+        if self._ledger is not None:
+            node_input.context["_ledger"] = self._ledger
+
         if not blocked and not paused:
             try:
                 _step_timeout = getattr(self._policy, "step_timeout_s", 0.0)
@@ -460,7 +471,8 @@ class StepRuntime:
             and not paused
             and output.content
         ):
-            self._collusion.record_output(node.id, output.content[:500])
+            node_role = node.metadata.get("role", getattr(node, "role", "natural_language"))
+            self._collusion.record_output(node.id, output.content[:500], role=node_role)
             # Collusion alert webhook — fire if risk score is high
             try:
                 import asyncio as _ca_asyncio
@@ -531,6 +543,10 @@ class StepRuntime:
             _cache = {}
 
         _meta: dict[str, Any] = {}
+        if self._guardian is not None and hasattr(self._guardian, "alerts"):
+            _step_alerts = self._guardian.alerts()[_guardian_alert_cursor:]
+            if _step_alerts:
+                _meta["guardian_alerts"] = _step_alerts
         if _step_tool_calls:
             _meta["tool_calls"] = _step_tool_calls
         _cr = _cache.get("cache_read_tokens", 0)

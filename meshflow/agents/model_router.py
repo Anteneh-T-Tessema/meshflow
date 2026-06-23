@@ -133,6 +133,27 @@ class RouterConfig:
         with open(path) as f:
             return cls.from_dict(yaml.safe_load(f) or {})
 
+    @classmethod
+    def from_cloud(cls, client: Any = None) -> "RouterConfig":
+        """Load from the MeshFlow cloud dashboard API."""
+        if client is None:
+            from meshflow.cloud.client import get_cloud_client
+            client = get_cloud_client()
+            
+        routers = client.get_model_routers()
+        if not routers:
+            return cls()  # fallback to defaults
+            
+        # Map cloud model routers to tiers
+        tiers = dict(_DEFAULT_TIERS)
+        for r in routers:
+            tier = r.get("tier")
+            primary = r.get("primaryModel")
+            if tier and primary:
+                tiers[tier] = primary
+                
+        return cls(tiers=tiers)
+
 
 # ── RoutingDecision ───────────────────────────────────────────────────────────
 

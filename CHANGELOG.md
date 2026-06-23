@@ -5,6 +5,100 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.15.0] — 2026-06-23
+
+### Guardrail engine integration + Merkle tree ledger + collusion detection v2
+
+**5,888 tests passing. CI green.**
+
+This release integrates the guardrail engine into all three framework adapters
+(LangGraph, CrewAI, AutoGen), ships a Merkle tree audit chain with batch
+writes, upgrades the collusion detector with bigram perplexity and
+entropy-aware profiling, and adds a Wasm-based cross-SDK policy engine.
+
+#### Guardrail Engine — active pre-execution firewalls for all frameworks
+
+`GuardrailViolationError`, `PromptSafetyCache`, and framework-specific
+callbacks now activate automatically when a `Guardian` is present in the
+runtime context:
+
+- **LangGraph**: `LangGraphGuardCallback` injected into graph `config.callbacks`
+  — scans `on_chain_start` inputs and `on_tool_start` arguments
+- **CrewAI**: `CrewAIGuardCallback` attached to each crew agent's LLM callbacks
+  — scans every `on_llm_start` prompt
+- **AutoGen**: `_register_autogen_guard` registers a position-0 `reply_func`
+  — scans inbound messages before the agent generates a reply
+- **`PromptSafetyCache`**: thread-safe LRU cache (default 1,000 entries) avoids
+  re-scanning identical prompts; `InjectionScanner.scan()` now cache-aware
+
+```python
+from meshflow import Workflow, Agent
+from meshflow.security.guardian import Guardian
+
+# Guardian is auto-injected — all framework adapters get guardrails
+wf = Workflow(mode="hipaa")
+wf.add(MeshNode.from_crewai("intake", my_crew))
+result = wf.run("Process patient intake form")
+# → CrewAI LLM prompts are scanned for injection before every call
+```
+
+#### Merkle Tree Ledger — pipelined group commits
+
+`ReplayLedger` now supports Merkle-tree-based batch verification alongside
+the linear hash chain:
+
+- `_build_merkle_tree(leaf_hashes)` → `(root, proofs)` — O(n log n)
+- `_verify_merkle_proof(leaf, index, proof, root)` — O(log n) per-entry verification
+- `write_batch(records, tenant_id)` on both `SQLiteLedgerBackend` and
+  `PostgresLedgerBackend` — transactional multi-record insert
+- `ReplayLedger(enable_batching=True)` — async flush worker with background
+  `asyncio.Task`; auto-disabled in test environments
+
+#### Collusion Detection v2 — entropy + perplexity + role awareness
+
+The `CollusionDetector` is upgraded with three new analysis layers:
+
+- **Shannon entropy profiling** with structural boilerplate masking (JSON, SQL,
+  XML stripped before analysis to reduce false positives)
+- **Bigram perplexity tracker** — Laplace-smoothed bigram model trained on
+  baseline English corpus; detects statistical anomalies in agent outputs
+- **Role-aware sensitivity** — `_get_entropy_sensitivity_factor(role, text)`
+  returns 0.0 for crypto/key-exchange roles (skip), 0.5 for finance/code roles
+  (relaxed), 1.0 for natural language (strict)
+
+#### Wasm Policy Engine — cross-SDK semantic parity
+
+`WasmPolicyEngine` in `meshflow/core/policy_loader.py` loads compiled OPA/Rego
+or Rust Wasm bytecode for compliance evaluation, ensuring identical policy
+logic across all 5 SDKs (Python, TypeScript, Go, Rust, Java):
+
+- Supports both `wasmtime` and `wasmer` runtimes
+- Falls back gracefully to native Python when Wasm unavailable
+- `evaluate_compliance(framework, rule, input_data)` → dict result
+
+#### Cloud SDK — GET methods + `ZeroTrustOrchestrator.from_cloud()`
+
+- `MeshFlowCloud._get()` / `._aget()` — HTTP GET with API key auth
+- `get_policy()` — fetch org ZT policy from cloud dashboard
+- `get_model_routers()` — fetch org model router configs
+- `ZeroTrustOrchestrator.from_cloud(client)` — hydrate ZT policy from cloud API;
+  falls back to Enterprise tier if unreachable
+- `EvalSuite.from_dataset_hub(dataset_name)` — pull eval datasets from cloud
+
+#### Other improvements
+
+- **Auto skill detection**: `detect_skills(text)` — keyword-based inference of
+  relevant built-in skills from free-text task descriptions
+- **Guardian alert tracking**: `StepRecord.metadata["guardian_alerts"]` now
+  captures per-step guardian alerts (injection scans, tool chain risks)
+- **Collusion role pass-through**: `record_output()` now accepts `role=` for
+  entropy sensitivity adjustment
+- **Competitive benchmarks**: expanded `competitive_bench.py` with baseline
+  save/compare, CI regression gate, and markdown output
+- **`pytest-asyncio` pinned to 1.3.0** for stable async test behavior
+
+---
+
 ## [1.14.0] — 2026-06-04
 
 ### Cloud platform SDK — full ingest API parity + compliance evidence push

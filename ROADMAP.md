@@ -80,6 +80,23 @@ This is the public roadmap. It is a living document — priorities shift based o
 - ✅ **`meshflow routing-report`** — CLI: tier distribution, cost savings vs. always-large, adaptation history; `--state`, `--export`, `--json` flags
 - ✅ **4,963 tests passing** — 81–85 sprints; CI green on Python 3.11 + 3.12
 
+## Shipped — v1.15.0 (June 2026)
+
+**Theme: Deep guardrails + audit integrity + collusion hardening**
+
+- ✅ **Guardrail engine integration** — `LangGraphGuardCallback`, `CrewAIGuardCallback`, `_register_autogen_guard` auto-injected when Guardian is present in runtime context
+- ✅ **`PromptSafetyCache`** — thread-safe LRU cache (1,000 entries) for `InjectionScanner.scan()`, eliminates redundant regex scans
+- ✅ **Merkle tree audit chain** — `_build_merkle_tree()` / `_verify_merkle_proof()` for O(log n) per-entry verification
+- ✅ **Batch ledger writes** — `write_batch()` on SQLite and Postgres backends; `ReplayLedger(enable_batching=True)` with async flush worker
+- ✅ **Collusion detection v2** — Shannon entropy profiling, bigram perplexity tracker, role-aware sensitivity factors
+- ✅ **Wasm policy engine** — `WasmPolicyEngine` loads OPA/Rego or Rust bytecode; supports wasmtime + wasmer; graceful fallback
+- ✅ **Cloud GET methods** — `get_policy()`, `get_model_routers()`, `ZeroTrustOrchestrator.from_cloud()`
+- ✅ **Auto skill detection** — `detect_skills(text)` infers relevant built-in skills from task descriptions
+- ✅ **`EvalSuite.from_dataset_hub()`** — pull eval datasets from MeshFlow Cloud
+- ✅ **5,888 tests passing** — CI green
+
+---
+
 ## Shipped — v1.14.0 (June 2026)
 
 **Theme: Cloud platform SDK parity — every dashboard feature backed by an SDK call**

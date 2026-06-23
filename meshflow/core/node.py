@@ -241,6 +241,20 @@ class MeshNode:
         async def runner(inp: NodeInput) -> NodeOutput:
             loop = asyncio.get_event_loop()
 
+            guardian = inp.context.get("_guardian")
+            ledger = inp.context.get("_ledger")
+            if guardian:
+                from meshflow.security.guardrail_engine import CrewAIGuardCallback
+                agents = getattr(crew, "agents", []) or []
+                for agent in agents:
+                    llm = getattr(agent, "llm", None)
+                    if llm:
+                        if hasattr(llm, "callbacks"):
+                            if llm.callbacks is None:
+                                llm.callbacks = []
+                            if not any(isinstance(cb, CrewAIGuardCallback) for cb in llm.callbacks):
+                                llm.callbacks.append(CrewAIGuardCallback(guardian, ledger))
+
             if model_router is not None:
                 # Route task → model, patch crew agents, restore after
                 routed_model = _router_model(model_router, inp.task)
@@ -302,6 +316,13 @@ class MeshNode:
         async def runner(inp: NodeInput) -> NodeOutput:
             active_graph = graph
 
+            guardian = inp.context.get("_guardian")
+            ledger = inp.context.get("_ledger")
+            callbacks = []
+            if guardian:
+                from meshflow.security.guardrail_engine import LangGraphGuardCallback
+                callbacks.append(LangGraphGuardCallback(guardian, ledger))
+
             if model_router is not None:
                 routed_model = _router_model(model_router, inp.task)
                 if graph_factory is not None:
@@ -310,17 +331,19 @@ class MeshNode:
                         _graph_cache[routed_model] = graph_factory(routed_model)
                     active_graph = _graph_cache[routed_model]
                     result = await active_graph.ainvoke(
-                        {"messages": [{"role": "user", "content": inp.task}]}
+                        {"messages": [{"role": "user", "content": inp.task}]},
+                        config={"callbacks": callbacks}
                     )
                 else:
                     # Configurable mode: pass model via LangGraph config
                     result = await active_graph.ainvoke(
                         {"messages": [{"role": "user", "content": inp.task}]},
-                        config={"configurable": {"model": routed_model}},
+                        config={"configurable": {"model": routed_model}, "callbacks": callbacks},
                     )
             else:
                 result = await active_graph.ainvoke(
-                    {"messages": [{"role": "user", "content": inp.task}]}
+                    {"messages": [{"role": "user", "content": inp.task}]},
+                    config={"callbacks": callbacks}
                 )
 
             msgs = result.get("messages", [])
@@ -356,6 +379,14 @@ class MeshNode:
 
         async def runner(inp: NodeInput) -> NodeOutput:
             loop = asyncio.get_event_loop()
+
+            guardian = inp.context.get("_guardian")
+            ledger = inp.context.get("_ledger")
+            if guardian:
+                from meshflow.security.guardrail_engine import _register_autogen_guard
+                _register_autogen_guard(agent, guardian, ledger)
+                if manager:
+                    _register_autogen_guard(manager, guardian, ledger)
 
             if model_router is not None:
                 routed_model = _router_model(model_router, inp.task)

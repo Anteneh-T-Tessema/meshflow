@@ -14,11 +14,14 @@ Schema migrations are applied on every startup — safe to run on existing datab
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import concurrent.futures
 import datetime
 import gzip
 import hashlib
 import json
+import queue
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -86,6 +89,57 @@ def _decompress_output(value: str, compressed: bool) -> str:
         return gzip.decompress(base64.b64decode(value)).decode("utf-8")
     except Exception:
         return value
+
+
+# ── Merkle Tree & DAG Helpers ──────────────────────────────────────────────────
+
+def _build_merkle_tree(leaf_hashes: list[str]) -> tuple[str, dict[str, list[str]]]:
+    """Build a Merkle tree from leaves and generate proof paths for each leaf."""
+    if not leaf_hashes:
+        return "", {}
+    
+    proofs: dict[str, list[str]] = {h: [] for h in leaf_hashes}
+    current_level = list(leaf_hashes)
+    indices = {h: [i] for i, h in enumerate(leaf_hashes)}
+    
+    while len(current_level) > 1:
+        next_level = []
+        next_indices = {}
+        for i in range(0, len(current_level), 2):
+            left = current_level[i]
+            right = current_level[i + 1] if i + 1 < len(current_level) else left
+            
+            parent = hashlib.sha256((left + right).encode()).hexdigest()
+            next_level.append(parent)
+            
+            left_leaves = indices[left]
+            right_leaves = indices[right] if i + 1 < len(current_level) else []
+            
+            for idx in left_leaves:
+                proofs[leaf_hashes[idx]].append(right)
+            for idx in right_leaves:
+                proofs[leaf_hashes[idx]].append(left)
+                
+            parent_leaves = left_leaves + right_leaves
+            next_indices[parent] = parent_leaves
+            
+        current_level = next_level
+        indices = next_indices
+        
+    return current_level[0], proofs
+
+
+def _verify_merkle_proof(leaf: str, index: int, proof: list[str], root: str) -> bool:
+    """Verify that a leaf hash is part of the Merkle tree with the given root."""
+    current = leaf
+    idx = index
+    for sibling in proof:
+        if idx % 2 == 0:
+            current = hashlib.sha256((current + sibling).encode()).hexdigest()
+        else:
+            current = hashlib.sha256((sibling + current).encode()).hexdigest()
+        idx //= 2
+    return current == root
 
 
 _CREATE_SQLITE_STEPS_SQL = """
@@ -179,6 +233,7 @@ class LedgerBackend(Protocol):
     db_path: str
 
     async def write(self, record: StepRecord) -> None: ...
+    async def write_batch(self, records: list[StepRecord], tenant_id: str = "default") -> None: ...
     async def get_run(self, run_id: str) -> list[dict[str, Any]]: ...
     async def list_runs(self) -> list[str]: ...
     async def save_checkpoint(self, run_id: str, data: dict[str, Any]) -> None: ...
@@ -325,6 +380,38 @@ class SQLiteLedgerBackend:
                     record, sqlite=True, stored_output=stored_output, was_compressed=was_compressed
                 ),
             )
+
+    async def write_batch(self, records: list[StepRecord], tenant_id: str = "default") -> None:
+        with self._conn:
+            for record in records:
+                stored_output, was_compressed = _compress_output(record.output_content)
+                vals = _record_values(
+                    record, sqlite=True, stored_output=stored_output, was_compressed=was_compressed
+                )
+                if tenant_id != "default":
+                    self._conn.execute(
+                        """
+                        INSERT OR REPLACE INTO step_records
+                          (run_id, step_id, node_id, node_kind, input_task, output_content,
+                           output_compressed, verdict, blocked, block_reason, uncertainty,
+                           cost_usd, tokens_used, carbon_gco2, duration_ms, timestamp,
+                           prev_hash, entry_hash, metadata, tenant_id)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (*vals, tenant_id),
+                    )
+                else:
+                    self._conn.execute(
+                        """
+                        INSERT OR REPLACE INTO step_records
+                          (run_id, step_id, node_id, node_kind, input_task, output_content,
+                           output_compressed, verdict, blocked, block_reason, uncertainty,
+                           cost_usd, tokens_used, carbon_gco2, duration_ms, timestamp,
+                           prev_hash, entry_hash, metadata)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        vals,
+                    )
 
     async def get_run(self, run_id: str) -> list[dict[str, Any]]:
         rows = self._conn.execute(
@@ -483,6 +570,43 @@ class PostgresLedgerBackend:
                 ),
             )
 
+    async def write_batch(self, records: list[StepRecord], tenant_id: str = "default") -> None:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for record in records:
+                    stored_output, was_compressed = _compress_output(record.output_content)
+                    await conn.execute(
+                        """
+                        INSERT INTO step_records
+                          (run_id, step_id, node_id, node_kind, input_task, output_content,
+                           output_compressed, verdict, blocked, block_reason, uncertainty,
+                           cost_usd, tokens_used, carbon_gco2, duration_ms, timestamp,
+                           prev_hash, entry_hash, metadata, tenant_id)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20)
+                        ON CONFLICT (step_id) DO UPDATE SET
+                          output_content=EXCLUDED.output_content,
+                          output_compressed=EXCLUDED.output_compressed,
+                          verdict=EXCLUDED.verdict,
+                          blocked=EXCLUDED.blocked,
+                          block_reason=EXCLUDED.block_reason,
+                          uncertainty=EXCLUDED.uncertainty,
+                          cost_usd=EXCLUDED.cost_usd,
+                          tokens_used=EXCLUDED.tokens_used,
+                          carbon_gco2=EXCLUDED.carbon_gco2,
+                          duration_ms=EXCLUDED.duration_ms,
+                          timestamp=EXCLUDED.timestamp,
+                          prev_hash=EXCLUDED.prev_hash,
+                          entry_hash=EXCLUDED.entry_hash,
+                          metadata=EXCLUDED.metadata,
+                          tenant_id=EXCLUDED.tenant_id
+                        """,
+                        *_record_values(
+                            record, sqlite=False, stored_output=stored_output, was_compressed=was_compressed
+                        ),
+                        tenant_id,
+                    )
+
     async def get_run(self, run_id: str) -> list[dict[str, Any]]:
         pool = await self._ensure_pool()
         async with pool.acquire() as conn:
@@ -565,6 +689,7 @@ class ReplayLedger:
         db_path: str = "meshflow_runs.db",
         backend: LedgerBackend | None = None,
         tenant_id: str = "default",
+        enable_batching: bool | None = None,
     ) -> None:
         self._db_path = db_path
         self._tenant_id = tenant_id
@@ -576,6 +701,24 @@ class ReplayLedger:
         else:
             self._backend = SQLiteLedgerBackend(db_path)
 
+        import sys
+        if enable_batching is None:
+            enable_batching = not ("pytest" in sys.modules or "unittest" in sys.modules)
+
+        self._enable_batching = enable_batching
+        self._queue: queue.Queue[StepRecord] = queue.Queue()
+        self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self._worker_task: asyncio.Task | None = None
+        self._last_master_root = ""
+        self._last_entry_hash = ""
+
+        if enable_batching:
+            try:
+                loop = asyncio.get_running_loop()
+                self._worker_task = loop.create_task(self._flush_worker())
+            except RuntimeError:
+                pass
+
     def __del__(self) -> None:
         close = getattr(self._backend, "close", None)
         if close is None:
@@ -586,19 +729,49 @@ class ReplayLedger:
                 result.close()
         except Exception:
             pass
+        try:
+            self._thread_pool.shutdown(wait=False)
+        except Exception:
+            pass
 
     async def aclose(self) -> None:
         """Close backend resources, including async PostgreSQL pools."""
+        if self._worker_task and not self._worker_task.done():
+            # Flush all remaining items in the queue
+            await self._ensure_flushed()
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
+        
         close = getattr(self._backend, "close", None)
         if close is None:
             return
         result = close()
         if hasattr(result, "__await__"):
             await result
+        
+        self._thread_pool.shutdown(wait=True)
 
     # ── Write ─────────────────────────────────────────────────────────────────
 
     async def write(self, record: StepRecord) -> None:
+        if self._enable_batching:
+            if self._worker_task is None or self._worker_task.done():
+                try:
+                    loop = asyncio.get_running_loop()
+                    self._worker_task = loop.create_task(self._flush_worker())
+                except RuntimeError:
+                    self._enable_batching = False
+            
+            if self._enable_batching:
+                self._queue.put(record)
+                return
+        
+        await self._write_immediate(record)
+
+    async def _write_immediate(self, record: StepRecord) -> None:
         backend = self._backend
         if isinstance(backend, SQLiteLedgerBackend) and self._tenant_id != "default":
             stored_output, was_compressed = _compress_output(record.output_content)
@@ -620,12 +793,170 @@ class ReplayLedger:
         else:
             await backend.write(record)
 
+    def _compute_leaf_hash(self, record: StepRecord) -> str:
+        from meshflow.core.runtime import _hash_record
+        return _hash_record(
+            run_id=record.run_id,
+            step_id=record.step_id,
+            node_id=record.node_id,
+            input_task=record.input_task,
+            output_content=record.output_content,
+            verdict=record.verdict,
+            blocked=record.blocked,
+            timestamp=record.timestamp,
+            prev_hash="",
+        )
+
+    async def _get_last_entry_hash(self) -> str:
+        if isinstance(self._backend, SQLiteLedgerBackend):
+            row = self._backend._conn.execute(
+                "SELECT entry_hash FROM step_records ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return row[0] if row else ""
+        elif isinstance(self._backend, PostgresLedgerBackend):
+            pool = await self._backend._ensure_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT entry_hash FROM step_records ORDER BY id DESC LIMIT 1"
+                )
+                return row["entry_hash"] if row else ""
+        return ""
+
+    async def _flush_batch(self, batch: list[StepRecord]) -> None:
+        from meshflow.core.runtime import _hash_record
+
+        if not self._last_entry_hash:
+            self._last_entry_hash = await self._get_last_entry_hash()
+            
+        loop = asyncio.get_running_loop()
+        leaf_hashes = await loop.run_in_executor(
+            self._thread_pool,
+            lambda: [self._compute_leaf_hash(r) for r in batch]
+        )
+        
+        root, proofs = _build_merkle_tree(leaf_hashes)
+        self._last_master_root = hashlib.sha256(
+            (self._last_master_root + root).encode()
+        ).hexdigest()
+        
+        for i, record in enumerate(batch):
+            record.metadata["merkle_proof"] = {
+                "proof": proofs[leaf_hashes[i]],
+                "index": i,
+                "batch_root": root,
+                "master_root": self._last_master_root,
+            }
+            record.prev_hash = self._last_entry_hash
+            record.entry_hash = _hash_record(
+                run_id=record.run_id,
+                step_id=record.step_id,
+                node_id=record.node_id,
+                input_task=record.input_task,
+                output_content=record.output_content,
+                verdict=record.verdict,
+                blocked=record.blocked,
+                timestamp=record.timestamp,
+                prev_hash=record.prev_hash,
+            )
+            self._last_entry_hash = record.entry_hash
+            
+        backend = self._backend
+        if isinstance(backend, SQLiteLedgerBackend):
+            with backend._conn:
+                for record in batch:
+                    stored_output, was_compressed = _compress_output(record.output_content)
+                    vals = _record_values(
+                        record, sqlite=True, stored_output=stored_output, was_compressed=was_compressed
+                    )
+                    if self._tenant_id != "default":
+                        backend._conn.execute(
+                            """
+                            INSERT OR REPLACE INTO step_records
+                              (run_id, step_id, node_id, node_kind, input_task, output_content,
+                               output_compressed, verdict, blocked, block_reason, uncertainty,
+                               cost_usd, tokens_used, carbon_gco2, duration_ms, timestamp,
+                               prev_hash, entry_hash, metadata, tenant_id)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            (*vals, self._tenant_id),
+                        )
+                    else:
+                        backend._conn.execute(
+                            """
+                            INSERT OR REPLACE INTO step_records
+                              (run_id, step_id, node_id, node_kind, input_task, output_content,
+                               output_compressed, verdict, blocked, block_reason, uncertainty,
+                               cost_usd, tokens_used, carbon_gco2, duration_ms, timestamp,
+                               prev_hash, entry_hash, metadata)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            vals,
+                        )
+        elif isinstance(backend, PostgresLedgerBackend):
+            await backend.write_batch(batch, tenant_id=self._tenant_id)
+        else:
+            for record in batch:
+                await backend.write(record)
+
+    async def _flush_worker(self) -> None:
+        batch: list[StepRecord] = []
+        last_flush = asyncio.get_running_loop().time()
+        
+        while True:
+            try:
+                timeout = 0.005 # 5ms
+                
+                # Fetch all currently queued items without blocking
+                while not self._queue.empty() and len(batch) < 64:
+                    try:
+                        record = self._queue.get_nowait()
+                        batch.append(record)
+                    except queue.Empty:
+                        break
+                
+                if batch and (len(batch) >= 64 or (asyncio.get_running_loop().time() - last_flush) >= timeout):
+                    await self._flush_batch(batch)
+                    batch = []
+                    last_flush = asyncio.get_running_loop().time()
+                
+                # Yield control
+                await asyncio.sleep(0.001)
+                    
+            except asyncio.CancelledError:
+                while not self._queue.empty():
+                    try:
+                        record = self._queue.get_nowait()
+                        batch.append(record)
+                    except queue.Empty:
+                        break
+                if batch:
+                    await self._flush_batch(batch)
+                break
+            except Exception:
+                await asyncio.sleep(0.01)
+
+    async def _ensure_flushed(self) -> None:
+        if not self._enable_batching:
+            return
+        batch: list[StepRecord] = []
+        while not self._queue.empty():
+            try:
+                batch.append(self._queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        if batch:
+            await self._flush_batch(batch)
+            for _ in range(len(batch)):
+                self._queue.task_done()
+
     # ── Query ─────────────────────────────────────────────────────────────────
 
     async def get_run(self, run_id: str) -> list[dict[str, Any]]:
+        await self._ensure_flushed()
         return await self._backend.get_run(run_id)
 
     async def list_runs(self) -> list[str]:
+        await self._ensure_flushed()
         backend = self._backend
         if isinstance(backend, SQLiteLedgerBackend):
             rows = backend._conn.execute(
@@ -744,6 +1075,35 @@ class ReplayLedger:
             if stored_hash != expected_hash:
                 errors.append(f"step {i} ({step_id}): entry_hash mismatch — record was modified")
 
+            # Verify Merkle proof if present
+            meta = r.get("metadata", {})
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            
+            merkle_data = meta.get("merkle_proof") if isinstance(meta, dict) else None
+            if merkle_data:
+                proof = merkle_data.get("proof", [])
+                idx = merkle_data.get("index", 0)
+                root = merkle_data.get("batch_root", "")
+                
+                # Recompute leaf hash (with prev_hash="")
+                leaf = _hash_record(
+                    run_id=r.get("run_id", ""),
+                    step_id=step_id,
+                    node_id=r.get("node_id", ""),
+                    input_task=str(r.get("input_task", ""))[:200],
+                    output_content=str(r.get("output_content", ""))[:200],
+                    verdict=r.get("verdict", ""),
+                    blocked=bool(r.get("blocked", False)),
+                    timestamp=r.get("timestamp", ""),
+                    prev_hash="",
+                )
+                if not _verify_merkle_proof(leaf, idx, proof, root):
+                    errors.append(f"step {i} ({step_id}): Merkle proof validation failed for root {root}")
+
             prev_hash = stored_hash or expected_hash
 
         return {
@@ -831,6 +1191,7 @@ class ReplayLedger:
 
     async def delete_run(self, run_id: str) -> int:
         """Delete all step records and checkpoint for a run. Returns rows deleted."""
+        await self._ensure_flushed()
         backend = self._backend
         if isinstance(backend, SQLiteLedgerBackend):
             with backend._conn:
@@ -845,6 +1206,7 @@ class ReplayLedger:
 
     async def delete_tenant(self, tenant_id: str) -> int:
         """Delete all records for a tenant namespace. Returns rows deleted."""
+        await self._ensure_flushed()
         backend = self._backend
         if isinstance(backend, SQLiteLedgerBackend):
             with backend._conn:

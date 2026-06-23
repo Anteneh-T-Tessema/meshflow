@@ -124,9 +124,10 @@ class ToolCallResultMessage:
     type: str = "ToolCallResultMessage"
 
 
-# Union type mirroring AutoGen's AgentMessage
-AgentMessage = TextMessage | ChatMessage | ToolCallMessage | ToolCallResultMessage
+from typing import Union
 
+# Union type mirroring AutoGen's AgentMessage
+AgentMessage = Union[TextMessage, ChatMessage, ToolCallMessage, ToolCallResultMessage]
 
 # ── Response ─────────────────────────────────────────────────────────────────
 
@@ -200,7 +201,7 @@ class DefaultSubscription:
     agent_type: str = ""
 
 
-TopicSubscription = TypeSubscription | DefaultSubscription
+TopicSubscription = Union[TypeSubscription, DefaultSubscription]
 
 
 # ── AssistantAgent ─────────────────────────────────────────────────────────────

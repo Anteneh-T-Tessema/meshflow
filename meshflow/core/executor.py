@@ -295,7 +295,7 @@ class GovernedStepExecutor:
 
         # ── 10. Collusion recording ───────────────────────────────────────────
         if self._policy.policy.enable_collusion_audit:
-            self._collusion.record_output(agent.agent_id, output_text[:500])
+            self._collusion.record_output(agent.agent_id, output_text[:500], role=agent.role.value)
 
         # ── 11. Policy post-step ──────────────────────────────────────────────
         carbon_g = 0.0
