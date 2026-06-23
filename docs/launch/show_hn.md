@@ -1,6 +1,6 @@
 # Show HN: MeshFlow — production multi-agent orchestration for regulated industries
 
-**HN title:** Show HN: MeshFlow – open-source agent orchestration with HIPAA/SOX/GDPR built in, 5,816 tests
+**HN title:** Show HN: MeshFlow – open-source agent orchestration with HIPAA/SOX/GDPR built in, 5,888 tests
 
 ---
 
@@ -31,31 +31,21 @@ print(result.output)
 
 3. **Framework parity, not lock-in.** The same governance kernel wraps LangGraph graphs, CrewAI Crews, and AutoGen conversations. You can migrate incrementally.
 
-**v1.14.0 — Cloud Platform SDK parity:**
+**v1.15.0 highlights (Guardrails, Merkle Ledger & Wasm Policies):**
 
-- **PromptHub** — `PromptHub.get("slug")` pulls versioned prompts at runtime with a 60 s TTL cache. No more hardcoded system prompts in source.
-- **DatasetHub** — `DatasetHub.push/pull/list` — ship eval datasets from CI; pull them back locally for quick iteration.
-- **CloudAgentRegistry** — `CloudAgentRegistry.register/record_run` — every agent run bumps the dashboard counter automatically via `instrument(register_agents=True)`.
-- **Span-level trace telemetry** — `instrument()` now ships per-step spans to `/dashboard/traces` (was silently broken — wrong event bus API; fixed with a duck-typed queue injection).
-- **Cross-SDK parity** — TypeScript, Go, Rust, Java SDKs all have the same 14 cloud ingest methods. Published: `npm install meshflow-sdk@1.14.0`, `cargo add meshflow-sdk@1.14.0`, `pip install meshflow==1.14.0`, `io.github.anteneh-t-tessema:meshflow-sdk:1.14.0` on Maven Central.
+- **Active Guardrail Firewalls** — pre-execution prompt and tool scanners automatically hook into LangGraph graph config, CrewAI agents, and AutoGen agents to block injections, PII leakage, and behavioral anomalies.
+- **Merkle Tree Ledger** — pipelined group commits to SQLite or Postgres with background `asyncio.Task` queue flushing and O(log n) Merkle path verification per transaction step.
+- **Collusion Detection v2** — Shannon entropy profiling with structural boilerplate masking, bigram perplexity anomaly checking, and role-aware sensitivity thresholds.
+- **Wasm Policy Engine** — compiled OPA/Rego or Rust Wasm bytecode policy evaluation running on `wasmtime` or `wasmer` for absolute compliance rules parity across Python, TS, Go, Rust, and Java.
+- **Developer Playground & Dashboard** — `meshflow playground` interactive REPL for quick agent trials, and a real-time WebSocket-powered monitoring dashboard for live tracing, guardrail violations, and token cost tracking.
 
-**v1.13.0 highlights (Sprints 95–102):**
+**v1.14.0 highlights (Cloud Platform SDK Parity):**
 
-- **AdvisorAgent** — Anthropic advisor-tool pattern: a read-only advisor inspects drafts and injects structured guidance before the final response
-- **DynamicWorkflow** — the planner decides which agents to spawn at runtime based on intermediate results
-- **ContextCompactor** — Claude-native, sliding-window, and rolling-summary strategies to keep long sessions within the context window
-- **Tool streaming** — granular `ToolStreamEvent` hierarchy for observing tool call lifecycle (input delta → start → result) in real time
-- **BudgetConfig** — `ThinkingBudget` + `EffortBudget` enforced in `StepRuntime` with `BudgetExceededError` on cap breach
-- **meshflow-forensic** — standalone pip package (`pip install meshflow-forensic`) for deep audit, taint propagation, and EU AI Act compliance reporting
-- **SOC2Assertion** — programmatic SOC 2 Type II assertion engine; maps MeshFlow runtime controls to AICPA Trust Services Criteria; CI-ready
-- **Cost regression gate** — `CostRegressionError` raised in CI when per-run cost exceeds baseline
-- **Competitive benchmarks** — `benchmarks/competitive_bench.py` measures MeshFlow vs LangGraph / CrewAI / AutoGen on latency and governance overhead
-- **AutoGen 0.4+ parity** — `AssistantAgent`, `UserProxyAgent`, `SocietyOfMind`, `MagenticOne`, `AgentRuntime`, topic pub/sub
-- **OpenAI Agents SDK parity** — `Agent`, `Runner`, `handoff`, `AgentHooks`, `guardrails`, `FunctionTool`, `as_tool()`
-- **Functional API** — `@task` / `@entrypoint` decorators (LangGraph-style), `@traceable` + `LangfuseExporter`
-- **StructuredJudge / TrajectoryEval / RAGEval / EvalCI** — rubric-based eval with CI regression gate
-- **MCPRouter** — multi-server MCP with per-server allow/deny authorization
-- **Durable Workers** — `@durable_task`, `WorkerDaemon`, `CronTrigger`, SQLite-backed job store
+- **PromptHub & DatasetHub** — dynamic versioned prompts and CI evaluation datasets hosted on the cloud.
+- **Cross-SDK parity** — complete features across TypeScript, Go, Rust, Java, and Python SDKs.
+- **Durable Workers** — `@durable_task`, `WorkerDaemon`, and `CronTrigger` with SQLite task queue persistence.
+- **StructuredJudge & EvalCI** — rubric-based trajectory evaluation with CI build failure on cost or safety regression.
+- **Adapters Parity** — full compatibility with AutoGen 0.4+, OpenAI Agents SDK, CrewAI, and LangGraph.
 
 **The rest of the stack:**
 
@@ -69,7 +59,7 @@ print(result.output)
 - Code interpreter (sandboxed subprocess, module allow-list)
 - Multi-modal: image, document, audio inputs
 - BaseStore / SQLiteStore cross-session shared memory (LangGraph parity)
-- 5,816 tests, CI green on Python 3.11 + 3.12
+- 5,888 tests, CI green on Python 3.11 + 3.12
 
 **Cost profile on a typical workload with the cascade router:**
 
