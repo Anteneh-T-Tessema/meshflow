@@ -26,11 +26,13 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncIterator
+
 
 
 class EventKind(str, Enum):
@@ -94,9 +96,14 @@ class WorkflowEventBus:
 
     def __init__(self, maxsize: int = 2000) -> None:
         self._queues: list[asyncio.Queue[WorkflowEvent | None]] = []
-        self._history: list[WorkflowEvent] = []
+        self._history: collections.deque[WorkflowEvent] = collections.deque(maxlen=maxsize)
         self._maxsize = maxsize
         self._lock = asyncio.Lock()
+
+    def clear(self) -> None:
+        """Clear all event history."""
+        self._history.clear()
+
 
     async def emit(self, event: WorkflowEvent) -> None:
         """Publish an event to all current subscribers."""

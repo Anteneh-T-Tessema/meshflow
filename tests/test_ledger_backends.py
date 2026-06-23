@@ -206,10 +206,40 @@ def test_replay_ledger_archives_run_to_s3_backend():
     assert '"run_id": "run-archive"' in body
     assert '"node_id": "node-a"' in body
 
-
 def test_replay_ledger_archive_rejects_unknown_run():
     ledger = ReplayLedger(":memory:")
     backend = S3LedgerArchiveBackend("s3://meshflow-archive/history", client=_FakeS3Client())
 
     with pytest.raises(ValueError, match="unknown run_id"):
         asyncio.run(ledger.archive_run("missing", "s3://meshflow-archive/history", backend=backend))
+
+
+
+def test_async_ledger_writer_batching():
+    # Force batching enabled for test
+    ledger = ReplayLedger(":memory:", enable_batching=True)
+    try:
+        # Create records to write
+        r1 = _record(run_id="batch-run", step_id="s1")
+        r2 = _record(run_id="batch-run", step_id="s2")
+
+        # Write them
+        asyncio.run(ledger.write(r1))
+        asyncio.run(ledger.write(r2))
+
+        # Check that they are not immediately in backend, or they are flushed by ensure_flushed
+        # ReplayLedger.get_run calls ensure_flushed internally, which triggers flush/drain
+        steps = asyncio.run(ledger.get_run("batch-run"))
+        assert len(steps) == 2
+        assert steps[0]["step_id"] == "s1"
+        assert steps[1]["step_id"] == "s2"
+
+        # Merkle tree and master root should be in metadata
+        assert "merkle_proof" in steps[0]["metadata"]
+        assert "merkle_proof" in steps[1]["metadata"]
+        assert "master_root" in steps[0]["metadata"]["merkle_proof"]
+        assert steps[0]["prev_hash"] == ""
+        assert steps[1]["prev_hash"] == steps[0]["entry_hash"]
+    finally:
+        asyncio.run(ledger.aclose())
+

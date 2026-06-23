@@ -220,3 +220,70 @@ def test_resume_reports_missing_yaml_for_legacy_checkpoint(tmp_path, capsys):
         "Checkpoint does not include the original workflow YAML path"
         in capsys.readouterr().out
     )
+
+
+def test_playground_cli_parser():
+    from meshflow.cli.main import build_parser
+    parser = build_parser()
+    args = parser.parse_args(["playground", "--model", "gpt-4o", "--mode", "standard", "--budget", "5.0", "--agents", "3", "--db", "test.db"])
+    assert args.model == "gpt-4o"
+    assert args.mode == "standard"
+    assert args.budget == 5.0
+    assert args.agents == 3
+    assert args.db == "test.db"
+
+
+def test_playground_cli_execution(monkeypatch, capsys):
+    from meshflow.cli import main as cli
+
+    # Mock input to run all slash commands, tasks, and then quit
+    inputs = [
+        "/help",
+        "/ledger",
+        "/skills",
+        "/skills optimize SQL queries",
+        "/guardian",
+        "/cost",
+        "/mode standard",
+        "/model gpt-4o-mini",
+        "/agents 3",
+        "/history",
+        "/clear",
+        "/scan hello",
+        "test query task",
+        "/skills",   # should detect skills for the last task
+        "/history",  # should show the task in history
+        "/guardian", # should show status of guardian alerts
+        "/quit"
+    ]
+    def mock_input(*args, **kwargs):
+        if not inputs:
+            raise KeyboardInterrupt()
+        return inputs.pop(0)
+
+    monkeypatch.setattr("builtins.input", mock_input)
+    monkeypatch.setattr(sys, "argv", ["meshflow", "playground", "--mode", "sandbox"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "MeshFlow Playground" in out
+    assert "Playground Commands" in out
+    assert "No ledger entries yet." in out
+    assert "Detected skills" in out
+    assert "sql" in out
+    assert "Cost summary" in out
+    assert "standard" in out
+    assert "gpt-4o-mini" in out
+    assert "planner" in out
+    assert "executor" in out
+    assert "critic" in out
+    assert "Injection scan" in out
+    assert "Running" in out
+    assert "Session summary" in out
+
+
+
+

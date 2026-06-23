@@ -199,6 +199,22 @@ class StepRuntime:
             except Exception:
                 pass
 
+    async def close(self) -> None:
+        """Clean up resources associated with this run runtime."""
+        if self._telemetry is not None:
+            try:
+                self._telemetry.shutdown()
+            except Exception:
+                pass
+        if self._ledger is not None:
+            try:
+                if hasattr(self._ledger, "aclose"):
+                    await self._ledger.aclose()
+                elif hasattr(self._ledger, "close"):
+                    self._ledger.close()
+            except Exception:
+                pass
+
     async def run(
         self,
         node: MeshNode,

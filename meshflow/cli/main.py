@@ -1397,6 +1397,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_test.add_argument("--output", default="", metavar="FILE",
                         help="Save JSON report to this file")
 
+    # playground
+    p_play = sub.add_parser(
+        "playground",
+        help="Interactive REPL — talk to governed agents, inspect ledger, explore skills",
+    )
+    p_play.add_argument(
+        "--model", default="",
+        help="LLM model to use (default: claude-haiku-4-5-20251001, or sandbox echo)",
+    )
+    p_play.add_argument(
+        "--mode", default="auto",
+        choices=["auto", "sandbox", "dev", "standard", "regulated", "hipaa"],
+        help="Governance mode (auto = sandbox if no API key, dev if present)",
+    )
+    p_play.add_argument("--budget", type=float, default=1.00, help="Cost cap in USD (default $1.00)")
+    p_play.add_argument("--agents", type=int, default=1, help="Number of agents in pipeline (default 1)")
+    p_play.add_argument("--db", default=":memory:", help="Ledger path (default :memory:)")
+
     return parser
 
 
@@ -1479,6 +1497,7 @@ def main() -> None:
         "migrate":       _cmd_migrate,
         "test":          _cmd_test,
         "proxy":         _cmd_proxy,
+        "playground":    _cmd_playground,
     }
     dispatch[args.cmd](args)
 
@@ -6590,3 +6609,366 @@ def _cmd_routing_report(args: argparse.Namespace) -> None:
         print(f"\n  last adapted     : {ts}")
 
     print()
+
+
+# ── playground ────────────────────────────────────────────────────────────────
+
+
+def _cmd_playground(args: argparse.Namespace) -> None:
+    """Interactive REPL — talk to governed agents, inspect ledger, explore skills."""
+    import os
+    import time
+
+    # ── Colors ────────────────────────────────────────────────────────────────
+
+    class _C:
+        BOLD      = "\033[1m"
+        DIM       = "\033[2m"
+        CYAN      = "\033[36m"
+        GREEN     = "\033[32m"
+        YELLOW    = "\033[33m"
+        RED       = "\033[31m"
+        MAGENTA   = "\033[35m"
+        BLUE      = "\033[34m"
+        RESET     = "\033[0m"
+        BG_DARK   = "\033[48;5;236m"
+
+    # ── Resolve mode and model ────────────────────────────────────────────────
+
+    has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
+    has_openai    = bool(os.getenv("OPENAI_API_KEY"))
+
+    if args.mode == "auto":
+        mode = "dev" if (has_anthropic or has_openai) else "sandbox"
+    else:
+        mode = args.mode
+
+    if args.model:
+        model = args.model
+    elif has_anthropic:
+        model = "claude-haiku-4-5-20251001"
+    elif has_openai:
+        model = "gpt-4o-mini"
+    else:
+        model = "echo"
+
+    is_sandbox = mode == "sandbox" or model == "echo"
+
+    # ── Build workflow ────────────────────────────────────────────────────────
+
+    from meshflow import Workflow, Agent, CostCap
+    from meshflow.core.schemas import policy_for_mode
+
+    budget_usd = args.budget
+    agent_names = ["agent"] if args.agents == 1 else [
+        name for name, _ in zip(
+            ["planner", "executor", "critic", "reviewer", "synthesizer"],
+            range(args.agents),
+        )
+    ]
+
+    # State
+    total_tokens = 0
+    total_cost   = 0.0
+    total_runs   = 0
+    run_history: list[dict] = []
+
+    # ── Banner ────────────────────────────────────────────────────────────────
+
+    import meshflow
+    print()
+    print(f"  {_C.BOLD}{_C.CYAN}╔══════════════════════════════════════════════════╗{_C.RESET}")
+    print(f"  {_C.BOLD}{_C.CYAN}║{_C.RESET}   {_C.BOLD}MeshFlow Playground{_C.RESET}  v{meshflow.__version__:>10s}              {_C.BOLD}{_C.CYAN}║{_C.RESET}")
+    print(f"  {_C.BOLD}{_C.CYAN}╠══════════════════════════════════════════════════╣{_C.RESET}")
+    print(f"  {_C.BOLD}{_C.CYAN}║{_C.RESET}   Mode     : {_C.GREEN}{mode:>10s}{_C.RESET}                            {_C.BOLD}{_C.CYAN}║{_C.RESET}")
+    print(f"  {_C.BOLD}{_C.CYAN}║{_C.RESET}   Model    : {_C.GREEN}{model:>30s}{_C.RESET}    {_C.BOLD}{_C.CYAN}║{_C.RESET}")
+    print(f"  {_C.BOLD}{_C.CYAN}║{_C.RESET}   Agents   : {_C.GREEN}{len(agent_names):>10d}{_C.RESET}  {_C.DIM}({', '.join(agent_names[:3])}{'…' if len(agent_names) > 3 else ''}){_C.RESET}")
+    print(f"  {_C.BOLD}{_C.CYAN}║{_C.RESET}   Budget   : {_C.GREEN}${budget_usd:>9.2f}{_C.RESET}                            {_C.BOLD}{_C.CYAN}║{_C.RESET}")
+    print(f"  {_C.BOLD}{_C.CYAN}║{_C.RESET}   Ledger   : {_C.DIM}{args.db:>30s}{_C.RESET}    {_C.BOLD}{_C.CYAN}║{_C.RESET}")
+
+    if is_sandbox:
+        print(f"  {_C.BOLD}{_C.CYAN}║{_C.RESET}   {_C.YELLOW}⚡ Sandbox mode — no API tokens used{_C.RESET}           {_C.BOLD}{_C.CYAN}║{_C.RESET}")
+    else:
+        providers = []
+        if has_anthropic:
+            providers.append("Anthropic")
+        if has_openai:
+            providers.append("OpenAI")
+        print(f"  {_C.BOLD}{_C.CYAN}║{_C.RESET}   {_C.GREEN}✓ Live API{_C.RESET}  ({', '.join(providers)})                  {_C.BOLD}{_C.CYAN}║{_C.RESET}")
+
+    print(f"  {_C.BOLD}{_C.CYAN}╠══════════════════════════════════════════════════╣{_C.RESET}")
+    print(f"  {_C.BOLD}{_C.CYAN}║{_C.RESET}   Type a task, or use /help for commands          {_C.BOLD}{_C.CYAN}║{_C.RESET}")
+    print(f"  {_C.BOLD}{_C.CYAN}╚══════════════════════════════════════════════════╝{_C.RESET}")
+    print()
+
+    # ── Slash commands ────────────────────────────────────────────────────────
+
+    def _handle_slash(line: str) -> bool:
+        """Handle slash commands. Returns True if handled."""
+        nonlocal mode, model, budget_usd, is_sandbox
+
+        cmd_parts = line.strip().split(maxsplit=1)
+        cmd = cmd_parts[0].lower()
+
+        if cmd in ("/quit", "/exit", "/q"):
+            print(f"\n  {_C.DIM}Session summary: {total_runs} runs, {total_tokens} tokens, ${total_cost:.4f}{_C.RESET}")
+            print(f"  {_C.CYAN}Goodbye!{_C.RESET}\n")
+            sys.exit(0)
+
+        elif cmd == "/help":
+            print(f"""
+  {_C.BOLD}Playground Commands{_C.RESET}
+
+  {_C.CYAN}/help{_C.RESET}              Show this help
+  {_C.CYAN}/ledger{_C.RESET}            Show recent ledger entries
+  {_C.CYAN}/skills{_C.RESET} [text]     Auto-detect skills for text (or last task)
+  {_C.CYAN}/guardian{_C.RESET}          Show guardian alert history
+  {_C.CYAN}/cost{_C.RESET}             Show cumulative cost and token usage
+  {_C.CYAN}/mode{_C.RESET} <mode>       Switch governance mode (sandbox/dev/standard/regulated/hipaa)
+  {_C.CYAN}/model{_C.RESET} <model>     Switch LLM model
+  {_C.CYAN}/agents{_C.RESET} <n>        Set number of pipeline agents (1-5)
+  {_C.CYAN}/scan{_C.RESET} <text>       Run injection scanner on text
+  {_C.CYAN}/history{_C.RESET}           Show run history
+  {_C.CYAN}/clear{_C.RESET}             Clear screen
+  {_C.CYAN}/quit{_C.RESET}              Exit playground
+""")
+
+        elif cmd == "/ledger":
+            import asyncio as _aio
+            from meshflow.core.ledger import ReplayLedger
+            ledger = ReplayLedger(args.db)
+            try:
+                runs = _aio.run(ledger.list_runs())
+                if not runs:
+                    print(f"  {_C.DIM}No ledger entries yet.{_C.RESET}")
+                else:
+                    print(f"\n  {_C.BOLD}Recent runs:{_C.RESET}")
+                    for rid in runs[-5:]:
+                        steps = _aio.run(ledger.get_run(rid))
+                        total = len(steps)
+                        blocked = sum(1 for s in steps if s.get("blocked"))
+                        cost = sum(s.get("cost_usd", 0) for s in steps)
+                        print(f"    {_C.GREEN}{rid[:12]}{_C.RESET}  "
+                              f"steps={total}  blocked={blocked}  cost=${cost:.4f}")
+                    print()
+            except Exception as exc:
+                print(f"  {_C.RED}Ledger error: {exc}{_C.RESET}")
+
+        elif cmd == "/skills":
+            from meshflow.agents.skills import detect_skills, skill_prompt
+            text = cmd_parts[1] if len(cmd_parts) > 1 else (
+                run_history[-1].get("task", "") if run_history else ""
+            )
+            if not text:
+                print(f"  {_C.YELLOW}Usage: /skills <task text>{_C.RESET}")
+            else:
+                skills = detect_skills(text)
+                if skills:
+                    print(f"\n  {_C.BOLD}Detected skills:{_C.RESET}")
+                    for s in skills:
+                        print(f"    {_C.GREEN}•{_C.RESET} {s}")
+                    print(f"\n  {_C.DIM}Prompt augmentation:{_C.RESET}")
+                    prompt = skill_prompt(skills)
+                    for line_s in prompt.split("\n")[:3]:
+                        print(f"    {_C.DIM}{line_s[:80]}{_C.RESET}")
+                    print()
+                else:
+                    print(f"  {_C.DIM}No skills detected for this text.{_C.RESET}")
+
+        elif cmd == "/guardian":
+            if not run_history:
+                print(f"  {_C.DIM}No runs yet.{_C.RESET}")
+            else:
+                alerts = [a for h in run_history for a in h.get("guardian_alerts", [])]
+                if alerts:
+                    print(f"\n  {_C.BOLD}{_C.RED}Guardian alerts ({len(alerts)}):{_C.RESET}")
+                    for a in alerts[-10:]:
+                        print(f"    {_C.RED}⚠{_C.RESET}  {a.get('type', '?')}  agent={a.get('agent_id', '?')}")
+                    print()
+                else:
+                    print(f"  {_C.GREEN}✓ No guardian alerts.{_C.RESET}")
+
+        elif cmd == "/cost":
+            remaining = budget_usd - total_cost
+            bar_len = 20
+            used_frac = min(total_cost / budget_usd, 1.0) if budget_usd > 0 else 0
+            used_bar = "█" * int(used_frac * bar_len)
+            free_bar = "░" * (bar_len - len(used_bar))
+            color = _C.GREEN if used_frac < 0.7 else _C.YELLOW if used_frac < 0.9 else _C.RED
+            print(f"\n  {_C.BOLD}Cost summary{_C.RESET}")
+            print(f"    Runs      : {total_runs}")
+            print(f"    Tokens    : {total_tokens:,}")
+            print(f"    Spent     : ${total_cost:.4f}")
+            print(f"    Remaining : ${remaining:.4f}")
+            print(f"    Budget    : {color}{used_bar}{_C.DIM}{free_bar}{_C.RESET} {used_frac:.0%}")
+            print()
+
+        elif cmd == "/mode":
+            if len(cmd_parts) < 2:
+                print(f"  Current mode: {_C.GREEN}{mode}{_C.RESET}")
+                print(f"  {_C.DIM}Usage: /mode <sandbox|dev|standard|regulated|hipaa>{_C.RESET}")
+            else:
+                new_mode = cmd_parts[1].strip().lower()
+                if new_mode in ("sandbox", "dev", "standard", "regulated", "hipaa"):
+                    mode = new_mode
+                    is_sandbox = mode == "sandbox"
+                    print(f"  {_C.GREEN}✓ Mode → {mode}{_C.RESET}")
+                else:
+                    print(f"  {_C.RED}Unknown mode: {new_mode}{_C.RESET}")
+
+        elif cmd == "/model":
+            if len(cmd_parts) < 2:
+                print(f"  Current model: {_C.GREEN}{model}{_C.RESET}")
+                print(f"  {_C.DIM}Usage: /model <model-name>{_C.RESET}")
+            else:
+                model = cmd_parts[1].strip()
+                is_sandbox = model == "echo"
+                print(f"  {_C.GREEN}✓ Model → {model}{_C.RESET}")
+
+        elif cmd == "/agents":
+            nonlocal agent_names
+            if len(cmd_parts) < 2:
+                print(f"  Agents: {', '.join(agent_names)}")
+            else:
+                try:
+                    n = int(cmd_parts[1].strip())
+                    n = max(1, min(n, 5))
+                    agent_names = [
+                        name for name, _ in zip(
+                            ["planner", "executor", "critic", "reviewer", "synthesizer"],
+                            range(n),
+                        )
+                    ] if n > 1 else ["agent"]
+                    print(f"  {_C.GREEN}✓ Agents → {', '.join(agent_names)}{_C.RESET}")
+                except ValueError:
+                    print(f"  {_C.RED}Usage: /agents <1-5>{_C.RESET}")
+
+        elif cmd == "/scan":
+            if len(cmd_parts) < 2:
+                print(f"  {_C.YELLOW}Usage: /scan <text to scan for injection>{_C.RESET}")
+            else:
+                from meshflow.security.guardian import InjectionScanner
+                scanner = InjectionScanner()
+                result = scanner.scan(cmd_parts[1])
+                color = _C.GREEN if result.result.value == "clean" else (
+                    _C.YELLOW if result.result.value == "suspicious" else _C.RED
+                )
+                print(f"\n  {_C.BOLD}Injection scan:{_C.RESET}")
+                print(f"    Result     : {color}{result.result.value}{_C.RESET}")
+                print(f"    Confidence : {result.confidence:.2f}")
+                print(f"    Action     : {result.action_taken}")
+                if result.matched_patterns:
+                    print(f"    Patterns   : {', '.join(result.matched_patterns[:3])}")
+                print()
+
+        elif cmd == "/history":
+            if not run_history:
+                print(f"  {_C.DIM}No runs yet.{_C.RESET}")
+            else:
+                print(f"\n  {_C.BOLD}Run history:{_C.RESET}")
+                for i, h in enumerate(run_history[-10:], 1):
+                    status_c = _C.GREEN if h.get("status") == "completed" else _C.RED
+                    print(f"    {i:>2}. {status_c}{h.get('status', '?'):>10s}{_C.RESET}  "
+                          f"tokens={h.get('tokens', 0):>5d}  "
+                          f"cost=${h.get('cost', 0):.4f}  "
+                          f"{_C.DIM}{h.get('task', '')[:50]}{_C.RESET}")
+                print()
+
+        elif cmd == "/clear":
+            os.system("clear" if os.name != "nt" else "cls")
+
+        else:
+            print(f"  {_C.YELLOW}Unknown command: {cmd}  (try /help){_C.RESET}")
+
+        return True
+
+    # ── REPL loop ─────────────────────────────────────────────────────────────
+
+    while True:
+        try:
+            prompt_sym = f"{_C.CYAN}▸{_C.RESET}" if not is_sandbox else f"{_C.YELLOW}▸{_C.RESET}"
+            line = input(f"  {prompt_sym} ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n  {_C.DIM}Session: {total_runs} runs, {total_tokens} tokens, ${total_cost:.4f}{_C.RESET}")
+            print(f"  {_C.CYAN}Goodbye!{_C.RESET}\n")
+            break
+
+        if not line:
+            continue
+
+        if line.startswith("/"):
+            _handle_slash(line)
+            continue
+
+        # ── Execute task ──────────────────────────────────────────────────────
+
+        print(f"\n  {_C.DIM}Running… mode={mode} model={model} agents={len(agent_names)}{_C.RESET}")
+
+        t0 = time.monotonic()
+        try:
+            wf = Workflow(cost_cap=CostCap(usd=budget_usd - total_cost), mode=mode)
+            for name in agent_names:
+                if is_sandbox:
+                    wf.add(Agent(name))
+                else:
+                    wf.add(Agent(name, model=model))
+            result = wf.run(line)
+            elapsed = time.monotonic() - t0
+
+            # Record
+            run_record = {
+                "task": line,
+                "status": getattr(result, "status", "completed"),
+                "tokens": getattr(result, "total_tokens", 0),
+                "cost": getattr(result, "total_cost_usd", 0.0),
+                "elapsed": elapsed,
+                "run_id": getattr(result, "run_id", ""),
+                "guardian_alerts": [],
+            }
+            total_tokens += run_record["tokens"]
+            total_cost   += run_record["cost"]
+            total_runs   += 1
+            run_history.append(run_record)
+
+            # ── Output ────────────────────────────────────────────────────────
+
+            output = getattr(result, "output", str(result))
+            print(f"\n  {_C.BOLD}Output{_C.RESET}")
+            print(f"  {'─' * 50}")
+            for out_line in str(output).split("\n"):
+                print(f"  {out_line}")
+            print(f"  {'─' * 50}")
+
+            # ── Governance summary bar ────────────────────────────────────────
+
+            status = getattr(result, "status", "?")
+            tokens = getattr(result, "total_tokens", 0)
+            cost = getattr(result, "total_cost_usd", 0.0)
+            ledger_entries = getattr(result, "ledger_entries", 0)
+            run_id = getattr(result, "run_id", "")[:12]
+
+            status_c = _C.GREEN if status == "completed" else _C.RED
+            print(
+                f"\n  {status_c}●{_C.RESET} {status}  "
+                f"{_C.DIM}│{_C.RESET} {tokens:,} tokens  "
+                f"{_C.DIM}│{_C.RESET} ${cost:.4f}  "
+                f"{_C.DIM}│{_C.RESET} {ledger_entries} ledger entries  "
+                f"{_C.DIM}│{_C.RESET} {elapsed:.1f}s  "
+                f"{_C.DIM}│{_C.RESET} {_C.DIM}{run_id}{_C.RESET}"
+            )
+            print()
+
+        except KeyboardInterrupt:
+            print(f"\n  {_C.YELLOW}Interrupted.{_C.RESET}\n")
+        except Exception as exc:
+            elapsed = time.monotonic() - t0
+            print(f"\n  {_C.RED}Error: {exc}{_C.RESET}")
+            print(f"  {_C.DIM}(elapsed {elapsed:.1f}s){_C.RESET}\n")
+            run_history.append({
+                "task": line,
+                "status": "error",
+                "tokens": 0,
+                "cost": 0.0,
+                "elapsed": elapsed,
+                "error": str(exc),
+            })

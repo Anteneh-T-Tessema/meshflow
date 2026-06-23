@@ -21,7 +21,6 @@ import datetime
 import gzip
 import hashlib
 import json
-import queue
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -665,6 +664,99 @@ class PostgresLedgerBackend:
         return [{"run_id": r["run_id"], "paused_at": r["created_at"]} for r in rows]
 
 
+class AsyncLedgerWriter:
+    """Background worker consuming from asyncio.Queue to flush batches to a ledger backend."""
+
+    def __init__(
+        self,
+        ledger: ReplayLedger,
+        flush_interval: float = 0.005,
+        batch_size: int = 64,
+    ) -> None:
+        self._ledger = ledger
+        self._flush_interval = flush_interval
+        self._batch_size = batch_size
+        self._queue: asyncio.Queue[StepRecord] = asyncio.Queue()
+        self._current_batch: list[StepRecord] = []
+        self._lock = asyncio.Lock()
+        self._worker_task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        if self._worker_task is None or self._worker_task.done():
+            try:
+                loop = asyncio.get_running_loop()
+                self._worker_task = loop.create_task(self._worker_loop())
+            except RuntimeError:
+                pass
+
+    async def write(self, record: StepRecord) -> None:
+        self.start()
+        await self._queue.put(record)
+
+    async def _worker_loop(self) -> None:
+        while True:
+            try:
+                try:
+                    record = await asyncio.wait_for(
+                        self._queue.get(),
+                        timeout=self._flush_interval
+                    )
+                    async with self._lock:
+                        self._current_batch.append(record)
+                        if len(self._current_batch) >= self._batch_size:
+                            await self._ledger._flush_batch(self._current_batch)
+                            for _ in range(len(self._current_batch)):
+                                self._queue.task_done()
+                            self._current_batch = []
+                except asyncio.TimeoutError:
+                    if self._current_batch:
+                        async with self._lock:
+                            if self._current_batch:
+                                await self._ledger._flush_batch(self._current_batch)
+                                for _ in range(len(self._current_batch)):
+                                    self._queue.task_done()
+                                self._current_batch = []
+                    continue
+            except asyncio.CancelledError:
+                async with self._lock:
+                    while not self._queue.empty():
+                        try:
+                            self._current_batch.append(self._queue.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+                    if self._current_batch:
+                        await self._ledger._flush_batch(self._current_batch)
+                        for _ in range(len(self._current_batch)):
+                            self._queue.task_done()
+                        self._current_batch = []
+                break
+            except Exception:
+                await asyncio.sleep(0.01)
+
+    async def flush(self) -> None:
+        """Immediately flush all queued and batched items."""
+        async with self._lock:
+            while not self._queue.empty():
+                try:
+                    self._current_batch.append(self._queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            if self._current_batch:
+                await self._ledger._flush_batch(self._current_batch)
+                for _ in range(len(self._current_batch)):
+                    self._queue.task_done()
+                self._current_batch = []
+
+    async def drain(self) -> None:
+        """Wait until all items in the queue and current batch are flushed."""
+        await self.flush()
+        await self._queue.join()
+
+    def stop(self) -> None:
+        if self._worker_task and not self._worker_task.done():
+            self._worker_task.cancel()
+
+
 class ReplayLedger:
     """Append-only, replayable ledger facade with multi-tenant namespace isolation.
 
@@ -706,18 +798,14 @@ class ReplayLedger:
             enable_batching = not ("pytest" in sys.modules or "unittest" in sys.modules)
 
         self._enable_batching = enable_batching
-        self._queue: queue.Queue[StepRecord] = queue.Queue()
         self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
-        self._worker_task: asyncio.Task | None = None
         self._last_master_root = ""
         self._last_entry_hash = ""
+        self._writer: AsyncLedgerWriter | None = None
 
         if enable_batching:
-            try:
-                loop = asyncio.get_running_loop()
-                self._worker_task = loop.create_task(self._flush_worker())
-            except RuntimeError:
-                pass
+            self._writer = AsyncLedgerWriter(self)
+            self._writer.start()
 
     def __del__(self) -> None:
         close = getattr(self._backend, "close", None)
@@ -736,42 +824,35 @@ class ReplayLedger:
 
     async def aclose(self) -> None:
         """Close backend resources, including async PostgreSQL pools."""
-        if self._worker_task and not self._worker_task.done():
-            # Flush all remaining items in the queue
-            await self._ensure_flushed()
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except asyncio.CancelledError:
-                pass
-        
+        if self._writer:
+            await self._writer.drain()
+            self._writer.stop()
+            if self._writer._worker_task:
+                try:
+                    await self._writer._worker_task
+                except asyncio.CancelledError:
+                    pass
+
         close = getattr(self._backend, "close", None)
         if close is None:
             return
         result = close()
         if hasattr(result, "__await__"):
             await result
-        
+
         self._thread_pool.shutdown(wait=True)
 
     # ── Write ─────────────────────────────────────────────────────────────────
 
     async def write(self, record: StepRecord) -> None:
-        if self._enable_batching:
-            if self._worker_task is None or self._worker_task.done():
-                try:
-                    loop = asyncio.get_running_loop()
-                    self._worker_task = loop.create_task(self._flush_worker())
-                except RuntimeError:
-                    self._enable_batching = False
-            
-            if self._enable_batching:
-                self._queue.put(record)
-                return
-        
+        if self._enable_batching and self._writer:
+            await self._writer.write(record)
+            return
+
         await self._write_immediate(record)
 
     async def _write_immediate(self, record: StepRecord) -> None:
+
         backend = self._backend
         if isinstance(backend, SQLiteLedgerBackend) and self._tenant_id != "default":
             stored_output, was_compressed = _compress_output(record.output_content)
@@ -898,56 +979,10 @@ class ReplayLedger:
             for record in batch:
                 await backend.write(record)
 
-    async def _flush_worker(self) -> None:
-        batch: list[StepRecord] = []
-        last_flush = asyncio.get_running_loop().time()
-        
-        while True:
-            try:
-                timeout = 0.005 # 5ms
-                
-                # Fetch all currently queued items without blocking
-                while not self._queue.empty() and len(batch) < 64:
-                    try:
-                        record = self._queue.get_nowait()
-                        batch.append(record)
-                    except queue.Empty:
-                        break
-                
-                if batch and (len(batch) >= 64 or (asyncio.get_running_loop().time() - last_flush) >= timeout):
-                    await self._flush_batch(batch)
-                    batch = []
-                    last_flush = asyncio.get_running_loop().time()
-                
-                # Yield control
-                await asyncio.sleep(0.001)
-                    
-            except asyncio.CancelledError:
-                while not self._queue.empty():
-                    try:
-                        record = self._queue.get_nowait()
-                        batch.append(record)
-                    except queue.Empty:
-                        break
-                if batch:
-                    await self._flush_batch(batch)
-                break
-            except Exception:
-                await asyncio.sleep(0.01)
-
     async def _ensure_flushed(self) -> None:
-        if not self._enable_batching:
-            return
-        batch: list[StepRecord] = []
-        while not self._queue.empty():
-            try:
-                batch.append(self._queue.get_nowait())
-            except asyncio.QueueEmpty:
-                break
-        if batch:
-            await self._flush_batch(batch)
-            for _ in range(len(batch)):
-                self._queue.task_done()
+        if self._writer:
+            await self._writer.flush()
+
 
     # ── Query ─────────────────────────────────────────────────────────────────
 

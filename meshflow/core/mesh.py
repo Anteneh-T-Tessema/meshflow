@@ -228,6 +228,20 @@ class Mesh:
                 print(f"{event.role}: {event.data.get('execution_result', '')[:100]}")
                 print(f"  confidence={event.uncertainty:.2f}  cost=${event.cost_usd:.4f}")
         """
+        telemetry = self._new_tracer()
+        try:
+            async for event in self._stream_impl(task, policy, context, telemetry):
+                yield event
+        finally:
+            telemetry.shutdown()
+
+    async def _stream_impl(
+        self,
+        task: str,
+        policy: Policy | None = None,
+        context: dict[str, Any] | None = None,
+        telemetry: MeshFlowTracer | None = None,
+    ) -> AsyncIterator[MeshEvent]:
         pol = policy or self._policy
         run_id = str(uuid.uuid4())
         trace_id = str(uuid.uuid4())
@@ -240,8 +254,9 @@ class Mesh:
         dasc_gate = DascGate(pol, run_id)
         uncertainty = UncertaintyEngine()
         collusion = CollusionAuditor()
-        telemetry = self._new_tracer()
+        telemetry = telemetry or self._new_tracer()
         eco = EnvironmentalOptimizer(pol.carbon_budget_g) if pol.enable_environmental else None
+
 
         # Default tool-call interceptor — active on every run, zero config.
         # Logs every tool call attempt; policy rules (if configured) can block.
@@ -628,7 +643,11 @@ class Mesh:
             tool_call_interceptor=_default_tool_interceptor(),
         )
 
-        return await workflow.run(task or f"Execute {workflow.name}", runtime, event_bus=event_bus)
+        try:
+            return await workflow.run(task or f"Execute {workflow.name}", runtime, event_bus=event_bus)
+        finally:
+            await runtime.close()
+
 
     async def resume_workflow(
         self,
@@ -689,7 +708,11 @@ class Mesh:
             tool_call_interceptor=_default_tool_interceptor(),
         )
 
-        return await workflow.resume(run_id, decision, ledger, runtime)
+        try:
+            return await workflow.resume(run_id, decision, ledger, runtime)
+        finally:
+            await runtime.close()
+
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

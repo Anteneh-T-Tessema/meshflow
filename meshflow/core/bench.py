@@ -69,7 +69,10 @@ class FrameworkBenchmark:
                 identity=AgentIdentityProvider("warmup"),
                 ledger=ReplayLedger(":memory:"),
             )
-            await wf.run("test", runtime)
+            try:
+                await wf.run("test", runtime)
+            finally:
+                await runtime.close()
 
         # Execute timed runs
         start_total = time.perf_counter()
@@ -80,10 +83,14 @@ class FrameworkBenchmark:
                 identity=AgentIdentityProvider("bench"),
                 ledger=ReplayLedger(":memory:"),
             )
-            t0 = time.perf_counter()
-            await wf.run("test", runtime)
-            t1 = time.perf_counter()
-            latencies.append((t1 - t0) * 1000.0)
+            try:
+                t0 = time.perf_counter()
+                await wf.run("test", runtime)
+                t1 = time.perf_counter()
+                latencies.append((t1 - t0) * 1000.0)
+            finally:
+                await runtime.close()
+
 
         end_total = time.perf_counter()
 
