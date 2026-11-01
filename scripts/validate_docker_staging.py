@@ -114,6 +114,9 @@ print(json.dumps({
             statuses = list(pool.map(lambda _: request(trace_route, viewer_key)[0], range(32)))
         check(all(status == 200 for status in statuses), "32 concurrent authorized reads")
         docker("restart", name)
+        # Docker can assign a new ephemeral host port when restarting.
+        port = docker("port", name, "8000/tcp").rsplit(":", 1)[1]
+        base = f"http://127.0.0.1:{port}"
         ready()
         check(request(trace_route, operator_key)[0] == 200, "audit survives server restart")
         revoke = (

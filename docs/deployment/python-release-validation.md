@@ -194,3 +194,40 @@ These artifacts precede this final documentation entry.
 Local offline validation is complete for this pass. Hosted workflow execution
 requires a branch containing these changes. Live staging validation requires an
 identified isolated target; no such target was supplied in this session.
+
+## Hosted CI and isolated Docker staging
+
+Follow-up authorization expanded validation to hosted CI and local Docker.
+Runtime changes were copied into the isolated worktree
+`/tmp/meshflow-ci-review`, branch `codex/runtime-validation-20261101`, and
+submitted as [draft PR #4](https://github.com/Anteneh-T-Tessema/meshflow/pull/4).
+Staged editor, Postman, launch, and live-test edits in the original checkout
+were excluded and preserved. The separate website review was also excluded.
+
+Actual container deployment found and fixed two startup/storage defects:
+`meshflow serve` conditionally imported `os` before an unconditional use, and
+the non-root container's working directory was not writable for default SQLite
+stores. The CLI now imports `os` before use; Docker includes required package
+metadata and runs from its writable `/data` directory. A CLI regression test
+covers startup without a policy file. Docker build context exclusions omit
+credentials, local environments, and generated database files.
+
+Hosted tests exposed a relative-speed assertion against simulated competitors.
+The functional test now requires a successful MeshFlow pipeline and valid
+measurements without requiring a platform-dependent speed win. On the first
+hosted Python 3.12 run, observed throughput was 42.8 rps for MeshFlow versus
+67.8 rps for simulated LangGraph; no claim of universal speed superiority is
+made. The sprint104 module passed all 39 tests after the correction.
+
+Local Docker staging passed all 13 checks: liveness, readiness, anonymous and
+invalid-key denial, viewer denial for run/stream, operator completion, trace
+round trip, authenticated tenant ownership, cross-tenant denial, 32 concurrent
+reads, persisted audit after container restart, and revoked-key denial.
+The validator rediscovers Docker's ephemeral host port after restart. Temporary
+keys stayed in process memory. Its container and test volume were removed.
+The sanitized receipt is retained in
+[evidence/docker-staging-2026-11-01.json](evidence/docker-staging-2026-11-01.json).
+
+CI now repeats this Docker deployment check and uploads its receipt. It remains
+an isolated, offline deployment check; cloud billing, multi-host budgets, and
+production deployment capacity are not established by it.

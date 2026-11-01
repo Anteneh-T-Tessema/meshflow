@@ -104,6 +104,29 @@ jobs:
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/wheel-env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_installed_wheel.py"
 
+  staging:
+    name: Docker staging boundaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build isolated staging image
+        run: docker build -t meshflow-staging:${{ github.sha }} .
+      - name: Verify deployed HTTP boundaries and restart persistence
+        run: |
+          python scripts/validate_docker_staging.py \
+            --image meshflow-staging:${{ github.sha }} \
+            --receipt "$RUNNER_TEMP/docker-staging-receipt.json"
+      - name: Retain staging receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-staging-receipt
+          path: ${{ runner.temp }}/docker-staging-receipt.json
+
   typecheck:
     name: Type check
     runs-on: ubuntu-latest
