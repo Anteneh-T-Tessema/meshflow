@@ -21,7 +21,7 @@ class RecursiveUnit:
     """7M-parameter shared neural core used by SwarmTRM agents."""
 
     def __init__(self, d_model: int = 768, n_heads: int = 8) -> None:
-        torch = _require_torch()
+        _require_torch()
 
         self.d_model = d_model
         self._module = _RecursiveModule(d_model, n_heads)
@@ -50,7 +50,7 @@ class _RecursiveModule:
     """Inner nn.Module wrapping — instantiated only when torch is available."""
 
     def __init__(self, d_model: int, n_heads: int) -> None:
-        torch = _require_torch()
+        _require_torch()
         import torch.nn as nn
 
         self.d_model = d_model
@@ -68,7 +68,7 @@ class _RecursiveModule:
         )
 
     def parameters(self):
-        torch = _require_torch()
+        _require_torch()
         params = []
         for attr in ["encoder", "decoder", "reasoning_layer", "plasticity_gate"]:
             m = getattr(self, attr)

@@ -60,6 +60,7 @@ Usage::
 
 from __future__ import annotations
 
+from typing import Union
 import asyncio
 import threading
 import uuid
@@ -124,7 +125,6 @@ class ToolCallResultMessage:
     type: str = "ToolCallResultMessage"
 
 
-from typing import Union
 
 # Union type mirroring AutoGen's AgentMessage
 AgentMessage = Union[TextMessage, ChatMessage, ToolCallMessage, ToolCallResultMessage]

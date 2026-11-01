@@ -139,11 +139,11 @@ class RouterConfig:
         if client is None:
             from meshflow.cloud.client import get_cloud_client
             client = get_cloud_client()
-            
+
         routers = client.get_model_routers()
         if not routers:
             return cls()  # fallback to defaults
-            
+
         # Map cloud model routers to tiers
         tiers = dict(_DEFAULT_TIERS)
         for r in routers:
@@ -151,7 +151,7 @@ class RouterConfig:
             primary = r.get("primaryModel")
             if tier and primary:
                 tiers[tier] = primary
-                
+
         return cls(tiers=tiers)
 
 

@@ -77,6 +77,33 @@ jobs:
           name: test-results-py${{ matrix.python-version }}
           path: .pytest_cache/
 
+  package:
+    name: Installed wheel (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Build wheel from source distribution
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Install into a clean environment
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-env"
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip check
+      - name: Verify installed runtime and durable audit
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_installed_wheel.py"
+
   typecheck:
     name: Type check
     runs-on: ubuntu-latest
@@ -90,15 +117,20 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -e . mypy
-      - name: mypy (non-strict)
+      - name: Check core contracts and governance session types
         run: |
           python -m mypy meshflow/core/schemas.py \
                         meshflow/security/api_keys.py \
                         meshflow/core/policy_loader.py \
                         meshflow/observability/otel_exporter.py \
+                        meshflow/core/session.py \
+                        meshflow/core/request_budget.py \
+                        meshflow/streaming/sync_bridge.py \
+                        meshflow/budget/reservations.py \
+                        --follow-imports=silent \
                         --ignore-missing-imports \
-                        --no-strict-optional \
-            || true  # non-blocking until all stubs are added
+                        --no-strict-optional
+
 
   benchmark:
     name: Benchmark smoke test
@@ -118,7 +150,7 @@ jobs:
           MESHFLOW_MOCK: "1"
         run: |
           python benchmarks/bench_core.py --concurrency 10 --quick \
-            --output /tmp/bench_results.json || true
+            --output /tmp/bench_results.json
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4
@@ -136,9 +168,8 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install ruff
-        run: pip install ruff
-      - name: Run ruff
-        run: |
-          ruff check meshflow/ --select E,W,F \
-            --ignore E501,W503,F401,F811 \
-            || true  # advisory only
+        run: pip install ruff==0.15.14
+      - name: Run blocking repository lint
+        run: python scripts/check_lint.py
+      - name: Lint governance guarantees
+        run: ruff check meshflow/core/session.py meshflow/core/request_budget.py meshflow/streaming/sync_bridge.py tests/test_governance_guarantees.py tests/test_governed_agent_modes.py tests/test_shared_reservations.py tests/test_worker_recovery.py tests/test_staging_boundaries.py scripts/validate_local_provider.py scripts/validate_cloud_provider.py tests/test_cloud_validation.py

@@ -1,4 +1,5 @@
 """Role-based repair functions for general reasoning domains."""
+
 import copy
 import re
 from typing import Any, Dict
@@ -8,9 +9,12 @@ _EMAIL_RE = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
 
 
 def repair_linear_system(output: Dict, role: str, context: Dict, step: int) -> Dict:
-    a11 = output.get("a11", 1.0); a12 = output.get("a12", 0.0)
-    a21 = output.get("a21", 0.0); a22 = output.get("a22", 1.0)
-    b1 = output.get("b1", 0.0); b2 = output.get("b2", 0.0)
+    a11 = output.get("a11", 1.0)
+    a12 = output.get("a12", 0.0)
+    a21 = output.get("a21", 0.0)
+    a22 = output.get("a22", 1.0)
+    b1 = output.get("b1", 0.0)
+    b2 = output.get("b2", 0.0)
     tol = context.get("tolerance", 0.01)
     det = a11 * a22 - a12 * a21
     if abs(det) < 1e-10:
@@ -27,7 +31,9 @@ def repair_linear_system(output: Dict, role: str, context: Dict, step: int) -> D
 
 
 def repair_multi_calc(output: Dict, role: str, context: Dict, step: int) -> Dict:
-    a = output.get("a", 0.0); b = output.get("b", 0.0); c = output.get("c", 1.0)
+    a = output.get("a", 0.0)
+    b = output.get("b", 0.0)
+    c = output.get("c", 1.0)
     tol = context.get("tolerance", 0.01)
     if role in {"sum_checker", "consensus_auditor"} or step > 0:
         correct = a + b + c
@@ -50,18 +56,23 @@ def repair_multi_calc(output: Dict, role: str, context: Dict, step: int) -> Dict
 
 
 def repair_logic_rules(output: Dict, role: str, context: Dict, step: int) -> Dict:
-    facts = output.get("facts", {}); rules = output.get("rules", [])
+    facts = output.get("facts", {})
+    rules = output.get("rules", [])
     derived = dict(output.get("derived", {}))
     _ownership = {
-        "rule_1_applier": {0}, "rule_2_applier": {1}, "rule_3_applier": {2},
-        "logic_checker": {0, 1, 2}, "consensus_auditor": set(range(len(rules))),
+        "rule_1_applier": {0},
+        "rule_2_applier": {1},
+        "rule_3_applier": {2},
+        "logic_checker": {0, 1, 2},
+        "consensus_auditor": set(range(len(rules))),
     }
     owned = _ownership.get(role, set())
     if step > 0:
         owned = set(range(len(rules)))
     for i in owned:
         if i < len(rules):
-            ant = rules[i].get("if"); con = rules[i].get("then")
+            ant = rules[i].get("if")
+            con = rules[i].get("then")
             expected = facts.get(ant, False)
             if derived.get(con) != expected:
                 derived[con] = expected
@@ -93,7 +104,8 @@ def repair_schedule_plan(output: Dict, role: str, context: Dict, step: int) -> D
 
 def repair_data_quality(output: Dict, role: str, context: Dict, step: int) -> Dict:
     records = output.get("records", [])
-    min_age = context.get("min_age", 0); max_age = context.get("max_age", 120)
+    min_age = context.get("min_age", 0)
+    max_age = context.get("max_age", 120)
     if role in {"email_validator", "consensus_auditor"} or step > 0:
         for rec in records:
             email = str(rec.get("email", ""))
@@ -123,11 +135,16 @@ def repair_data_quality(output: Dict, role: str, context: Dict, step: int) -> Di
 
 
 def repair_causal_chain(output: Dict, role: str, context: Dict, step: int) -> Dict:
-    observed = output.get("observed", {}); causal_model = output.get("causal_model", {})
-    active = dict(output.get("active_causes", {})); causes = list(causal_model.keys())
+    observed = output.get("observed", {})
+    causal_model = output.get("causal_model", {})
+    active = dict(output.get("active_causes", {}))
+    causes = list(causal_model.keys())
     _owned: Dict[str, set] = {
-        "cause_0_analyst": {0}, "cause_1_analyst": {1}, "cause_2_analyst": {2},
-        "cause_3_analyst": {3}, "general_diagnostician": set(range(len(causes))),
+        "cause_0_analyst": {0},
+        "cause_1_analyst": {1},
+        "cause_2_analyst": {2},
+        "cause_3_analyst": {3},
+        "general_diagnostician": set(range(len(causes))),
         "consensus_auditor": set(range(len(causes))),
     }
     owned_indices = _owned.get(role, set())
@@ -136,31 +153,35 @@ def repair_causal_chain(output: Dict, role: str, context: Dict, step: int) -> Di
     for i in owned_indices:
         if i >= len(causes):
             continue
-        cause = causes[i]; effects = causal_model.get(cause, [])
+        cause = causes[i]
+        effects = causal_model.get(cause, [])
         active[cause] = any(observed.get(e, False) for e in effects)
     output["active_causes"] = active
     return output
 
 
 def repair_constraint_csp(output: Dict, role: str, context: Dict, step: int) -> Dict:
-    assignments = dict(output.get("assignments", {})); constraints = output.get("constraints", [])
+    assignments = dict(output.get("assignments", {}))
+    constraints = output.get("constraints", [])
 
     def _fix_not_equal(c):
-        l, r = c["left"], c["right"]
-        if assignments.get(l) == assignments.get(r):
-            assignments[l] = assignments.get(l, 0) + 1
+        left_var, r = c["left"], c["right"]
+        if assignments.get(left_var) == assignments.get(r):
+            assignments[left_var] = assignments.get(left_var, 0) + 1
 
     def _fix_less_than(c):
-        l, r = c["left"], c["right"]
-        if not (assignments.get(l, 0) < assignments.get(r, 0)):
-            assignments[l] = assignments.get(r, 1) - 1
+        left_var, r = c["left"], c["right"]
+        if not (assignments.get(left_var, 0) < assignments.get(r, 0)):
+            assignments[left_var] = assignments.get(r, 1) - 1
 
     def _fix_in_range(c):
         v, lo, hi = c["var"], c["low"], c["high"]
         assignments[v] = max(lo, min(assignments.get(v, lo), hi))
 
     def _fix_sum_bound(c):
-        vs = c.get("vars", []); op = c.get("op", "<="); bound = c.get("bound", 0)
+        vs = c.get("vars", [])
+        op = c.get("op", "<=")
+        bound = c.get("bound", 0)
         total = sum(assignments.get(v, 0) for v in vs)
         if op == "<=" and total > bound and total > 0:
             scale = bound / total
@@ -171,12 +192,19 @@ def repair_constraint_csp(output: Dict, role: str, context: Dict, step: int) -> 
             for v in vs:
                 assignments[v] = round(assignments.get(v, 0) + delta, 4)
 
-    _FIXERS = {"not_equal": _fix_not_equal, "less_than": _fix_less_than,
-               "in_range": _fix_in_range, "sum_bound": _fix_sum_bound}
+    _FIXERS = {
+        "not_equal": _fix_not_equal,
+        "less_than": _fix_less_than,
+        "in_range": _fix_in_range,
+        "sum_bound": _fix_sum_bound,
+    }
     _ROLE_TYPES = {
-        "neq_fixer": {"not_equal"}, "ordering_fixer": {"less_than"},
-        "range_fixer": {"in_range"}, "sum_fixer": {"sum_bound"},
-        "general_solver": set(_FIXERS.keys()), "consensus_auditor": set(_FIXERS.keys()),
+        "neq_fixer": {"not_equal"},
+        "ordering_fixer": {"less_than"},
+        "range_fixer": {"in_range"},
+        "sum_fixer": {"sum_bound"},
+        "general_solver": set(_FIXERS.keys()),
+        "consensus_auditor": set(_FIXERS.keys()),
     }
     owned_types = _ROLE_TYPES.get(role, set())
     if step > 0:
@@ -218,17 +246,23 @@ def repair_budget_alloc(output: Dict, role: str, context: Dict, step: int) -> Di
     if role in {"total_balancer"} or step > 1:
         _balance_total()
     if role in {"proportionality_checker", "consensus_auditor"} or step > 1:
-        _enforce_min(); _enforce_max(); _balance_total()
+        _enforce_min()
+        _enforce_max()
+        _balance_total()
 
     output["categories"] = categories
     return output
 
 
 _REPAIR_REGISTRY: Dict[str, Any] = {
-    "linear_system": repair_linear_system, "multi_calc": repair_multi_calc,
-    "logic_rules": repair_logic_rules, "schedule_plan": repair_schedule_plan,
-    "data_quality": repair_data_quality, "causal_chain": repair_causal_chain,
-    "constraint_csp": repair_constraint_csp, "budget_alloc": repair_budget_alloc,
+    "linear_system": repair_linear_system,
+    "multi_calc": repair_multi_calc,
+    "logic_rules": repair_logic_rules,
+    "schedule_plan": repair_schedule_plan,
+    "data_quality": repair_data_quality,
+    "causal_chain": repair_causal_chain,
+    "constraint_csp": repair_constraint_csp,
+    "budget_alloc": repair_budget_alloc,
 }
 
 

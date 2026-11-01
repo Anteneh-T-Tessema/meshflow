@@ -3,6 +3,7 @@
 Requires the `meshflow[swarm]` extra (torch + pydantic).
 Import is lazy so the rest of meshflow works without torch.
 """
+
 from __future__ import annotations
 
 import copy
@@ -29,7 +30,10 @@ from meshflow.swarm.verifiers import (
 
 try:
     from meshflow.swarm.industries.registry import REGISTRY as _INDUSTRY_REGISTRY
-    from meshflow.swarm.industries.repair import repair as _industry_repair, has_repair as _has_industry_repair
+    from meshflow.swarm.industries.repair import (
+        repair as _industry_repair,
+        has_repair as _has_industry_repair,
+    )
 except ImportError:
     _INDUSTRY_REGISTRY = {}
 
@@ -39,9 +43,13 @@ except ImportError:
     def _has_industry_repair(domain):
         return False
 
+
 try:
     from meshflow.swarm.reasoning.registry import REGISTRY as _REASONING_REGISTRY
-    from meshflow.swarm.reasoning.repair import repair as _reasoning_repair, has_repair as _has_reasoning_repair
+    from meshflow.swarm.reasoning.repair import (
+        repair as _reasoning_repair,
+        has_repair as _has_reasoning_repair,
+    )
 except ImportError:
     _REASONING_REGISTRY = {}
 
@@ -53,6 +61,7 @@ except ImportError:
 
 
 # ── Public types ──────────────────────────────────────────────────────────────
+
 
 class SwarmConfig(BaseModel):
     initial_agents: int = 3
@@ -117,11 +126,12 @@ class SwarmInferenceResult(BaseModel):
 
 # ── Internal agent state ──────────────────────────────────────────────────────
 
+
 @dataclass
 class _AgentState:
     id: int
     role: str
-    hidden: Any   # torch.Tensor
+    hidden: Any  # torch.Tensor
     role_vector: Any
     answer: Any
     confidence: float
@@ -131,6 +141,7 @@ class _AgentState:
 
 
 # ── Q&A verifier ──────────────────────────────────────────────────────────────
+
 
 class _QuestionAnswerVerifier(DeterministicVerifier):
     _NUM = r"(-?\d+(?:\.\d+)?)"
@@ -157,8 +168,12 @@ class _QuestionAnswerVerifier(DeterministicVerifier):
                 violations.append(f"QA Violation: answer is missing required term '{term}'.")
         arithmetic = self.simple_arithmetic_answer(question)
         if arithmetic is not None and not self.answer_mentions(answer, arithmetic):
-            violations.append(f"QA Violation: simple arithmetic answer should include {arithmetic}.")
-        return VerificationResult(is_valid=len(violations) == 0, confidence=1.0, violations=violations)
+            violations.append(
+                f"QA Violation: simple arithmetic answer should include {arithmetic}."
+            )
+        return VerificationResult(
+            is_valid=len(violations) == 0, confidence=1.0, violations=violations
+        )
 
     @classmethod
     def simple_arithmetic_answer(cls, question: str) -> Optional[str]:
@@ -167,7 +182,8 @@ class _QuestionAnswerVerifier(DeterministicVerifier):
             if not match:
                 continue
             try:
-                left = Decimal(match.group(1)); right = Decimal(match.group(2))
+                left = Decimal(match.group(1))
+                right = Decimal(match.group(2))
                 if op == "+":
                     value = left + right
                 elif op == "-":
@@ -196,8 +212,11 @@ class _QuestionAnswerVerifier(DeterministicVerifier):
 
 # ── Task adapter ──────────────────────────────────────────────────────────────
 
+
 class _TaskAdapter:
-    def __init__(self, verifier_type: str, verifier: DeterministicVerifier, context: Dict[str, Any]):
+    def __init__(
+        self, verifier_type: str, verifier: DeterministicVerifier, context: Dict[str, Any]
+    ):
         self.verifier_type = verifier_type
         self.verifier = verifier
         self.context = context
@@ -232,12 +251,17 @@ class _TaskAdapter:
         return self.verifier.verify(candidate, self.context)
 
     def _refine_erp(self, output: Dict, role: str, step: int) -> Dict:
-        should_balance = role in {"ledger_integrity", "constraint_checker", "consensus_auditor"} or step > 0
+        should_balance = (
+            role in {"ledger_integrity", "constraint_checker", "consensus_auditor"} or step > 0
+        )
         should_tag = role in {"audit_tagger", "constraint_checker", "consensus_auditor"} or step > 0
         if should_balance:
-            debit = output.get("debit"); credit = output.get("credit"); amount = output.get("amount")
+            debit = output.get("debit")
+            credit = output.get("credit")
+            amount = output.get("amount")
             if amount is not None:
-                output["debit"] = amount; output["credit"] = amount
+                output["debit"] = amount
+                output["credit"] = amount
             elif debit is not None and credit != debit:
                 output["credit"] = debit
             elif credit is not None and debit != credit:
@@ -248,15 +272,22 @@ class _TaskAdapter:
 
     def _refine_billable(self, output: Dict, role: str, step: int) -> Dict:
         max_rate = self.context.get("max_rate", 250)
-        should_normalize = role in {"contract_guard", "rate_normalizer", "consensus_auditor"} or step > 0
+        should_normalize = (
+            role in {"contract_guard", "rate_normalizer", "consensus_auditor"} or step > 0
+        )
         if should_normalize and output.get("hourly_rate", 0) > max_rate:
-            output["hourly_rate"] = max_rate; output["rate_adjustment"] = "clamped_to_contract_cap"
+            output["hourly_rate"] = max_rate
+            output["rate_adjustment"] = "clamped_to_contract_cap"
         return output
 
     def _refine_modernize(self, output: Dict, role: str, step: int) -> Dict:
         code = output.get("code", "")
-        should_fix_types = role in {"type_safety", "compatibility_mapper", "consensus_auditor"} or step > 0
-        should_fix_security = role in {"security_guard", "compatibility_mapper", "consensus_auditor"} or step > 0
+        should_fix_types = (
+            role in {"type_safety", "compatibility_mapper", "consensus_auditor"} or step > 0
+        )
+        should_fix_security = (
+            role in {"security_guard", "compatibility_mapper", "consensus_auditor"} or step > 0
+        )
         if should_fix_types:
             code = code.replace(": any", ": unknown")
         if should_fix_security:
@@ -270,13 +301,15 @@ class _TaskAdapter:
         if role in {"answer_checker", "final_reviewer", "context_checker"} or step > 0:
             answer = re.sub(r"^\s*answer\s*:\s*", "", answer, flags=re.I).strip()
             if question and answer.lower().startswith(question.lower()):
-                answer = answer[len(question):].strip(" :\n\t")
+                answer = answer[len(question) :].strip(" :\n\t")
         expected = self.context.get("expected_answer")
         if expected is not None and str(expected).lower() not in answer.lower():
             if role in {"context_checker", "final_reviewer"} or step > 0:
                 answer = str(expected)
         arithmetic = _QuestionAnswerVerifier.simple_arithmetic_answer(question)
-        if arithmetic is not None and not _QuestionAnswerVerifier.answer_mentions(answer, arithmetic):
+        if arithmetic is not None and not _QuestionAnswerVerifier.answer_mentions(
+            answer, arithmetic
+        ):
             answer = f"The answer is {arithmetic}."
         if not answer:
             answer = "I need more context to answer that reliably."
@@ -285,6 +318,7 @@ class _TaskAdapter:
 
 
 # ── Main SwarmTRM class ───────────────────────────────────────────────────────
+
 
 class SwarmTRM:
     """Reference implementation of the SwarmTRM inference loop.
@@ -296,6 +330,7 @@ class SwarmTRM:
     def __init__(self, unit=None) -> None:
         try:
             import torch
+
             self._torch = torch
         except ImportError as exc:
             raise ImportError(
@@ -304,6 +339,7 @@ class SwarmTRM:
 
         if unit is None:
             from meshflow.swarm.recursive_unit import RecursiveUnit
+
             unit = RecursiveUnit()
 
         self.unit = unit
@@ -333,10 +369,14 @@ class SwarmTRM:
         agents = self._initialize_agents(task, roles[:initial_agents], adapter, config)
 
         trace: List[SwarmTraceStep] = []
-        active_core_calls = 0; message_count = 0; verifier_calls = 0
-        best_answer = copy.deepcopy(task); best_confidence = 0.0
+        active_core_calls = 0
+        message_count = 0
+        verifier_calls = 0
+        best_answer = copy.deepcopy(task)
+        best_confidence = 0.0
         best_verification = verifier.verify(best_answer, context)
-        best_score = math.inf; start = time.perf_counter()
+        best_score = math.inf
+        start = time.perf_counter()
         prev_verifier_score: float = 0.0
 
         for step in range(config.max_depth):
@@ -366,7 +406,9 @@ class SwarmTRM:
                     agent.hidden = self.unit.reasoning_layer(mixed)
                     agent.latent_delta = self._latent_delta(agent.hidden, previous)
                     agent.answer = adapter.refine(
-                        agent.answer, agent.role, step,
+                        agent.answer,
+                        agent.role,
+                        step,
                         consensus_seed if step > 0 else None,
                     )
                     agent.confidence = adapter.confidence(agent.answer, step)
@@ -384,18 +426,23 @@ class SwarmTRM:
                 merged_v = adapter.verify(merged)
                 std_v = adapter.verify(consensus)
                 if len(merged_v.violations) < len(std_v.violations):
-                    consensus = merged; consensus_confidence = merged_conf
+                    consensus = merged
+                    consensus_confidence = merged_conf
 
             verification = adapter.verify(consensus)
             verifier_calls += len(agents) + 1
-            verifier_score = 1.0 if verification.is_valid else max(
-                0.0, 1.0 - 0.25 * len(verification.violations)
+            verifier_score = (
+                1.0
+                if verification.is_valid
+                else max(0.0, 1.0 - 0.25 * len(verification.violations))
             )
             convergence_delta = sum(a.latent_delta for a in agents) / max(1, len(agents))
             score = (1.0 - verifier_score) + (1.0 - consensus_confidence) + disagreement
             if score < best_score:
-                best_score = score; best_answer = copy.deepcopy(consensus)
-                best_confidence = consensus_confidence; best_verification = verification
+                best_score = score
+                best_answer = copy.deepcopy(consensus)
+                best_confidence = consensus_confidence
+                best_verification = verification
 
             prev_verifier_score = verifier_score
             should_halt = (
@@ -407,28 +454,33 @@ class SwarmTRM:
                 agents, config, verifier_score, disagreement, consensus_confidence
             )
 
-            trace.append(SwarmTraceStep(
-                step=step + 1, topology=topology_name, active_agents=len(agents),
-                edges=[[s, t] for s, t in edges],
-                disagreement=round(disagreement, 4),
-                convergence_delta=round(convergence_delta, 6),
-                consensus=copy.deepcopy(consensus),
-                consensus_confidence=round(consensus_confidence, 4),
-                verifier_score=round(verifier_score, 4),
-                verified=verification.is_valid,
-                violations=list(verification.violations),
-                expanded=expanded,
-                agents=[
-                    AgentSnapshot(
-                        id=a.id, role=a.role,
-                        confidence=round(a.confidence, 4),
-                        answer=copy.deepcopy(a.answer),
-                        message_norm=round(a.message_norm, 6),
-                        latent_delta=round(a.latent_delta, 6),
-                    )
-                    for a in agents
-                ],
-            ))
+            trace.append(
+                SwarmTraceStep(
+                    step=step + 1,
+                    topology=topology_name,
+                    active_agents=len(agents),
+                    edges=[[s, t] for s, t in edges],
+                    disagreement=round(disagreement, 4),
+                    convergence_delta=round(convergence_delta, 6),
+                    consensus=copy.deepcopy(consensus),
+                    consensus_confidence=round(consensus_confidence, 4),
+                    verifier_score=round(verifier_score, 4),
+                    verified=verification.is_valid,
+                    violations=list(verification.violations),
+                    expanded=expanded,
+                    agents=[
+                        AgentSnapshot(
+                            id=a.id,
+                            role=a.role,
+                            confidence=round(a.confidence, 4),
+                            answer=copy.deepcopy(a.answer),
+                            message_norm=round(a.message_norm, 6),
+                            latent_delta=round(a.latent_delta, 6),
+                        )
+                        for a in agents
+                    ],
+                )
+            )
 
             if should_halt:
                 break
@@ -437,16 +489,24 @@ class SwarmTRM:
                 agents.append(self._new_agent(len(agents) + 1, next_role, task, adapter, config))
 
         elapsed_ms = (time.perf_counter() - start) * 1000
-        accounting = self._accounting(active_core_calls, message_count, verifier_calls, elapsed_ms, config)
+        accounting = self._accounting(
+            active_core_calls, message_count, verifier_calls, elapsed_ms, config
+        )
         verified = best_verification.is_valid
 
         return SwarmInferenceResult(
-            answer=best_answer, confidence=round(best_confidence, 4),
-            verified=verified, low_confidence=not verified,
+            answer=best_answer,
+            confidence=round(best_confidence, 4),
+            verified=verified,
+            low_confidence=not verified,
             violations=list(best_verification.violations),
             remediation_steps=best_verification.remediation_steps,
-            steps=len(trace), trace=trace, accounting=accounting,
-            recommendation="verified_consensus" if verified else "low_confidence_return: verifier-gated consensus was not reached",
+            steps=len(trace),
+            trace=trace,
+            accounting=accounting,
+            recommendation="verified_consensus"
+            if verified
+            else "low_confidence_return: verifier-gated consensus was not reached",
         )
 
     # ── Internal helpers ────────────────────────────────────────────────────
@@ -461,8 +521,13 @@ class SwarmTRM:
         answer = adapter.initial_candidate(task, role)
         confidence = adapter.confidence(answer, 0)
         return _AgentState(
-            id=agent_id, role=role, hidden=hidden, role_vector=role_vector,
-            answer=answer, confidence=confidence, message=torch.zeros(config.message_dim),
+            id=agent_id,
+            role=role,
+            hidden=hidden,
+            role_vector=role_vector,
+            answer=answer,
+            confidence=confidence,
+            message=torch.zeros(config.message_dim),
         )
 
     def _build_verifier(self, verifier_type: str, context: Dict) -> DeterministicVerifier:
@@ -489,10 +554,34 @@ class SwarmTRM:
 
     def _default_roles(self, verifier_type: str) -> List[str]:
         _builtin = {
-            "erp": ["ledger_integrity", "audit_tagger", "constraint_checker", "consensus_auditor", "latency_guard"],
-            "billable": ["contract_guard", "evidence_mapper", "rate_normalizer", "consensus_auditor", "latency_guard"],
-            "modernize": ["type_safety", "security_guard", "compatibility_mapper", "consensus_auditor", "latency_guard"],
-            "qa": ["answer_checker", "math_checker", "context_checker", "safety_checker", "final_reviewer"],
+            "erp": [
+                "ledger_integrity",
+                "audit_tagger",
+                "constraint_checker",
+                "consensus_auditor",
+                "latency_guard",
+            ],
+            "billable": [
+                "contract_guard",
+                "evidence_mapper",
+                "rate_normalizer",
+                "consensus_auditor",
+                "latency_guard",
+            ],
+            "modernize": [
+                "type_safety",
+                "security_guard",
+                "compatibility_mapper",
+                "consensus_auditor",
+                "latency_guard",
+            ],
+            "qa": [
+                "answer_checker",
+                "math_checker",
+                "context_checker",
+                "safety_checker",
+                "final_reviewer",
+            ],
         }
         if verifier_type in _builtin:
             return _builtin[verifier_type]
@@ -512,6 +601,7 @@ class SwarmTRM:
         text = self._canonical(task) if not isinstance(task, str) else str(task)
         try:
             from meshflow.swarm.embeddings import embed_text
+
             floats = embed_text(text, dim=self.latent_dim)
             return torch.tensor(floats, dtype=torch.float32).reshape(1, 1, self.latent_dim)
         except Exception:
@@ -529,6 +619,7 @@ class SwarmTRM:
         torch = self._torch
         try:
             from meshflow.swarm.embeddings import embed_text
+
             floats = embed_text(role, dim=self.latent_dim)
             return torch.tensor(floats, dtype=torch.float32).reshape(1, 1, self.latent_dim)
         except Exception:
@@ -617,7 +708,12 @@ class SwarmTRM:
                 candidates = [a for a in agents if a.id != target.id]
                 if not candidates:
                     continue
-                source = max(candidates, key=lambda a: self._answer_distance(a.answer, target.answer) + a.confidence * 0.1)
+                source = max(
+                    candidates,
+                    key=lambda a: (
+                        self._answer_distance(a.answer, target.answer) + a.confidence * 0.1
+                    ),
+                )
                 edges.append((source.id, target.id))
             return topology, edges
         raise ValueError(f"Unsupported topology: {requested}")
@@ -658,8 +754,13 @@ class SwarmTRM:
                 if key not in merged or merged[key] == agent_val:
                     continue
                 merged_val = merged[key]
-                if (isinstance(agent_val, list) and isinstance(merged_val, list)
-                        and len(agent_val) == len(merged_val) and agent_val and isinstance(agent_val[0], dict)):
+                if (
+                    isinstance(agent_val, list)
+                    and isinstance(merged_val, list)
+                    and len(agent_val) == len(merged_val)
+                    and agent_val
+                    and isinstance(agent_val[0], dict)
+                ):
                     working_list = copy.deepcopy(merged_val)
                     for idx, (base_elem, agent_elem) in enumerate(zip(merged_val, agent_val)):
                         for sub_key, sub_val in agent_elem.items():
@@ -687,16 +788,18 @@ class SwarmTRM:
     def _should_expand(self, agents, config, verifier_score, disagreement, confidence):
         if len(agents) >= config.max_agents:
             return False
-        return (verifier_score < config.tau_verifier
-                or disagreement > config.expand_disagreement
-                or confidence < config.tau_confidence)
+        return (
+            verifier_score < config.tau_verifier
+            or disagreement > config.expand_disagreement
+            or confidence < config.tau_confidence
+        )
 
     def _disagreement(self, agents):
         if len(agents) < 2:
             return 0.0
         distances = []
         for i, left in enumerate(agents):
-            for right in agents[i + 1:]:
+            for right in agents[i + 1 :]:
                 ad = self._answer_distance(left.answer, right.answer)
                 cg = abs(left.confidence - right.confidence)
                 distances.append(0.82 * ad + 0.18 * cg)
@@ -707,12 +810,16 @@ class SwarmTRM:
             keys = set(left.keys()) | set(right.keys())
             if not keys:
                 return 0.0
-            mismatches = sum(1 for k in keys if self._canonical(left.get(k)) != self._canonical(right.get(k)))
+            mismatches = sum(
+                1 for k in keys if self._canonical(left.get(k)) != self._canonical(right.get(k))
+            )
             return mismatches / len(keys)
         if isinstance(left, str) and isinstance(right, str):
             return 1.0 - difflib.SequenceMatcher(a=left, b=right).ratio()
         if isinstance(left, (int, float)) and isinstance(right, (int, float)):
-            return abs(float(left) - float(right)) / (max(abs(float(left)), abs(float(right))) + 1.0)
+            return abs(float(left) - float(right)) / (
+                max(abs(float(left)), abs(float(right))) + 1.0
+            )
         return 0.0 if self._canonical(left) == self._canonical(right) else 1.0
 
     def _latent_delta(self, current, previous) -> float:
@@ -727,8 +834,10 @@ class SwarmTRM:
         joule_proxy = max(1.0, active_compute_proxy / 1_000_000.0)
         return SwarmAccounting(
             stored_parameters=self.unit.parameter_count,
-            active_core_calls=active_core_calls, message_count=message_count,
-            verifier_calls=verifier_calls, elapsed_ms=round(elapsed_ms, 3),
+            active_core_calls=active_core_calls,
+            message_count=message_count,
+            verifier_calls=verifier_calls,
+            elapsed_ms=round(elapsed_ms, 3),
             active_compute_proxy=round(active_compute_proxy, 3),
             solved_per_joule_proxy=round(1.0 / joule_proxy, 6),
         )

@@ -102,6 +102,7 @@ class TestTeamStopOnConfidence(unittest.TestCase):
             agents=[a1, a2],
             pattern="sequential",
             stop_on_confidence=0.9,
+            policy=__import__("meshflow").Policy(enable_uncertainty=False),
         )
 
         result = asyncio.run(team.run("test task"))

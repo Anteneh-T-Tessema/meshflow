@@ -283,6 +283,9 @@ from meshflow.core.workflow import CostCap
 from meshflow.core.policy import BudgetExceededError
 
 class MockCostProvider(LLMProvider):
+    def request_cost_bound(self, **kwargs):
+        return self.cost_per_call, 10
+
     def __init__(self, cost_per_call: float):
         self.cost_per_call = cost_per_call
 
@@ -313,7 +316,9 @@ class TestWorkflowCostCap:
 
         result = wf.run("task")
         assert result.completed is False
-        assert "a3" in result.blocked_nodes
+        assert "a2" in result.blocked_nodes
+        assert "a3" in result.skipped_nodes
+        assert result.total_cost_usd == pytest.approx(0.03)
 
     def test_cost_cap_enforced_parallel_run(self):
         wf = Workflow(cost_cap=CostCap(usd=0.05))
@@ -324,7 +329,9 @@ class TestWorkflowCostCap:
 
         result = wf.run("task")
         assert result.completed is False
-        assert "a3" in result.blocked_nodes
+        assert "a2" in result.blocked_nodes
+        assert "a3" in result.skipped_nodes
+        assert result.total_cost_usd == pytest.approx(0.03)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

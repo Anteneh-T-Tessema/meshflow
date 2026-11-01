@@ -23,6 +23,8 @@ These co-exist with the database-backed keys.
 
 from __future__ import annotations
 
+import builtins
+
 import hashlib
 import os
 import secrets
@@ -207,7 +209,7 @@ class KeyStore:
             for r in rows
         ]
 
-    def list_all(self) -> list[KeyRecord]:
+    def list_all(self) -> "builtins.list[KeyRecord]":
         """List all keys including revoked ones."""
         with self._conn() as con:
             rows = con.execute(

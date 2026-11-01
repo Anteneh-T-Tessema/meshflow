@@ -30,7 +30,7 @@ class TokenBudgetPlanner:
     @staticmethod
     def estimate_tokens(text: str) -> int:
         """Estimate the token count of a given text block using a standard 1.3x word multiplier.
-        
+
         Handles empty or whitespace-only inputs gracefully.
         """
         if not text:

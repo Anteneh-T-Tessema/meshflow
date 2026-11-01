@@ -57,7 +57,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, TypeVar
 
 
@@ -164,6 +164,9 @@ class FlowResult:
     total_cost_usd: float = 0.0
     duration_s: float = 0.0
     error: str = ""
+    run_id: str = ""
+    ledger_db: str = ""
+    steps: list[Any] = field(default_factory=list)
 
 
 # ── Flow base class ───────────────────────────────────────────────────────────
@@ -177,8 +180,8 @@ class Flow(Generic[_S]):
     Subclass and decorate methods with ``@start``, ``@listen``, ``@router``.
     Call ``await flow.kickoff()`` (or ``flow.kickoff_sync()``) to execute.
 
-    The optional ``policy=`` and ``ledger_db=`` constructor arguments enable
-    full MeshFlow governance (guardian, budget, audit) on every handler.
+    Every handler is governed. The optional ``policy=`` and ``ledger_db=``
+    constructor arguments customize controls and durable audit storage.
     """
 
     def __init__(
@@ -230,6 +233,25 @@ class Flow(Generic[_S]):
     # ── Execution ──────────────────────────────────────────────────────────────
 
     async def kickoff(self, inputs: dict[str, Any] | None = None) -> FlowResult:
+        from meshflow.core.session import GovernedSession, active_session
+        session = active_session.get()
+        if session is not None:
+            return await self._kickoff_governed(inputs, session)
+        async with GovernedSession(self._policy, self._ledger_db or None) as session:
+            return await self._kickoff_governed(inputs, session)
+
+    async def _kickoff_governed(self, inputs: dict[str, Any] | None, session: Any) -> FlowResult:
+        offset = len(session.outcomes)
+        result = await self._kickoff_impl(inputs)
+        outcomes = session.outcomes[offset:]
+        result.run_id = session.run_id
+        result.ledger_db = session.ledger_db
+        result.steps = outcomes
+        result.total_tokens = sum(o.record.tokens_used for o in outcomes)
+        result.total_cost_usd = sum(o.record.cost_usd for o in outcomes)
+        return result
+
+    async def _kickoff_impl(self, inputs: dict[str, Any] | None = None) -> FlowResult:
         """Execute the flow.  Returns when all reachable handlers have run."""
         import time
         t0 = time.monotonic()
@@ -242,6 +264,7 @@ class Flow(Generic[_S]):
         total_cost = 0.0
         final_output: Any = None
         step_count = 0
+        error = ""
 
         # BFS queue: (method_name, argument passed from previous step)
         queue: list[tuple[str, Any]] = [(name, None) for name in self._start_methods]
@@ -254,7 +277,13 @@ class Flow(Generic[_S]):
                 continue
 
             method = getattr(self, method_name)
-            result = await self._invoke(method, arg)
+            from meshflow.core.session import active_session
+            session = active_session.get()
+            result, outcome = await session.invoke(method_name, str(arg or method_name),
+                                                    lambda inp: self._invoke(method, arg))
+            if not outcome.ok or outcome.paused_for_human:
+                error = outcome.blocked_by or "human_approval_required"
+                break
             steps_executed.append(method_name)
             final_output = result
 
@@ -273,6 +302,8 @@ class Flow(Generic[_S]):
                 for listener_name in self._listeners.get(method_name, []):
                     queue.append((listener_name, result))
 
+        if queue and not error:
+            error = "max_steps_exceeded"
         duration = round(time.monotonic() - t0, 3)
         return FlowResult(
             final_output=final_output,
@@ -281,6 +312,7 @@ class Flow(Generic[_S]):
             total_tokens=total_tokens,
             total_cost_usd=round(total_cost, 6),
             duration_s=duration,
+            error=error,
         )
 
     def kickoff_sync(self, inputs: dict[str, Any] | None = None) -> FlowResult:
@@ -300,7 +332,12 @@ class Flow(Generic[_S]):
         return result
 
     async def _invoke_router(self, router_method: Callable, arg: Any) -> str:
-        result = await self._invoke(router_method, arg)
+        from meshflow.core.session import active_session
+        session = active_session.get()
+        result, outcome = await session.invoke(router_method.__name__, str(arg),
+                                               lambda inp: self._invoke(router_method, arg))
+        if not outcome.ok or outcome.paused_for_human:
+            raise RuntimeError(outcome.blocked_by or "human_approval_required")
         return str(result) if result is not None else ""
 
     # ── Introspection ──────────────────────────────────────────────────────────

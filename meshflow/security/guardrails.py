@@ -373,7 +373,7 @@ class ToxicityGuardrail(Guardrail):
         cats = set(categories) if categories else set(self._BUILTIN.keys())
         flags = 0 if case_sensitive else re.IGNORECASE
 
-        patterns: list[re.Pattern] = []
+        []
         self._category_map: list[tuple[str, re.Pattern]] = []
         for cat, pats in self._BUILTIN.items():
             if cat in cats:

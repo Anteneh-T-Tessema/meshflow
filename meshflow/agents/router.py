@@ -797,7 +797,8 @@ class AdaptiveModelTierRouter(ModelTierRouter):
         if rec.changed and rec.confidence >= 0.30:
             self._smart = rec.smart_threshold
             self._large = rec.large_threshold
-            import logging, time
+            import logging
+            import time
             self._last_adapted_at = time.time()
             logging.getLogger("meshflow.adaptive_router").info(
                 "Thresholds adapted: %s", rec.summary
@@ -811,7 +812,7 @@ class AdaptiveModelTierRouter(ModelTierRouter):
         chosen = self._tiers[idx]
         is_local = self._resolve_is_local(chosen)
         lines = [
-            f"Task routing explanation",
+            "Task routing explanation",
             f"  task_type   : {ts.task_type}",
             f"  length      : {ts.length} chars",
             f"  complexity  : {ts.complexity:.3f}",
@@ -822,7 +823,7 @@ class AdaptiveModelTierRouter(ModelTierRouter):
             f"  → is_local  : {is_local}",
             f"  routes_seen : {self._route_count}",
             f"  last_adapted: {self._last_adapted_at or 'never'}",
-            f"  Thompson Sampling posteriors (α=successes, β=failures):",
+            "  Thompson Sampling posteriors (α=successes, β=failures):",
         ]
         bucket_idx = min(int(ts.composite * self._ts_n_buckets), self._ts_n_buckets - 1)
         for i, t in enumerate(self._tiers):

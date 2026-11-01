@@ -305,7 +305,7 @@ class EvalSuite:
                 context=row.get("metadata", {}),
             )
             scenarios.append(scen)
-            
+
         return cls(name=dataset_name, scenarios=scenarios, policy=policy_for_mode(policy))
 
     def filter(self, tags: list[str]) -> "EvalSuite":

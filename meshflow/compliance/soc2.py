@@ -416,7 +416,7 @@ class SOC2Checker:
         try:
             from meshflow.core.ledger import ReplayLedger
             import asyncio
-            ledger = ReplayLedger(":memory:")
+            ReplayLedger(":memory:")
             return True  # instantiation sufficient — chain starts valid
         except Exception:
             return False
@@ -426,7 +426,7 @@ class SOC2Checker:
             from meshflow.vault.store import VaultStore
             with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
                 path = f.name
-            store = VaultStore(db_path=path)
+            VaultStore(db_path=path)
             os.unlink(path)
             return True
         except Exception:

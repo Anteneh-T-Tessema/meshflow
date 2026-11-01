@@ -32,6 +32,10 @@ Programmatic usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
+import sqlite3
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -105,12 +109,6 @@ def discover_plugins(group: str | None = None) -> list[PluginInfo]:
         {PLUGIN_GROUPS[group]} if group and group in PLUGIN_GROUPS
         else set(PLUGIN_GROUPS.values())
     )
-
-    # Build a module→dist mapping for version lookup
-    try:
-        pkg_dist = packages_distributions()
-    except Exception:
-        pkg_dist = {}
 
     results: list[PluginInfo] = []
 
@@ -214,10 +212,6 @@ def list_plugins_table() -> list[dict[str, Any]]:
 
 # ── Vulnerability scanning ────────────────────────────────────────────────────
 
-import hashlib
-import json
-import sqlite3
-import time
 
 
 @dataclass

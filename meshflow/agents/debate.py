@@ -30,6 +30,7 @@ Usage::
 
 from __future__ import annotations
 
+import re as _re
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -334,7 +335,6 @@ class DebatePanel:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-import re as _re
 
 
 def _extract_confidence(text: str) -> float:

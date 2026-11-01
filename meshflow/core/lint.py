@@ -158,7 +158,7 @@ def _lint_workflow_data(data: dict[str, Any], source: str = "") -> list[LintIssu
 
     # ── Edge validation ───────────────────────────────────────────────────────
     graph: dict[str, set[str]] = {nid: set() for nid in node_ids}
-    back_edges: set[tuple[str, str]] = set()
+    set()
 
     for i, edge in enumerate(edges):
         if isinstance(edge, str):

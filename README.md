@@ -10,6 +10,9 @@
 
 **The production-safe infrastructure layer for multi-agent systems.**
 
+See [runtime guarantees and configuration](docs/governance/runtime-guarantees.md)
+for execution coverage, strict cost bounds, persistence, recovery, and audit formats.
+
 ```python
 from meshflow import Workflow, CostCap, Agent
 

@@ -32,6 +32,11 @@ def pytest_configure(config: Any) -> None:
 def pytest_collection_modifyitems(items: list[Any]) -> None:
     """Skip CLI subprocess tests if 'meshflow' binary is not on PATH."""
     import shutil
+    if os.environ.get("MESHFLOW_MOCK") == "1" and os.environ.get("MESHFLOW_RUN_LIVE") != "1":
+        skip_live = pytest.mark.skip(reason="Offline mock run: set MESHFLOW_RUN_LIVE=1 to opt into live tests")
+        for item in items:
+            if "live" in item.keywords:
+                item.add_marker(skip_live)
     meshflow_available = shutil.which("meshflow") is not None
     if meshflow_available:
         return  # nothing to skip

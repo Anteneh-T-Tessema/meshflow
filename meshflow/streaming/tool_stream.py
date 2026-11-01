@@ -196,7 +196,7 @@ async def stream_tool_calls(
     chunk_size:
         Characters per simulated streaming chunk (for sandbox/echo providers).
     """
-    start_time = time.monotonic()
+    time.monotonic()
     agent_name = getattr(agent, "name", str(agent))
 
     # Resolve tools from the agent

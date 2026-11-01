@@ -142,6 +142,9 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
         2. API key via KeyStore (DB-backed + static env keys)
         3. Legacy api_keys set / open mode
         """
+        if "_meshflow_principal" in request:
+            return cast(KeyRecord | None, request["_meshflow_principal"])
+
         # 1. OIDC Bearer token path
         try:
             from meshflow.security.oidc import get_oidc_middleware
@@ -171,7 +174,8 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
                 if auth.startswith("Bearer "):
                     return None
         except Exception:
-            pass  # If oidc module fails for any reason, fall through
+            if (request.headers.get("Authorization", "") or request.headers.get("authorization", "")).startswith("Bearer "):
+                return None  # An unavailable identity validator must not downgrade authentication.
 
         # 2. API-key path (KeyStore DB + static env keys)
         raw_key = _extract_raw_key(request.headers)
@@ -279,6 +283,8 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
             return web.Response(
                 status=401, text='{"error":"Unauthorized"}', content_type="application/json"
             )
+        if _require_role(request, "operator") is None:
+            return web.Response(status=403, content_type="application/json", text='{"error":"Operator role required"}')
         try:
             body = cast(dict[str, Any], await request.json())
         except Exception:
@@ -331,6 +337,8 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
             return web.Response(
                 status=401, text='{"error":"Unauthorized"}', content_type="application/json"
             )
+        if _require_role(request, "operator") is None:
+            return web.Response(status=403, content_type="application/json", text='{"error":"Operator role required"}')
         try:
             body = cast(dict[str, Any], await request.json())
         except Exception:
@@ -1272,7 +1280,20 @@ async def _build_app(api_keys: set[str], ledger_path: str = "meshflow_runs.db") 
             text=json.dumps(report),
         )
 
-    app = web.Application()
+    @web.middleware
+    async def bind_audit_scope(request: Any, handler: Any) -> Any:
+        from meshflow.core.session import ledger_scope
+        principal = _get_principal(request)
+        request["_meshflow_principal"] = principal
+        with ledger_scope(ledger_path, getattr(principal, "tenant_id", "") or "default"):
+            return await handler(request)
+
+    app = web.Application(middlewares=[bind_audit_scope])
+
+    async def close_ledgers(application: Any) -> None:
+        for handle in [ledger, *_tenant_ledgers.values()]:
+            await handle.aclose()
+    app.on_cleanup.append(close_ledgers)
     app.router.add_get("/health", health)
     app.router.add_get("/health/live", health_live)
     app.router.add_get("/health/ready", health_ready)

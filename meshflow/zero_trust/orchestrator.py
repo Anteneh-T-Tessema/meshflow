@@ -351,18 +351,18 @@ class ZeroTrustOrchestrator:
         if client is None:
             from meshflow.cloud.client import get_cloud_client
             client = get_cloud_client()
-            
+
         policy_data = client.get_policy()
         if not policy_data:
             # Fall back to Enterprise if not reachable
             return cls.for_tier(ZeroTrustTier.ENTERPRISE)
-            
+
         # Extract fields from cloud policy data
         kwargs = {}
         for k, v in policy_data.items():
             if hasattr(ZeroTrustPolicy, k) and k != "tier":
                 kwargs[k] = v
-                
+
         # Parse tier if present
         tier_str = policy_data.get("tier", "enterprise")
         try:
@@ -370,7 +370,7 @@ class ZeroTrustOrchestrator:
         except ValueError:
             tier = ZeroTrustTier.ENTERPRISE
         kwargs["tier"] = tier
-        
+
         policy = ZeroTrustPolicy(**kwargs)
         return cls(policy=policy)
 

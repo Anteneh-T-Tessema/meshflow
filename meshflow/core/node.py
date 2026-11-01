@@ -182,6 +182,7 @@ class MeshNode:
         return cls(
             id=agent_id,
             kind=NodeKind.NATIVE,
+            metadata={"request_budget_managed": True},
             risk_profile=RiskTier.READ_ONLY,
             capabilities=["text_generation", "reasoning"],
             _runner=runner,

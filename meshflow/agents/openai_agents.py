@@ -530,7 +530,7 @@ class Runner:
         mf_tools = Runner._resolve_tools(agent, ctx, effective_hooks)
 
         # Resolve handoff tools
-        handoff_map: dict[str, Handoff] = {h.tool_name: h for h in agent.handoffs}
+        {h.tool_name: h for h in agent.handoffs}
         handoff_tools = [
             FunctionTool(
                 fn=Runner._make_handoff_fn(h, ctx, effective_hooks),
