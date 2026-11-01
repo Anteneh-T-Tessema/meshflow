@@ -201,8 +201,10 @@ Follow-up authorization expanded validation to hosted CI and local Docker.
 Runtime changes were copied into the isolated worktree
 `/tmp/meshflow-ci-review`, branch `codex/runtime-validation-20261101`, and
 submitted as [draft PR #4](https://github.com/Anteneh-T-Tessema/meshflow/pull/4).
-Staged editor, Postman, launch, and live-test edits in the original checkout
-were excluded and preserved. The separate website review was also excluded.
+Staged editor, Postman, and live-test edits in the original checkout were
+excluded and preserved. The existing one-line launch-note addition was later
+included because hosted documentation tests require it; its staged state in the
+original checkout remains unchanged. The separate website review was also excluded.
 
 Actual container deployment found and fixed two startup/storage defects:
 `meshflow serve` conditionally imported `os` before an unconditional use, and

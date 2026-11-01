@@ -46,6 +46,7 @@ print(result.output)
 - **Durable Workers** — `@durable_task`, `WorkerDaemon`, and `CronTrigger` with SQLite task queue persistence.
 - **StructuredJudge & EvalCI** — rubric-based trajectory evaluation with CI build failure on cost or safety regression.
 - **Adapters Parity** — full compatibility with AutoGen 0.4+, OpenAI Agents SDK, CrewAI, and LangGraph.
+- **Functional API** — `@traceable` decorator and LangfuseExporter support.
 
 **The rest of the stack:**
 
