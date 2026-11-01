@@ -12,6 +12,20 @@ from meshflow.runtime.server import _build_app
 from meshflow.security.api_keys import KeyStore
 
 
+def test_serve_cli_starts_without_a_policy_file(monkeypatch):
+    from meshflow.cli.main import _cmd_serve, build_parser
+    from meshflow.runtime import server
+
+    calls = []
+    monkeypatch.delenv("MESHFLOW_OIDC_ISSUER", raising=False)
+    monkeypatch.setattr(server, "serve", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(server, "_load_api_keys", lambda: set())
+    _cmd_serve(build_parser().parse_args(["serve", "--port", "8123"]))
+    assert len(calls) == 1
+    assert calls[0]["port"] == 8123
+    assert calls[0]["policy_file"] == ""
+
+
 @pytest.mark.asyncio
 async def test_http_auth_tenant_scope_and_concurrent_reads(tmp_path, make_step_record):
     path = str(tmp_path / "staging.db")

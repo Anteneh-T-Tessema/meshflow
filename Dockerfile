@@ -24,6 +24,7 @@ COPY meshflow/ ./meshflow/
 RUN mkdir -p /data && chown meshflow:meshflow /data
 
 USER meshflow
+WORKDIR /data
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 ENV MESHFLOW_API_KEYS=""

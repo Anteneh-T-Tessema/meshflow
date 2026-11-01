@@ -2923,13 +2923,13 @@ async def _async_trace(args: argparse.Namespace) -> None:
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:
+    import os
     from meshflow.runtime.server import serve, _load_api_keys
 
     keys: set[str] = set(args.api_keys) if getattr(args, "api_keys", None) else _load_api_keys()
 
     policy_file = getattr(args, "policy_file", "")
     if policy_file:
-        import os
         if not os.path.exists(policy_file):
             print(f"  Error: policy file not found: {policy_file}")
             sys.exit(1)

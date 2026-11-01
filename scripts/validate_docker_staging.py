@@ -55,7 +55,7 @@ def main() -> None:
                 with urlopen(req, timeout=20) as response:
                     return response.status, json.loads(response.read())
             except HTTPError as error:
-                return error.code, None
+                return error.code, json.loads(error.read())
 
         def ready():
             for _ in range(80):
@@ -75,8 +75,6 @@ def main() -> None:
         ready()
         check(request("/health/live")[0] == 200, "liveness")
         check(request("/health/ready")[0] == 200, "readiness")
-        check(request("/traces")[0] == 401, "anonymous trace denial")
-        check(request("/traces", "invalid")[0] == 401, "invalid-key denial")
         # Credentials are created in staging and kept in process memory only.
         setup = '''
 import json
@@ -89,6 +87,8 @@ print(json.dumps({
 }))
 '''
         keys = json.loads(docker("exec", name, "python", "-c", setup))
+        check(request("/traces")[0] == 401, "anonymous trace denial")
+        check(request("/traces", "invalid")[0] == 401, "invalid-key denial")
         operator_id, operator_key = keys["operator"]
         viewer_key, other_key = keys["viewer"][1], keys["other"][1]
         task = {"task": "Summarize quarterly revenue", "policy": {
@@ -97,6 +97,10 @@ print(json.dumps({
         for route in ("/run", "/stream"):
             check(request(route, viewer_key, task)[0] == 403, f"viewer denial {route}")
         status, result = request("/run", operator_key, task)
+        receipt["completion_http_status"] = status
+        if status != 200:
+            # This isolated deployment has no provider credentials or user data.
+            receipt["completion_error"] = result
         check(status == 200, "operator completion")
         run_id = result["run_id"]
         receipt["run_id"] = run_id
@@ -124,6 +128,12 @@ print(json.dumps({
         raise
     finally:
         if container_created:
+            if receipt.get("status") == "failed":
+                logs = subprocess.run(
+                    ["docker", "logs", name], capture_output=True, text=True, check=False
+                )
+                args.receipt.parent.mkdir(parents=True, exist_ok=True)
+                args.receipt.with_suffix(".container.log").write_text(logs.stdout + logs.stderr)
             docker("rm", "--force", name)
         if volume_created:
             docker("volume", "rm", volume)
