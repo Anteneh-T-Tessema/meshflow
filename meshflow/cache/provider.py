@@ -52,7 +52,8 @@ class CachedProvider:
             return entry.response, entry.tokens, 0.0
 
         # 3. Miss → call through
-        response, tokens, cost = await self._provider.complete(
+        from meshflow.core.request_budget import budgeted_completion
+        response, tokens, cost = await budgeted_completion(self._provider, "complete",
             model=model,
             messages=messages,
             system=system,

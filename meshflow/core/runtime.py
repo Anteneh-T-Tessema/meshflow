@@ -75,6 +75,35 @@ def _hash_record(
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def record_hash(record: Any, *, leaf: bool = False) -> str:
+    """Hash the complete persisted v2 record, or verify a legacy v1 record."""
+    from dataclasses import asdict, is_dataclass
+    data = asdict(record) if is_dataclass(record) else dict(record)
+    metadata = dict(data.get("metadata") or {})
+    if metadata.get("hash_version") != 2:
+        data["blocked"] = bool(data.get("blocked", False))
+        return _hash_record(**{key: data.get(key, "") for key in (
+            "run_id", "step_id", "node_id", "input_task", "output_content",
+            "verdict", "blocked", "timestamp", "prev_hash",
+        )} | ({"prev_hash": ""} if leaf else {}))
+    if leaf:
+        metadata.pop("merkle_proof", None)
+    fields = (
+        "run_id", "step_id", "node_id", "node_kind", "input_task", "output_content",
+        "verdict", "blocked", "block_reason", "uncertainty", "cost_usd",
+        "tokens_used", "carbon_gco2", "duration_ms", "timestamp", "prev_hash",
+    )
+    payload = {key: data[key] for key in fields}
+    payload["blocked"] = bool(payload["blocked"])
+    for key in ("uncertainty", "cost_usd", "carbon_gco2", "duration_ms"):
+        payload[key] = float(payload[key])
+    payload["metadata"] = metadata
+    if leaf:
+        payload["prev_hash"] = ""
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
 @dataclass
 class StepRecord:
     """Immutable governed-step record — written to the ReplayLedger.
@@ -105,17 +134,9 @@ class StepRecord:
     entry_hash: str = field(default="", init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.entry_hash = _hash_record(
-            self.run_id,
-            self.step_id,
-            self.node_id,
-            self.input_task,
-            self.output_content,
-            self.verdict,
-            self.blocked,
-            self.timestamp,
-            self.prev_hash,
-        )
+        self.metadata = dict(self.metadata)
+        self.metadata.setdefault("hash_version", 2)
+        self.entry_hash = record_hash(self)
 
 
 @dataclass
@@ -185,6 +206,8 @@ class StepRuntime:
         self._compliance_guard = compliance_guard
         self._zero_trust = zero_trust  # ZeroTrustOrchestrator | None
         self.tool_call_interceptor = tool_call_interceptor  # ToolCallInterceptor | None
+        import asyncio
+        self._record_lock = asyncio.Lock()
         self._prev_hash = ""  # grows with each committed record
         self._cache_read_tokens: int = 0       # accumulated across all steps in the run
         self._cache_creation_tokens: int = 0   # accumulated across all steps in the run
@@ -201,6 +224,8 @@ class StepRuntime:
 
     async def close(self) -> None:
         """Clean up resources associated with this run runtime."""
+        if self._identity is not None:
+            self._identity.revoke_all(reason="run_complete")
         if self._telemetry is not None:
             try:
                 self._telemetry.shutdown()
@@ -269,13 +294,16 @@ class StepRuntime:
                 zt_policy = getattr(self._zero_trust, "_policy", None)
                 if zt_policy and getattr(zt_policy, "continuous_auth", False):
                     cont_auth = getattr(self._zero_trust, "_cont_auth", None)
+                    if cont_auth is None:
+                        raise RuntimeError("Continuous authorization is enabled but unavailable")
                     if cont_auth:
                         decision = cont_auth.authorize(node.id, action="run:step")
                         if not decision.allowed:
                             blocked = True
                             block_reason = f"zero_trust:auth_denied:{decision.reason}"
-            except Exception:
-                pass
+            except Exception as exc:
+                blocked = True
+                block_reason = f"zero_trust:control_error:{type(exc).__name__}"
 
         # 1c. Zero Trust — apply spotlighting to input
         if not blocked and self._zero_trust:
@@ -288,8 +316,9 @@ class StepRuntime:
                         task=_spotlight_ctx.wrap(node_input.task),
                         **{k: v for k, v in node_input.__dict__.items() if k != "task"},
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                blocked = True
+                block_reason = f"zero_trust:spotlight_error:{type(exc).__name__}"
 
         # 2. Circuit breaker
         if not blocked and self._cbs:
@@ -392,7 +421,23 @@ class StepRuntime:
         if self._ledger is not None:
             node_input.context["_ledger"] = self._ledger
 
+        _step_reservation = None
+        if not blocked and not paused and self._budget and self._policy.strict_budget and not node.metadata.get("request_budget_managed"):
+            try:
+                if "max_cost_usd" not in node.metadata or "max_tokens" not in node.metadata:
+                    raise BudgetExceededError("External nodes require max_cost_usd and max_tokens bounds")
+                _step_reservation = self._budget.reserve(float(node.metadata["max_cost_usd"]), int(node.metadata["max_tokens"]))
+            except BudgetExceededError as exc:
+                blocked = True
+                block_reason = f"budget:unbounded_or_exhausted:{exc}"
+
+        from meshflow.core.request_budget import request_usage
+        _parent_request_stats = request_usage.get()
+        _request_stats: dict[str, Any] = {"cost_usd": 0.0, "tokens": 0}
         if not blocked and not paused:
+            from meshflow.core.request_budget import active_budget, request_usage
+            _budget_token = active_budget.set(self._budget)
+            _usage_token = request_usage.set(_request_stats)
             try:
                 _step_timeout = getattr(self._policy, "step_timeout_s", 0.0)
                 if _step_timeout and _step_timeout > 0:
@@ -436,14 +481,36 @@ class StepRuntime:
                 if self._cbs and node.id in self._cbs:
                     self._cbs[node.id].record_failure(node.id)
 
+            finally:
+                active_budget.reset(_budget_token)
+                request_usage.reset(_usage_token)
+
         # ── POST_STEP ─────────────────────────────────────────────────────────
 
+        if output.structured.get("blocked"):
+            blocked = True
+            block_reason = str(output.structured.get("blocked_by") or output.structured.get("guardrail") or "node:blocked")
         tokens_used = output.tokens_used
         uncertainty_val = 0.0
         cost_usd = 0.0
         if output.structured and isinstance(output.structured, dict):
             cost_usd = output.structured.get("cost_usd", 0.0)
+        cost_usd = max(cost_usd - _request_stats.get("nested_cost_usd", 0.0), _request_stats["cost_usd"], 0.0)
+        tokens_used = max(tokens_used - _request_stats.get("nested_tokens", 0), _request_stats["tokens"], 0)
         carbon_gco2 = 0.0
+
+        if _step_reservation is not None:
+            try:
+                if block_reason.startswith(("node_exception:", "step_timeout:")):
+                    reserved_cost, reserved_tokens = self._budget._reserved[_step_reservation]
+                    self._budget.settle(_step_reservation)
+                    cost_usd = max(cost_usd, reserved_cost)
+                    tokens_used = max(tokens_used, reserved_tokens)
+                else:
+                    self._budget.settle(_step_reservation, cost_usd, tokens_used)
+            except BudgetExceededError:
+                blocked = True
+                block_reason = "budget:provider_bound_exceeded"
 
         # 9. Uncertainty scoring + adaptive response
         if not blocked and not paused and self._uncertainty and self._policy.enable_uncertainty:
@@ -474,7 +541,8 @@ class StepRuntime:
             try:
                 self._budget.charge(usd=cost_usd, tokens=tokens_used)
             except BudgetExceededError:
-                pass
+                blocked = True
+                block_reason = "budget:exceeded"
 
         if self._eco and tokens_used:
             eco_result = self._eco.estimate_and_charge(tokens_used, node.id)
@@ -578,39 +646,41 @@ class StepRuntime:
         if _think_tok:
             _meta["thinking_tokens"] = _think_tok
 
-        record = StepRecord(
-            run_id=self._run_id,
-            step_id=step_id,
-            node_id=node.id,
-            node_kind=node.kind.value,
-            input_task=node_input.task[:500],
-            output_content=ledger_output,
-            verdict=verdict,
-            blocked=blocked,
-            block_reason=block_reason,
-            uncertainty=uncertainty_val,
-            cost_usd=cost_usd,
-            tokens_used=tokens_used,
-            carbon_gco2=carbon_gco2,
-            duration_ms=duration_ms,
-            timestamp=_now_iso(),
-            prev_hash=self._prev_hash,
-            metadata=_meta,
-        )
-        # Advance the chain pointer for the next record
-        self._prev_hash = record.entry_hash
-
-        # Calibration feedback: record actual outcome so the tracker corrects bias
-        if self._uncertainty and self._policy.enable_uncertainty:
-            self._uncertainty._calibration.record(
-                node.id,
-                stated=output.confidence,
-                actual=1.0 if not blocked else 0.0,
+        async with self._record_lock:
+            record = StepRecord(
+                run_id=self._run_id,
+                step_id=step_id,
+                node_id=node.id,
+                node_kind=node.kind.value,
+                input_task=node_input.task[:500],
+                output_content=ledger_output,
+                verdict=verdict,
+                blocked=blocked,
+                block_reason=block_reason,
+                uncertainty=uncertainty_val,
+                cost_usd=cost_usd,
+                tokens_used=tokens_used,
+                carbon_gco2=carbon_gco2,
+                duration_ms=duration_ms,
+                timestamp=_now_iso(),
+                prev_hash=self._prev_hash,
+                metadata=_meta,
             )
+            # Calibration feedback: record actual outcome so the tracker corrects bias
+            if self._uncertainty and self._policy.enable_uncertainty:
+                self._uncertainty._calibration.record(
+                    node.id,
+                    stated=output.confidence,
+                    actual=1.0 if not blocked else 0.0,
+                )
 
-        # 11. Audit ledger write
-        if self._ledger:
-            await self._ledger.write(record)
+            # 11. Audit ledger write
+            if self._ledger:
+                await self._ledger.write(record)
+            self._prev_hash = record.entry_hash
+            if _parent_request_stats is not None:
+                _parent_request_stats["nested_cost_usd"] = _parent_request_stats.get("nested_cost_usd", 0.0) + record.cost_usd + _request_stats.get("nested_cost_usd", 0.0)
+                _parent_request_stats["nested_tokens"] = _parent_request_stats.get("nested_tokens", 0) + record.tokens_used + _request_stats.get("nested_tokens", 0)
 
         # SLA latency recording (best-effort, never raises)
         try:

@@ -119,7 +119,7 @@ class MemoryConsolidator:
         entities = [entity] if entity else store.list_entities()
         facts_before = sum(len(store.recall_entity(e)) for e in entities)
 
-        expired = store.purge_expired()
+        store.purge_expired()
         method = "extractive"
 
         for ent in entities:

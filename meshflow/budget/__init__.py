@@ -9,6 +9,7 @@ from meshflow.budget.store import (
     VALID_PERIODS,
 )
 from meshflow.budget.guardrail import BudgetGuardrail
+from meshflow.budget.reservations import ReservationStore
 
 __all__ = [
     "BudgetAccount",
@@ -20,4 +21,5 @@ __all__ = [
     "period_key",
     "VALID_PERIODS",
     "BudgetGuardrail",
+    "ReservationStore",
 ]

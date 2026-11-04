@@ -1,0 +1,24 @@
+{
+  "image": "meshflow-runtime-validation:20261101",
+  "checks": [
+    "liveness",
+    "readiness",
+    "anonymous trace denial",
+    "invalid-key denial",
+    "viewer denial /run",
+    "viewer denial /stream",
+    "operator completion",
+    "completion-to-trace round trip",
+    "authenticated tenant ownership",
+    "cross-tenant trace denial",
+    "32 concurrent authorized reads",
+    "audit survives server restart",
+    "revoked-key denial"
+  ],
+  "provider": "offline mock",
+  "image_id": "sha256:938e22d7cff09adeaab3bf022f2302f1cdd084c7211cff860df8520f5fa94fac",
+  "completion_http_status": 200,
+  "run_id": "9377a11f-7c4e-4902-b503-778aee6de29a",
+  "status": "passed",
+  "cleanup": "completed"
+}

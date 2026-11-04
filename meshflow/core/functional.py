@@ -195,9 +195,6 @@ class Entrypoint:
             if thread_id and self._checkpointer is not None:
                 persisted = self._checkpointer.get(thread_id) or {}
                 inputs = persisted.get("__inputs__", inputs)
-            resume_value = command.resume
-        else:
-            resume_value = None
 
         # Persist inputs for potential future resumes
         if thread_id and self._checkpointer is not None:

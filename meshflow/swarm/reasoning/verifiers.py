@@ -1,4 +1,5 @@
 """Verifiers for general reasoning task domains."""
+
 from __future__ import annotations
 
 import re
@@ -9,10 +10,14 @@ from meshflow.swarm.verifiers import DeterministicVerifier, VerificationResult
 
 class LinearSystemVerifier(DeterministicVerifier):
     def verify(self, output: Any, context: Dict) -> VerificationResult:
-        a11 = output.get("a11", 1.0); a12 = output.get("a12", 0.0)
-        a21 = output.get("a21", 0.0); a22 = output.get("a22", 1.0)
-        b1 = output.get("b1", 0.0); b2 = output.get("b2", 0.0)
-        x = output.get("x", 0.0); y = output.get("y", 0.0)
+        a11 = output.get("a11", 1.0)
+        a12 = output.get("a12", 0.0)
+        a21 = output.get("a21", 0.0)
+        a22 = output.get("a22", 1.0)
+        b1 = output.get("b1", 0.0)
+        b2 = output.get("b2", 0.0)
+        x = output.get("x", 0.0)
+        y = output.get("y", 0.0)
         tol = context.get("tolerance", 0.01)
         violations = []
         r1 = abs(a11 * x + a12 * y - b1)
@@ -31,13 +36,15 @@ class LinearSystemVerifier(DeterministicVerifier):
 
 class MultiCalcVerifier(DeterministicVerifier):
     def verify(self, output: Any, context: Dict) -> VerificationResult:
-        a = output.get("a", 0.0); b = output.get("b", 0.0); c = output.get("c", 1.0)
+        a = output.get("a", 0.0)
+        b = output.get("b", 0.0)
+        c = output.get("c", 1.0)
         tol = context.get("tolerance", 0.01)
         violations = []
         if abs(output.get("sum_abc", 0.0) - (a + b + c)) > tol:
-            violations.append(f"sum_abc={output.get('sum_abc')} ≠ {a+b+c:.4f}")
+            violations.append(f"sum_abc={output.get('sum_abc')} ≠ {a + b + c:.4f}")
         if abs(output.get("product_ab", 0.0) - (a * b)) > tol:
-            violations.append(f"product_ab={output.get('product_ab')} ≠ {a*b:.4f}")
+            violations.append(f"product_ab={output.get('product_ab')} ≠ {a * b:.4f}")
         if abs(c) > 1e-10:
             correct_ratio = round(a / c, 6)
             if abs(output.get("ratio_ac", 0.0) - correct_ratio) > tol:
@@ -53,15 +60,19 @@ class MultiCalcVerifier(DeterministicVerifier):
 
 class LogicRulesVerifier(DeterministicVerifier):
     def verify(self, output: Any, context: Dict) -> VerificationResult:
-        facts = output.get("facts", {}); rules = output.get("rules", [])
+        facts = output.get("facts", {})
+        rules = output.get("rules", [])
         derived = output.get("derived", {})
         violations = []
         for i, rule in enumerate(rules):
-            ant = rule.get("if"); con = rule.get("then")
+            ant = rule.get("if")
+            con = rule.get("then")
             expected = facts.get(ant, False)
             actual = derived.get(con)
             if actual != expected:
-                violations.append(f"Rule {i+1}: '{ant}'={expected} → '{con}' should be {expected}, got {actual}")
+                violations.append(
+                    f"Rule {i + 1}: '{ant}'={expected} → '{con}' should be {expected}, got {actual}"
+                )
         return VerificationResult(
             is_valid=not violations,
             confidence=1.0 if not violations else max(0.2, 1.0 - 0.3 * len(violations)),
@@ -71,13 +82,18 @@ class LogicRulesVerifier(DeterministicVerifier):
 
 class SchedulePlanVerifier(DeterministicVerifier):
     def verify(self, output: Any, context: Dict) -> VerificationResult:
-        events = output.get("events", []); violations = []
+        events = output.get("events", [])
+        violations = []
         for ev in events:
             eid = ev.get("id", "?")
             if ev.get("assigned_slot") != ev.get("required_slot"):
-                violations.append(f"Event {eid}: slot {ev.get('assigned_slot')} ≠ required {ev.get('required_slot')}")
+                violations.append(
+                    f"Event {eid}: slot {ev.get('assigned_slot')} ≠ required {ev.get('required_slot')}"
+                )
             if ev.get("n_attendees", 0) > ev.get("room_capacity", 0):
-                violations.append(f"Event {eid}: {ev.get('n_attendees')} attendees > capacity {ev.get('room_capacity')}")
+                violations.append(
+                    f"Event {eid}: {ev.get('n_attendees')} attendees > capacity {ev.get('room_capacity')}"
+                )
             if not ev.get("teacher_available", True):
                 violations.append(f"Event {eid}: assigned teacher is unavailable")
             if ev.get("priority_met") is False:
@@ -96,7 +112,8 @@ _VALID_STATUSES = {"active", "inactive", "pending", "suspended"}
 class DataQualityVerifier(DeterministicVerifier):
     def verify(self, output: Any, context: Dict) -> VerificationResult:
         records = output.get("records", [])
-        min_age = context.get("min_age", 0); max_age = context.get("max_age", 120)
+        min_age = context.get("min_age", 0)
+        max_age = context.get("max_age", 120)
         violations = []
         for rec in records:
             rid = rec.get("id", "?")
@@ -122,8 +139,10 @@ class DataQualityVerifier(DeterministicVerifier):
 
 class CausalChainVerifier(DeterministicVerifier):
     def verify(self, output: Any, context: Dict) -> VerificationResult:
-        observed = output.get("observed", {}); causal_model = output.get("causal_model", {})
-        active_causes = output.get("active_causes", {}); violations: List[str] = []
+        observed = output.get("observed", {})
+        causal_model = output.get("causal_model", {})
+        active_causes = output.get("active_causes", {})
+        violations: List[str] = []
         for symptom, present in observed.items():
             if not present:
                 continue
@@ -133,13 +152,17 @@ class CausalChainVerifier(DeterministicVerifier):
                 if symptom in effects
             )
             if not explained:
-                violations.append(f"Symptom '{symptom}' is unexplained — no active cause produces it")
+                violations.append(
+                    f"Symptom '{symptom}' is unexplained — no active cause produces it"
+                )
         for cause, active in active_causes.items():
             if not active:
                 continue
             effects = causal_model.get(cause, [])
             if not any(observed.get(e, False) for e in effects):
-                violations.append(f"Cause '{cause}' is active but none of its symptoms are observed")
+                violations.append(
+                    f"Cause '{cause}' is active but none of its symptoms are observed"
+                )
         return VerificationResult(
             is_valid=not violations,
             confidence=1.0 if not violations else max(0.15, 1.0 - 0.25 * len(violations)),
@@ -149,18 +172,23 @@ class CausalChainVerifier(DeterministicVerifier):
 
 class ConstraintCSPVerifier(DeterministicVerifier):
     def verify(self, output: Any, context: Dict) -> VerificationResult:
-        assignments = output.get("assignments", {}); constraints = output.get("constraints", [])
+        assignments = output.get("assignments", {})
+        constraints = output.get("constraints", [])
         violations: List[str] = []
         for c in constraints:
             ctype = c.get("type")
             if ctype == "not_equal":
-                l, r = c["left"], c["right"]
-                if assignments.get(l) == assignments.get(r):
-                    violations.append(f"not_equal violated: {l}={assignments.get(l)} == {r}={assignments.get(r)}")
+                left_var, r = c["left"], c["right"]
+                if assignments.get(left_var) == assignments.get(r):
+                    violations.append(
+                        f"not_equal violated: {left_var}={assignments.get(left_var)} == {r}={assignments.get(r)}"
+                    )
             elif ctype == "less_than":
-                l, r = c["left"], c["right"]
-                if not (assignments.get(l, 0) < assignments.get(r, 0)):
-                    violations.append(f"less_than violated: {l}={assignments.get(l)} ≮ {r}={assignments.get(r)}")
+                left_var, r = c["left"], c["right"]
+                if not (assignments.get(left_var, 0) < assignments.get(r, 0)):
+                    violations.append(
+                        f"less_than violated: {left_var}={assignments.get(left_var)} ≮ {r}={assignments.get(r)}"
+                    )
             elif ctype == "in_range":
                 v, lo, hi = c["var"], c["low"], c["high"]
                 val = assignments.get(v, 0)
@@ -169,9 +197,15 @@ class ConstraintCSPVerifier(DeterministicVerifier):
             elif ctype == "sum_bound":
                 total = sum(assignments.get(v, 0) for v in c.get("vars", []))
                 op, bound = c.get("op", "<="), c.get("bound", 0)
-                ok = (op == "<=" and total <= bound) or (op == ">=" and total >= bound) or (op == "==" and total == bound)
+                ok = (
+                    (op == "<=" and total <= bound)
+                    or (op == ">=" and total >= bound)
+                    or (op == "==" and total == bound)
+                )
                 if not ok:
-                    violations.append(f"sum_bound violated: sum({c.get('vars')})={total} not {op} {bound}")
+                    violations.append(
+                        f"sum_bound violated: sum({c.get('vars')})={total} not {op} {bound}"
+                    )
         return VerificationResult(
             is_valid=not violations,
             confidence=1.0 if not violations else max(0.15, 1.0 - 0.2 * len(violations)),
@@ -181,10 +215,14 @@ class ConstraintCSPVerifier(DeterministicVerifier):
 
 class BudgetAllocVerifier(DeterministicVerifier):
     def verify(self, output: Any, context: Dict) -> VerificationResult:
-        categories = output.get("categories", {}); total_cap = output.get("total_cap", float("inf"))
-        violations: List[str] = []; total = 0.0
+        categories = output.get("categories", {})
+        total_cap = output.get("total_cap", float("inf"))
+        violations: List[str] = []
+        total = 0.0
         for name, cat in categories.items():
-            alloc = cat.get("allocated", 0.0); mn = cat.get("min", 0.0); mx = cat.get("max", float("inf"))
+            alloc = cat.get("allocated", 0.0)
+            mn = cat.get("min", 0.0)
+            mx = cat.get("max", float("inf"))
             total += alloc
             if alloc < mn:
                 violations.append(f"Category '{name}': allocated {alloc:.1f} < min {mn:.1f}")

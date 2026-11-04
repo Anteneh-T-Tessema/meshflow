@@ -6,6 +6,8 @@ All constraints declared in Policy are enforced here, not scattered across agent
 from __future__ import annotations
 
 import time
+import math
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -35,8 +37,86 @@ class BudgetTracker:
     _carbon_g: float = 0.0
     _start: float = field(default_factory=time.monotonic)
 
+    _reserved: dict[str, tuple[float, int]] = field(default_factory=dict, repr=False)
+    _provider_usd: float = 0.0
+    _provider_tokens: int = 0
+    _lock: Any = field(default_factory=threading.RLock, repr=False)
+    _shared_store: Any = field(default=None, init=False, repr=False)
+
     def __post_init__(self) -> None:
         self._start = time.monotonic()
+        if self.policy.shared_budget_db or self.policy.shared_budget_id:
+            if not self.policy.strict_budget:
+                raise ValueError("Shared budgets require strict_budget=True")
+            from meshflow.budget.reservations import ReservationStore
+
+            self._shared_store = ReservationStore(
+                self.policy.shared_budget_db,
+                self.policy.shared_budget_id,
+                self.policy.budget_usd
+                if self.policy.shared_budget_usd is None
+                else self.policy.shared_budget_usd,
+                self.policy.budget_tokens
+                if self.policy.shared_budget_tokens is None
+                else self.policy.shared_budget_tokens,
+            )
+
+    def reserve(self, usd: float, tokens: int) -> str:
+        """Atomically reserve a bounded request before dispatch across branches."""
+        import uuid
+
+        if not math.isfinite(usd) or usd < 0 or tokens < 0:
+            raise ValueError("Budget reservations must be finite and non-negative")
+        with self._lock:
+            self._check()
+            available_usd = self.policy.budget_usd - max(self._usd, self._provider_usd)
+            available_tokens = self.policy.budget_tokens - max(self._tokens, self._provider_tokens)
+            if usd + sum(r[0] for r in self._reserved.values()) > available_usd + 1e-12:
+                raise BudgetExceededError("Insufficient USD budget for request reservation")
+            if tokens + sum(r[1] for r in self._reserved.values()) > available_tokens:
+                raise BudgetExceededError("Insufficient token budget for request reservation")
+            key = (
+                self._shared_store.reserve(usd, tokens)
+                if self._shared_store is not None
+                else str(uuid.uuid4())
+            )
+            self._reserved[key] = (usd, tokens)
+            return key
+
+    def settle(self, key: str, usd: float | None = None, tokens: int | None = None) -> None:
+        """Settle actual usage; ambiguous failures consume their full reservation."""
+        with self._lock:
+            reserved_usd, reserved_tokens = self._reserved[key]
+            actual_usd = reserved_usd if usd is None else usd
+            actual_tokens = reserved_tokens if tokens is None else tokens
+            invalid = (
+                not math.isfinite(actual_usd)
+                or actual_usd < 0
+                or not isinstance(actual_tokens, int)
+                or actual_tokens < 0
+            )
+            if invalid:
+                actual_usd, actual_tokens = reserved_usd, reserved_tokens
+            exceeded = actual_usd > reserved_usd + 1e-12 or actual_tokens > reserved_tokens
+            if self._shared_store is not None:
+                try:
+                    self._shared_store.settle(key, actual_usd, actual_tokens)
+                except BudgetExceededError:
+                    exceeded = True  # The durable store committed actual over-bound spend.
+            self._reserved.pop(key)
+            self._provider_usd += actual_usd
+            self._provider_tokens += actual_tokens
+            if invalid:
+                raise ValueError("Invalid provider usage; full reservation retained")
+            if exceeded:
+                raise BudgetExceededError("Provider exceeded its reserved request bound")
+
+    def release(self, key: str) -> None:
+        """Release a reservation only when dispatch is known not to have occurred."""
+        with self._lock:
+            if self._shared_store is not None:
+                self._shared_store.release(key)
+            self._reserved.pop(key)
 
     def charge(self, usd: float, tokens: int, carbon_g: float = 0.0) -> None:
         self._usd += usd

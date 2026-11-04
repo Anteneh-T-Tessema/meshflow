@@ -97,7 +97,15 @@ class Team:
         workflow = self._build_workflow()
         return await Mesh(policy=self._policy).run_workflow(workflow, task=task, **(context or {}))
 
-    async def _run_with_confidence_check(
+    async def _run_with_confidence_check(self, task: str, context: dict[str, Any] | None) -> WorkflowResult:
+        from meshflow.core.session import GovernedSession, active_session
+        session = active_session.get()
+        if session is not None:
+            return session.finish(await self._confidence_impl(task, context))
+        async with GovernedSession(self._policy, (context or {}).get("ledger_db")) as session:
+            return session.finish(await self._confidence_impl(task, context))
+
+    async def _confidence_impl(
         self,
         task: str,
         context: dict[str, Any] | None,
@@ -105,14 +113,20 @@ class Team:
         """Sequential execution with early exit when confidence threshold is met."""
         from meshflow.core.workflow import WorkflowResult
 
+        from meshflow.core.session import run_agent
+
         accumulated = ""
         stopped_at: int | None = None
 
         for i, agent in enumerate(self.agents):
             agent_task = task if i == 0 else f"{task}\n\nPrior output:\n{accumulated}"
-            result = await agent.run(agent_task, context or {})
-            output = result.get("output", "") if isinstance(result, dict) else str(result)
+            result = await run_agent(agent, agent_task, context or {})
+            output = result.get("result", result.get("output", "")) if isinstance(result, dict) else str(result)
             accumulated = output
+
+            if isinstance(result, dict) and (result.get("blocked") or result.get("paused_for_human")):
+                stopped_at = i
+                break
 
             confidence = _parse_confidence(output)
             if self.stop_on_confidence is not None and confidence >= self.stop_on_confidence:

@@ -28,7 +28,7 @@ def steps_to_mermaid(steps: list[dict[str, Any]], run_id: str = "") -> str:
         nid = step.get("node_id", f"step_{i}")
         safe = _safe_id(nid, i)
         blocked = step.get("blocked", False)
-        verdict = step.get("verdict", "commit")
+        step.get("verdict", "commit")
         tokens = step.get("tokens_used", 0)
         cost = step.get("cost_usd", 0.0)
         shape_open, shape_close = ("[", "]") if not blocked else ("([", "])")

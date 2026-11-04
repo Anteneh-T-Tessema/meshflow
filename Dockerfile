@@ -2,6 +2,7 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /build
 COPY pyproject.toml .
+COPY README.md LICENSE ./
 COPY meshflow/ ./meshflow/
 
 RUN pip install --no-cache-dir --upgrade pip && \
@@ -23,6 +24,7 @@ COPY meshflow/ ./meshflow/
 RUN mkdir -p /data && chown meshflow:meshflow /data
 
 USER meshflow
+WORKDIR /data
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 ENV MESHFLOW_API_KEYS=""

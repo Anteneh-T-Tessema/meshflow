@@ -83,7 +83,7 @@ class LangGraphGuardCallback(BaseCallbackHandler):
                     )
                 elif isinstance(v, dict):
                     text_to_scan = " ".join(str(val) for val in v.values())
-                
+
                 if text_to_scan:
                     from meshflow.core.schemas import Message
                     msg = Message(

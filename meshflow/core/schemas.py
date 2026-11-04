@@ -296,6 +296,11 @@ class Policy:
 
     mode: PolicyMode = PolicyMode.STANDARD
     budget_usd: float = 1.0
+    strict_budget: bool = False  # require declared request bounds for custom providers
+    shared_budget_db: str = ""  # SQLite file shared by cooperating local workers
+    shared_budget_id: str = ""  # explicit account/tenant scope
+    shared_budget_usd: float | None = None  # defaults to the per-run USD limit
+    shared_budget_tokens: int | None = None  # defaults to the per-run token limit
     budget_tokens: int = 500_000
     timeout_s: float = 300.0
     step_timeout_s: float = 0.0          # per-step timeout (0 = disabled)

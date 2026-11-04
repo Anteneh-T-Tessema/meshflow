@@ -101,7 +101,51 @@ class GovernedStepExecutor:
         self._trace_id = trace_id
         self._zero_trust = zero_trust  # ZeroTrustOrchestrator | None
 
-    async def execute(
+    async def execute(self, agent: BaseAgent, task: str, context: dict[str, Any]) -> StepOutcome:
+        """Execute through the legacy governance path and persist every outcome."""
+        from datetime import datetime, timezone
+        import asyncio
+        import json
+        import uuid
+        from meshflow.core.ledger import ReplayLedger
+        from meshflow.core.runtime import StepRecord
+        from meshflow.core.session import default_ledger_path, active_ledger_scope
+        if not hasattr(self, "_audit_lock"):
+            self._audit_lock = asyncio.Lock()
+        outcome = await self._execute_impl(agent, task, context)
+        async with self._audit_lock:
+            scope = active_ledger_scope.get()
+            ledger = ReplayLedger(default_ledger_path(), tenant_id=scope[1] if scope else "default", enable_batching=False)
+            try:
+                previous = await ledger.get_run(self._run_id)
+                audit_input = task
+                audit_output = json.dumps(outcome.data, sort_keys=True, default=str)
+                if self._policy.policy.scrub_phi:
+                    from meshflow.security.phi_scrubber import PHIScrubber
+                    scrubber = PHIScrubber()
+                    audit_input, audit_output = scrubber.scrub(audit_input), scrubber.scrub(audit_output)
+                max_chars = self._policy.policy.max_output_chars
+                if max_chars > 0:
+                    audit_output = audit_output[:max_chars]
+                record = StepRecord(
+                    run_id=self._run_id, step_id=str(uuid.uuid4()), node_id=agent.agent_id,
+                    node_kind="native", input_task=audit_input,
+                    output_content=audit_output,
+                    verdict=outcome.dasc_verdict if outcome.ok else "reject",
+                    blocked=not outcome.ok, block_reason=outcome.blocked_by,
+                    uncertainty=outcome.uncertainty.composite if outcome.uncertainty else 0.0,
+                    cost_usd=outcome.cost_usd, tokens_used=outcome.tokens,
+                    carbon_gco2=outcome.carbon_g, duration_ms=outcome.duration_ms,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    prev_hash=previous[-1]["entry_hash"] if previous else "",
+                    metadata={"executor": "GovernedStepExecutor"},
+                )
+                await ledger.write(record)
+            finally:
+                await ledger.aclose()
+        return outcome
+
+    async def _execute_impl(
         self,
         agent: BaseAgent,
         task: str,
@@ -127,6 +171,8 @@ class GovernedStepExecutor:
                 # Continuous authorization
                 if zt_policy and getattr(zt_policy, "continuous_auth", False):
                     cont_auth = getattr(self._zero_trust, "_cont_auth", None)
+                    if cont_auth is None:
+                        raise RuntimeError("Continuous authorization is enabled but unavailable")
                     if cont_auth:
                         decision = cont_auth.authorize(agent.agent_id, action="run:step")
                         if not decision.allowed:
@@ -141,8 +187,10 @@ class GovernedStepExecutor:
                 if zt_policy and getattr(zt_policy, "spotlighting", False):
                     from meshflow.zero_trust.spotlight import SpotlightContext
                     task = SpotlightContext(strategy="xml_tags").wrap(task)
-            except Exception:
-                pass  # ZT must never break execution
+            except Exception as exc:
+                return StepOutcome(ok=False, data={}, agent_id=agent.agent_id,
+                                   role=agent.role.value,
+                                   blocked_by=f"zero_trust:control_error:{type(exc).__name__}")
 
         # ── 2. Circuit breaker ────────────────────────────────────────────────
         try:
@@ -174,12 +222,16 @@ class GovernedStepExecutor:
             )
 
         # ── 5. Agent step ─────────────────────────────────────────────────────
+        from meshflow.core.request_budget import active_budget
+        _budget_token = active_budget.set(self._policy.budget)
         try:
             result = await agent.step(task, context)
             success = True
         except Exception as e:
             result = {"error": str(e)}
             success = False
+        finally:
+            active_budget.reset(_budget_token)
 
         duration_ms = (time.monotonic() - start) * 1000
         tokens = result.get("tokens", 0)

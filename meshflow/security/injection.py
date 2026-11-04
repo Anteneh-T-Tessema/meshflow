@@ -69,7 +69,7 @@ _PATTERNS: dict[str, list[tuple[str, float, str]]] = {
         ("url_fetch_inject",     0.50, r"(?i)(?:fetch|retrieve|load|read|access|visit)\s+(?:this\s+)?(?:url|link|page|site):\s*https?://"),
         ("execute_external",     0.70, r"(?i)(run|execute|follow)\s+(the\s+)?(instructions?|commands?)\s+(from|at|in)\s+(this\s+)?(url|link|file|document)"),
         ("template_inject",      0.65, r"\{\{[^}]{0,200}\}\}|\$\{[^}]{0,200}\}"),
-        ("hidden_unicode",       0.80, r"[​-‏  ﻿­]"),
+        ("hidden_unicode",       0.80, r"[​-‏﻿­]"),
         ("null_byte",            0.85, r"\x00"),
         ("base64_command",       0.60, r"(?i)(base64|b64)\s*(decode|encoded?)\s*[:=]\s*[A-Za-z0-9+/]{20,}"),
     ],

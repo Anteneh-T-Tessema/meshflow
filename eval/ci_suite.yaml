@@ -1,0 +1,13 @@
+# Offline mock regression coverage; this does not measure cloud billing.
+name: ci-offline
+policy: dev
+scenarios:
+  - name: revenue_summary
+    input: Summarize quarterly revenue trends for a research report.
+    eval_fn: non_empty
+  - name: research_plan
+    input: Outline a research plan for comparing renewable energy sources.
+    eval_fn: non_empty
+  - name: risk_summary
+    input: Summarize operational risks and propose a review checklist.
+    eval_fn: non_empty

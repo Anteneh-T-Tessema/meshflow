@@ -276,7 +276,8 @@ class Mesh:
                     _aid = getattr(_a, "agent_id", getattr(_a, "name", str(id(_a))))
                     _zero_trust._cont_auth.register(_aid, permissions=["run:step", "read:*"])
         except Exception:
-            pass  # ZT bootstrap must never block execution
+            identity.revoke_all(reason="zero_trust_bootstrap_failed")
+            raise
 
         executor = GovernedStepExecutor(
             policy_engine=policy_engine,
@@ -590,7 +591,7 @@ class Mesh:
         self,
         workflow: "WorkflowDefinition",
         task: str = "",
-        ledger_db: str = ":memory:",
+        ledger_db: str | None = None,
         event_bus: WorkflowEventBus | None = None,
     ) -> "WorkflowResult":
         """Run a WorkflowDefinition through the StepRuntime governance kernel.
@@ -618,14 +619,13 @@ class Mesh:
         )
         run_id = str(uuid.uuid4())
 
-        ledger = ReplayLedger(ledger_db)
+        from meshflow.core.session import default_ledger_path, active_ledger_scope
+        scope = active_ledger_scope.get()
+        ledger_db = ledger_db if ledger_db is not None else default_ledger_path()
+        ledger = ReplayLedger(ledger_db, tenant_id=scope[1] if scope else "default", enable_batching=False)
 
         # Zero Trust — tier resolved from env vars (MESHFLOW_ZT_TIER / MESHFLOW_ZT_REGULATION)
-        _wf_zero_trust = None
-        try:
-            _wf_zero_trust = _zt_from_env()
-        except Exception:
-            pass
+        _wf_zero_trust = _zt_from_env()
 
         runtime = StepRuntime(
             policy=pol,
@@ -654,7 +654,7 @@ class Mesh:
         workflow: "WorkflowDefinition",
         run_id: str,
         decision: "HumanDecision",
-        ledger_db: str = ":memory:",
+        ledger_db: str | None = None,
     ) -> "WorkflowResult":
         """Resume a workflow that paused at a human approval gate.
 
@@ -680,7 +680,10 @@ class Mesh:
         from meshflow.core.ledger import ReplayLedger
         from meshflow.core.workflow import HumanDecision as _HD  # noqa: F401 type ref
 
-        ledger = ReplayLedger(ledger_db)
+        from meshflow.core.session import default_ledger_path, active_ledger_scope
+        scope = active_ledger_scope.get()
+        ledger_db = ledger_db if ledger_db is not None else default_ledger_path()
+        ledger = ReplayLedger(ledger_db, tenant_id=scope[1] if scope else "default", enable_batching=False)
 
         # Load checkpoint to get the original run's policy and run_id
         checkpoint = await ledger.load_checkpoint_data(run_id)

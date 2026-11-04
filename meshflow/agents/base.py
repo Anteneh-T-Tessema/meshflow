@@ -12,6 +12,8 @@ import contextvars
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
 
+from meshflow.core.request_budget import (budgeted_request, budgeted_completion, stream_usage, report_stream_usage)
+
 from meshflow.core.schemas import (
     AgentRole,
     AgentState,
@@ -85,7 +87,7 @@ def _cost_usd(model: str, input_tokens: int, output_tokens: int, *, force_cloud:
     if not force_cloud and model_is_local(model):
         return 0.0
     model_lower = model.lower()
-    for key, (in_rate, out_rate) in _PRICING.items():
+    for key, (in_rate, out_rate) in sorted(_PRICING.items(), key=lambda item: -len(item[0])):
         if key in model_lower:
             return (input_tokens / 1000) * in_rate + (output_tokens / 1000) * out_rate
     return (input_tokens / 1000) * 0.003 + (output_tokens / 1000) * 0.015
@@ -208,7 +210,7 @@ class AnthropicProvider(LLMProvider):
 
     def __init__(self) -> None:
         anthropic = _require_anthropic()
-        self._client = anthropic.AsyncAnthropic()
+        self._client = anthropic.AsyncAnthropic(max_retries=0)
 
     @staticmethod
     def _cache_system(system: str) -> tuple[Any, dict[str, str]]:
@@ -242,7 +244,7 @@ class AnthropicProvider(LLMProvider):
             if isinstance(system_param, str) and sys_str != system:
                 system_param, extra_headers = self._cache_system(sys_str)
 
-        response = await self._client.messages.create(
+        response = await budgeted_request(self._client.messages.create,
             model=model,
             max_tokens=max_tokens,
             system=system_param,
@@ -276,7 +278,7 @@ class AnthropicProvider(LLMProvider):
             current_tool_schemas[-1]["cache_control"] = {"type": "ephemeral"}
 
         for _ in range(max_rounds):
-            response = await self._client.messages.create(
+            response = await budgeted_request(self._client.messages.create,
                 model=model,
                 max_tokens=max_tokens,
                 system=system_param,
@@ -352,7 +354,7 @@ class AnthropicProvider(LLMProvider):
             headers.update(extra_headers)
 
         try:
-            response = await self._client.messages.create(
+            response = await budgeted_request(self._client.messages.create,
                 model=model,
                 max_tokens=max(max_tokens, thinking_budget + 1024),
                 system=system_param,
@@ -404,6 +406,11 @@ class AnthropicProvider(LLMProvider):
         ) as stream:
             async for text in stream.text_stream:
                 yield TokenChunk(text=text, agent_id=agent_id, step_id=step_id, run_id=run_id)
+            if stream_usage.get() is not None and hasattr(stream, "get_final_message"):
+                final = await stream.get_final_message()
+                rate = next((v for k, v in sorted(_PRICING.items(), key=lambda item: -len(item[0])) if k in model.lower()), None)
+                if rate is not None:
+                    report_stream_usage(final.usage, rate)
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -419,7 +426,11 @@ class OpenAICompatibleProvider(LLMProvider):
         base_url: str = "",
         input_rate: float = 0.005,
         output_rate: float = 0.015,
+        token_parameter: str = "max_tokens",
     ) -> None:
+        if token_parameter not in {"max_tokens", "max_completion_tokens"}:
+            raise ValueError("Unsupported output-token parameter")
+        self._token_parameter = token_parameter
         self._model = model
         self._api_key = api_key
         self._base_url = base_url
@@ -433,7 +444,7 @@ class OpenAICompatibleProvider(LLMProvider):
             raise ImportError(
                 "OpenAICompatibleProvider requires openai: pip install openai"
             ) from exc
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"max_retries": 0}
         if self._api_key:
             kwargs["api_key"] = self._api_key
         if self._base_url:
@@ -453,10 +464,10 @@ class OpenAICompatibleProvider(LLMProvider):
         extra: dict[str, Any] = {}
         if response_format == "json":
             extra["response_format"] = {"type": "json_object"}
-        response = await client.chat.completions.create(
+        response = await budgeted_request(client.chat.completions.create, rates=(self._in_rate, self._out_rate),
             model=model or self._model,
             messages=cast(Any, oai_messages),
-            max_tokens=max_tokens,
+            **{self._token_parameter: max_tokens},
             **extra,
         )
         content = response.choices[0].message.content or ""
@@ -482,10 +493,10 @@ class OpenAICompatibleProvider(LLMProvider):
         max_rounds = 10
 
         for _ in range(max_rounds):
-            response = await client.chat.completions.create(
+            response = await budgeted_request(client.chat.completions.create, rates=(self._in_rate, self._out_rate),
                 model=model or self._model,
                 messages=cast(Any, oai_messages),
-                max_tokens=max_tokens,
+                **{self._token_parameter: max_tokens},
                 tools=cast(Any, oai_tools),
             )
             msg = response.choices[0].message
@@ -537,13 +548,15 @@ class OpenAICompatibleProvider(LLMProvider):
     ) -> AsyncIterator[TokenChunk]:
         client = self._client()
         oai_messages = [{"role": "system", "content": system}, *messages]
-        stream = await client.chat.completions.create(
+        stream = await budgeted_request(client.chat.completions.create, rates=(self._in_rate, self._out_rate),
             model=model or self._model,
             messages=cast(Any, oai_messages),
-            max_tokens=max_tokens,
+            **{self._token_parameter: max_tokens},
             stream=True,
+            **({"stream_options": {"include_usage": True}} if stream_usage.get() is not None else {}),
         )
         async for chunk in stream:
+            report_stream_usage(getattr(chunk, "usage", None), (self._in_rate, self._out_rate))
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 yield TokenChunk(
@@ -792,11 +805,16 @@ def _build_tool_schema(tool: Any) -> dict[str, Any]:
     full type annotation inference (Optional, List, Literal, Annotated, etc.).
     """
     # Escape hatch: caller provided a complete schema
-    if getattr(tool, "input_schema", None) is not None:
+    schema = getattr(tool, "input_schema", None)
+    if callable(schema):
+        schema = schema()
+    if schema is not None:
+        if not isinstance(schema, dict):
+            raise TypeError("Tool input_schema must be a dictionary or return one")
         return {
             "name": str(getattr(tool, "name", "tool")),
             "description": str(getattr(tool, "description", "")),
-            "input_schema": tool.input_schema,
+            "input_schema": schema,
         }
 
     props: dict[str, Any] = {}
@@ -977,8 +995,10 @@ class BaseAgent:
 
         from meshflow.resilience.rate_limit import with_rate_limit_retry, get_default_policy
         content, tokens, cost = await with_rate_limit_retry(
-            self._provider.complete,
+            budgeted_completion,
             policy=get_default_policy(),
+            provider=self._provider,
+            method="complete",
             model=model,
             messages=cast(Any, msgs),
             system=sys,
@@ -1016,7 +1036,7 @@ class BaseAgent:
         if tracker is not None:
             sys, msgs = tracker.compress_prompt(sys, msgs)
 
-        content, tokens, cost = await self._provider.complete_with_tools(
+        content, tokens, cost = await budgeted_completion(self._provider, "complete_with_tools",
             model=model,
             messages=cast(Any, msgs),
             system=sys,

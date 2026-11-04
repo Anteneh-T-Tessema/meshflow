@@ -946,7 +946,6 @@ class WorkflowDefinition:
 
         budget = getattr(runtime, "_budget", None)
         if is_completed and budget:
-            from meshflow.core.policy import BudgetExceededError
             try:
                 budget.pre_check()
             except BudgetExceededError:
@@ -1063,7 +1062,6 @@ class WorkflowDefinition:
                                 nodes_with_handoff.add(nd.id)
 
                         if outcome.output.structured:
-                            confidence = outcome.output.confidence if hasattr(outcome.output, "confidence") else 0.8
                             for k, v in outcome.output.structured.items():
                                 if k.startswith("_"):
                                     continue
@@ -2067,6 +2065,7 @@ class CostCap:
     """Configures the cost limit (USD) for a Workflow run."""
 
     usd: float = 1.0
+    strict: bool = True
 
 
 @dataclass
@@ -2458,33 +2457,10 @@ class Workflow:
                 elif chunk.is_routing:
                     print(f"\\n→ tier={chunk.metadata['tier']} model={chunk.metadata['model']}")
         """
-        import asyncio
-        import queue as _queue
-        import threading as _threading
         from meshflow.core.streaming import StreamChunk
-
-        q: _queue.Queue[StreamChunk | None] = _queue.Queue(maxsize=256)
-
-        async def _produce() -> None:
-            try:
-                async for chunk in self._stream_async(task):
-                    q.put(chunk)
-            except Exception as exc:
-                q.put(StreamChunk(kind="error", content=str(exc)))
-            finally:
-                q.put(None)  # sentinel
-
-        def _run_loop() -> None:
-            asyncio.run(_produce())
-
-        t = _threading.Thread(target=_run_loop, daemon=True)
-        t.start()
-
-        while True:
-            chunk = q.get()
-            if chunk is None:
-                break
-            yield chunk
+        from meshflow.streaming.sync_bridge import sync_stream
+        yield from sync_stream(lambda: self._stream_async(task),
+                               lambda exc: StreamChunk(kind="error", content=str(exc)))
 
     async def astream(self, task: str) -> "Any":
         """Native async streaming generator — no thread overhead.
@@ -2512,8 +2488,10 @@ class Workflow:
             from meshflow.core.streaming import async_stream_collect
             text = await async_stream_collect(wf.astream("Summarise Q3"))
         """
-        async for chunk in self._stream_async(task):
-            yield chunk
+        from contextlib import aclosing
+        async with aclosing(self._stream_async(task)) as iterator:
+            async for chunk in iterator:
+                yield chunk
 
     async def astream_multimodal(self, task: str, inputs: list[Any]) -> "Any":
         """Native async streaming generator for multi-modal pipelines.
@@ -2534,10 +2512,55 @@ class Workflow:
         async for chunk in self._stream_multimodal_async(task, inputs):
             yield chunk
 
-    async def _stream_async(self, task: str) -> "Any":
+    async def _stream_async(self, task: str) -> Any:
+        import asyncio
+        from contextlib import aclosing
+        from meshflow.core.session import GovernedSession, active_session
+        session = active_session.get()
+        if session is None:
+            policy = policy_for_mode("standard", budget_usd=self.cost_cap.usd if self.cost_cap else 5.0,
+                                     strict_budget=self.cost_cap.strict if self.cost_cap else False)
+            queue: asyncio.Queue[Any] = asyncio.Queue()
+
+            async def produce() -> None:
+                try:
+                    async with GovernedSession(policy):
+                        async with aclosing(self._stream_async(task)) as iterator:
+                            async for chunk in iterator:
+                                queue.put_nowait(chunk)
+                except Exception as exc:
+                    queue.put_nowait(exc)
+                finally:
+                    queue.put_nowait(None)
+
+            producer = asyncio.create_task(produce())
+            try:
+                while True:
+                    chunk = await queue.get()
+                    if chunk is None:
+                        break
+                    if isinstance(chunk, Exception):
+                        raise chunk
+                    yield chunk
+            finally:
+                if not producer.done():
+                    producer.cancel()
+                await asyncio.gather(producer, return_exceptions=True)
+            return
+        async with aclosing(self._stream_async_impl(task)) as iterator:
+            async for chunk in iterator:
+                if chunk.kind == "done":
+                    chunk.metadata.update(run_id=session.run_id, ledger_db=session.ledger_db,
+                        cost_usd=sum(o.record.cost_usd for o in session.outcomes),
+                        tokens=sum(o.record.tokens_used for o in session.outcomes))
+                yield chunk
+
+    async def _stream_async_impl(self, task: str) -> "Any":
         """Async generator powering :meth:`stream` and :meth:`stream_multimodal`."""
         from meshflow.core.streaming import StreamChunk
         import asyncio
+        from contextlib import aclosing
+        from meshflow.core.session import stream_agent, active_session
 
         current_task = task
 
@@ -2550,7 +2573,7 @@ class Workflow:
 
                 async def _run_agent(agent: Any) -> None:
                     # Emit routing event if model_router is attached
-                    if agent.model_router is not None:
+                    if getattr(agent, "model_router", None) is not None:
                         try:
                             routing = agent.model_router.route(current_task)
                             is_local = getattr(routing, "is_local", False)
@@ -2572,9 +2595,10 @@ class Workflow:
                     await q.put(StreamChunk(kind="node_start", node_name=agent.name))
                     collected: list[str] = []
                     try:
-                        async for token in agent.stream(current_task):
-                            await q.put(StreamChunk(kind="token", content=token, node_name=agent.name))
-                            collected.append(token)
+                        async with aclosing(stream_agent(agent, current_task)) as iterator:
+                            async for token in iterator:
+                                await q.put(StreamChunk(kind="token", content=token, node_name=agent.name))
+                                collected.append(token)
                     except Exception as exc:
                         await q.put(StreamChunk(kind="error", content=str(exc), node_name=agent.name))
 
@@ -2585,14 +2609,21 @@ class Workflow:
 
                 tasks = [asyncio.create_task(_run_agent(a)) for a in agent_item]
                 finished = 0
-                while finished < active:
-                    chunk = await q.get()
-                    if chunk is None:
-                        finished += 1
-                    else:
-                        yield chunk
-
-                await asyncio.gather(*tasks, return_exceptions=True)
+                try:
+                    while finished < active:
+                        chunk = await q.get()
+                        if chunk is None:
+                            finished += 1
+                        else:
+                            yield chunk
+                finally:
+                    for running in tasks:
+                        if not running.done():
+                            running.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                session = active_session.get()
+                if any(not outcome.ok or outcome.paused_for_human for outcome in session.outcomes):
+                    break
 
                 sorted_agents = [a.name for a in agent_item]
                 merged_output = "\n\n".join(
@@ -2603,7 +2634,7 @@ class Workflow:
             else:
                 agent = agent_item
                 # ── Emit routing event if model_router is attached ────────────────
-                if agent.model_router is not None:
+                if getattr(agent, "model_router", None) is not None:
                     try:
                         routing = agent.model_router.route(current_task)
                         is_local = getattr(routing, "is_local", False)
@@ -2627,9 +2658,10 @@ class Workflow:
                 # ── Stream tokens from the agent ──────────────────────────────────
                 accumulated: list[str] = []
                 try:
-                    async for token in agent.stream(current_task):
-                        accumulated.append(token)
-                        yield StreamChunk(kind="token", content=token, node_name=agent.name)
+                    async with aclosing(stream_agent(agent, current_task)) as iterator:
+                        async for token in iterator:
+                            accumulated.append(token)
+                            yield StreamChunk(kind="token", content=token, node_name=agent.name)
                 except Exception as exc:
                     yield StreamChunk(kind="error", content=str(exc), node_name=agent.name)
                     break
@@ -2768,7 +2800,8 @@ class Workflow:
                 return run_sync(self._run_async(task))
 
             budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
-            policy = policy_for_mode("standard", budget_usd=budget_usd)
+            policy = policy_for_mode("standard", budget_usd=budget_usd,
+                                     strict_budget=self.cost_cap.strict if self.cost_cap else False)
 
             team = Team(
                 name="simple_workflow_team",
@@ -2782,10 +2815,84 @@ class Workflow:
             sandbox_mode_var.reset(token)
 
     async def _run_async(self, task: str, _resuming: bool = False) -> WorkflowResult:
+        from meshflow.core.session import GovernedSession, active_session
+        session = active_session.get()
+        if session is not None:
+            return session.finish(await self._run_async_impl(task, _resuming))
+        policy = policy_for_mode("standard", budget_usd=self.cost_cap.usd if self.cost_cap else 5.0,
+                                 strict_budget=self.cost_cap.strict if self.cost_cap else False)
+        async with GovernedSession(policy, getattr(self, "_checkpoint_path", None),
+                                   getattr(self, "_checkpoint_run_id", None) if _resuming else None) as session:
+            self._checkpoint_run_id = session.run_id
+            self._checkpoint_path = session.ledger_db
+            result = session.finish(await self._run_async_impl(task, _resuming))
+            if result.completed:
+                await session.ledger.delete_checkpoint(session.run_id)
+            else:
+                await self._save_durable_checkpoint(session)
+            return result
+
+    async def _save_durable_checkpoint(self, session: Any) -> None:
+        state = self.state
+        if hasattr(state, "model_dump"):
+            state = state.model_dump(mode="json")
+        elif hasattr(state, "dict"):
+            state = state.dict()
+        await session.ledger.save_checkpoint(session.run_id, {
+            "type": "ergonomic_workflow_v1", "next_step": self._next_step_idx,
+            "task": self._resume_task, "output": self._resume_accumulated,
+            "cost": self._resume_total_cost, "tokens": self._resume_total_tokens,
+            "blocked_nodes": self._resume_blocked_nodes, "state": state,
+            "agent_names": self._durable_agent_names(),
+        })
+
+    def _durable_agent_names(self) -> list[Any]:
+        return [[a.name for a in item] if isinstance(item, (list, tuple)) else
+                (sorted(item.branches) if isinstance(item, _ConditionalBranch) else item.name)
+                for item in self.agents]
+
+    def resume_from_checkpoint(self, run_id: str, ledger_db: str | None = None,
+                               human_input: str | None = None) -> WorkflowResult:
+        """Resume a reconstructed workflow from its last completed step boundary.
+
+        Recreate the same agents and state schema before calling. External side
+        effects must be idempotent: an interrupted step may need to run again.
+        """
+        from meshflow.integrations._utils import run_sync
+        return run_sync(self._restore_checkpoint(run_id, ledger_db, human_input))
+
+    async def _restore_checkpoint(self, run_id: str, ledger_db: str | None,
+                                  human_input: str | None) -> WorkflowResult:
+        from meshflow.core.ledger import ReplayLedger
+        from meshflow.core.session import default_ledger_path
+        path = ledger_db if ledger_db is not None else default_ledger_path()
+        ledger = ReplayLedger(path, enable_batching=False)
+        try:
+            data = await ledger.load_checkpoint_data(run_id)
+            if not data or data.get("type") != "ergonomic_workflow_v1":
+                raise ValueError("No resumable workflow checkpoint found")
+            if data["agent_names"] != self._durable_agent_names():
+                raise ValueError("Workflow agents do not match the saved checkpoint")
+        finally:
+            await ledger.aclose()
+        self._checkpoint_path = path
+        self._checkpoint_run_id = run_id
+        self._next_step_idx = data["next_step"]
+        self._resume_task = data["task"]
+        self._resume_accumulated = data["output"]
+        self._resume_total_cost = data["cost"]
+        self._resume_total_tokens = data["tokens"]
+        self._resume_blocked_nodes = data["blocked_nodes"]
+        if data["state"] is not None:
+            self.state = self.state_schema(**data["state"]) if self.state_schema else data["state"]
+        self._paused = True
+        return await self._resume_async(human_input=human_input)
+
+    async def _run_async_impl(self, task: str, _resuming: bool = False) -> WorkflowResult:
         from meshflow.core.workflow import WorkflowResult
         import time as _time
         import asyncio
-        import inspect
+        from meshflow.core.session import run_agent
         import json
 
         start_time = _time.monotonic()
@@ -2806,6 +2913,15 @@ class Workflow:
             blocked_nodes = []
             self._next_step_idx = 0
 
+        from meshflow.core.session import active_session
+        session = active_session.get()
+        self._resume_task = current_task
+        self._resume_accumulated = accumulated
+        self._resume_total_cost = total_cost
+        self._resume_total_tokens = total_tokens
+        self._resume_blocked_nodes = blocked_nodes
+        await self._save_durable_checkpoint(session)
+        skipped_nodes: list[str] = []
         limit = self.cost_cap.usd if self.cost_cap else None
 
         for i, agent_item in enumerate(self.agents):
@@ -2820,6 +2936,7 @@ class Workflow:
                     blocked_nodes.append(agent_item.name)
                 continue
 
+            outcome_offset = len(session.outcomes)
             # Determine block_key matching the registration in add/add_parallel/add_conditional
             if isinstance(agent_item, _ConditionalBranch):
                 block_key = id(agent_item)
@@ -2896,11 +3013,7 @@ class Workflow:
                                     pass
                 elif isinstance(chosen_item, (list, tuple)):
                     async def _run_one(agent):
-                        sig = inspect.signature(agent.run)
-                        if "context" in sig.parameters:
-                            res = await agent.run(task_for_step, context=context)
-                        else:
-                            res = await agent.run(task_for_step)
+                        res = await run_agent(agent, task_for_step, context)
                         output = res.get("result", "") if isinstance(res, dict) else str(res)
                         tokens = res.get("tokens", 0) if isinstance(res, dict) else 0
                         cost = res.get("cost_usd", 0.0) if isinstance(res, dict) else 0.0
@@ -2921,11 +3034,7 @@ class Workflow:
                     accumulated = "\n\n".join(merged_parts)
                 else:
                     agent = chosen_item
-                    sig = inspect.signature(agent.run)
-                    if "context" in sig.parameters:
-                        res = await agent.run(task_for_step, context=context)
-                    else:
-                        res = await agent.run(task_for_step)
+                    res = await run_agent(agent, task_for_step, context)
                     accumulated = res.get("result", "") if isinstance(res, dict) else str(res)
                     if isinstance(res, dict):
                         total_tokens += res.get("tokens", 0)
@@ -2939,11 +3048,7 @@ class Workflow:
             elif isinstance(agent_item, (list, tuple)):
                 # Run parallel agents concurrently
                 async def _run_one(agent):
-                    sig = inspect.signature(agent.run)
-                    if "context" in sig.parameters:
-                        res = await agent.run(task_for_step, context=context)
-                    else:
-                        res = await agent.run(task_for_step)
+                    res = await run_agent(agent, task_for_step, context)
 
                     output = res.get("result", "") if isinstance(res, dict) else str(res)
                     tokens = res.get("tokens", 0) if isinstance(res, dict) else 0
@@ -2958,7 +3063,7 @@ class Workflow:
                     merged_parts.append(f"[Agent {name}]:\n{output}")
                     total_tokens += tokens
                     total_cost += cost
-                    
+
                     if self.state is not None:
                         agent_output_map = self._output_maps.get(name)
                         if agent_output_map:
@@ -2981,11 +3086,7 @@ class Workflow:
                         block_output_map(self.state, block_res)
             else:
                 agent = agent_item
-                sig = inspect.signature(agent.run)
-                if "context" in sig.parameters:
-                    res = await agent.run(task_for_step, context=context)
-                else:
-                    res = await agent.run(task_for_step)
+                res = await run_agent(agent, task_for_step, context)
 
                 accumulated = res.get("result", "") if isinstance(res, dict) else str(res)
                 if isinstance(res, dict):
@@ -3000,8 +3101,33 @@ class Workflow:
                     else:
                         self._auto_merge_state(self.state, res)
 
+            failed = [o for o in session.outcomes[outcome_offset:] if not o.ok or o.paused_for_human]
+            if failed:
+                blocked_nodes.extend(o.node_id for o in failed if not o.ok)
+                self._next_step_idx = i
+                self._resume_task = current_task
+                self._resume_accumulated = accumulated
+                self._resume_total_cost = total_cost
+                self._resume_total_tokens = total_tokens
+                self._resume_blocked_nodes = blocked_nodes
+                for remaining in self.agents[i + 1:]:
+                    if isinstance(remaining, (list, tuple)):
+                        skipped_nodes.extend(a.name for a in remaining)
+                    elif not isinstance(remaining, _ConditionalBranch):
+                        skipped_nodes.append(remaining.name)
+                await self._save_durable_checkpoint(session)
+                break
+
             if i < len(self.agents) - 1:
                 current_task = f"{task}\n\nPrior output:\n{accumulated}"
+
+            self._next_step_idx = i + 1
+            self._resume_task = current_task
+            self._resume_accumulated = accumulated
+            self._resume_total_cost = total_cost
+            self._resume_total_tokens = total_tokens
+            self._resume_blocked_nodes = blocked_nodes
+            await self._save_durable_checkpoint(session)
 
             # ── Interrupt AFTER step ───────────────────────────────────────
             if block_key in self._interrupts_after:
@@ -3036,8 +3162,9 @@ class Workflow:
                     blocked_nodes.append(agent_item.name)
 
         # Successful completion — reset step index
-        self._next_step_idx = 0
-        self._paused = False
+        if not blocked_nodes and not any(o.paused_for_human for o in session.outcomes):
+            self._next_step_idx = 0
+            self._paused = False
 
         is_completed = True
         if limit is not None and total_cost > limit:
@@ -3057,7 +3184,7 @@ class Workflow:
             duration_s=round(_time.monotonic() - start_time, 2),
             blocked_nodes=blocked_nodes,
             paused_nodes=[],
-            skipped_nodes=[],
+            skipped_nodes=skipped_nodes,
             ledger_db="",
             state=self.state,
         )
@@ -3203,11 +3330,11 @@ class Workflow:
         """Run the first agent with multimodal inputs, then chain as text."""
         from meshflow.agents.team import Team
         from meshflow.core.schemas import policy_for_mode
-        from meshflow.core.policy import BudgetExceededError
         import asyncio
 
         budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
-        policy = policy_for_mode("standard", budget_usd=budget_usd)
+        policy = policy_for_mode("standard", budget_usd=budget_usd,
+                                     strict_budget=self.cost_cap.strict if self.cost_cap else False)
         limit = self.cost_cap.usd if self.cost_cap else None
 
         # First agent: pass multimodal inputs directly
@@ -3346,7 +3473,8 @@ class Workflow:
         from meshflow.core.schemas import policy_for_mode
 
         budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
-        policy = policy_for_mode("standard", budget_usd=budget_usd)
+        policy = policy_for_mode("standard", budget_usd=budget_usd,
+                                     strict_budget=self.cost_cap.strict if self.cost_cap else False)
         sem = asyncio.Semaphore(max_concurrency)
 
         async def _one(task: str) -> WorkflowResult:
@@ -3471,7 +3599,8 @@ class Workflow:
                         agent.mode = "sandbox"
 
                 budget_usd = self.cost_cap.usd if self.cost_cap else 5.0
-                policy = policy_for_mode("standard", budget_usd=budget_usd)
+                policy = policy_for_mode("standard", budget_usd=budget_usd,
+                                     strict_budget=self.cost_cap.strict if self.cost_cap else False)
 
                 team = Team(
                     name="simple_workflow_team",

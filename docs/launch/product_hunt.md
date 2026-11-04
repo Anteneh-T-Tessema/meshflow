@@ -1,4 +1,4 @@
-# Product Hunt Launch — MeshFlow v1.14.0
+# Product Hunt Launch — MeshFlow v1.15.0
 
 ## Submission Metadata
 
@@ -12,7 +12,7 @@
 
 ## Description (260 chars)
 
-MeshFlow is a governed agent runtime for regulated industries — HIPAA/SOX/GDPR compliance, SHA-256 audit chain, cost caps, SOC 2 assertion, and StructuredJudge evals baked into the kernel. LangGraph/CrewAI/AutoGen/AutoGen 0.4+/OpenAI Agents SDK parity. 5,711 tests.
+MeshFlow is a governed agent runtime for regulated industries — HIPAA/SOX/GDPR compliance, SHA-256 audit chain, cost caps, SOC 2 assertion, and StructuredJudge evals baked into the kernel. LangGraph/CrewAI/AutoGen/AutoGen 0.4+/OpenAI Agents SDK parity. 5,888 tests.
 
 ---
 
@@ -24,7 +24,7 @@ I'm Anteneh, the maker of MeshFlow. Thanks for checking it out.
 
 **The problem I kept hitting:** You build a multi-agent pipeline, hardcode `gpt-4o` everywhere because it's the safe choice, and then watch your API bill climb while 70% of your tasks could have been handled by a free local model.
 
-**What v1.14.0 adds** (sprints 95–102):
+**What v1.15.0 adds** (Sprints 103–104):
 
 ```python
 # 1. Functional API (@task / @entrypoint — LangGraph-style)
@@ -82,6 +82,13 @@ CronTrigger(cron="0 9 * * *").add(process_report, report_id="daily")
 
 vs. always-gpt-4o: same quality, ~10× cheaper.
 
+**New in v1.15.0:**
+- **Active Guardrail Firewalls** — pre-execution prompt and tool scanners automatically hook into LangGraph graph config, CrewAI agents, and AutoGen agents to block injections, PII leakage, and behavioral anomalies.
+- **Merkle Tree Ledger** — pipelined group commits to SQLite or Postgres with background `asyncio.Task` queue flushing and O(log n) Merkle path verification per transaction step.
+- **Collusion Detection v2** — Shannon entropy profiling with structural boilerplate masking, bigram perplexity anomaly checking, and role-aware sensitivity thresholds.
+- **Wasm Policy Engine** — compiled OPA/Rego or Rust Wasm bytecode policy evaluation running on `wasmtime` or `wasmer` for absolute compliance rules parity across Python, TS, Go, Rust, and Java.
+- **Developer Playground & Dashboard** — `meshflow playground` interactive REPL for quick agent trials, and a real-time WebSocket-powered monitoring dashboard for live tracing, guardrail violations, and token cost tracking.
+
 **New in v1.14.0:**
 - `AdvisorAgent` / `AdvisorRouter` — advisor-tool pattern, adaptive use threshold
 - `DynamicWorkflow` — runtime agent spawning from planner output
@@ -111,7 +118,7 @@ vs. always-gpt-4o: same quality, ~10× cheaper.
 - A2A agent-to-agent protocol with `/.well-known/agent-card` discovery
 - Code interpreter (sandboxed subprocess, module allow-list)
 - Multi-modal: image, document, audio
-- 5,711 tests, Python 3.11 + 3.12
+- 5,888 tests, Python 3.11 + 3.12
 
 **Install:**
 ```bash
@@ -183,5 +190,5 @@ async def stream(task: str):
 - GitHub: https://github.com/Anteneh-T-Tessema/meshflow
 - Docs: https://meshflow.dev/docs
 - PyPI: https://pypi.org/project/meshflow/
-- Docker: `docker pull ghcr.io/anteneh-t-tessema/meshflow-mcp:1.14.0`
+- Docker: `docker pull ghcr.io/anteneh-t-tessema/meshflow-mcp:1.15.0`
 - QUICKSTART.md: https://github.com/Anteneh-T-Tessema/meshflow/blob/main/QUICKSTART.md

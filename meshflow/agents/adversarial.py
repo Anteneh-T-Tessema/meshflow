@@ -26,6 +26,8 @@ Usage::
 
 from __future__ import annotations
 
+import json as _json
+import re as _re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -162,8 +164,6 @@ class AdversarialTeam:
 
 # ── Parser ────────────────────────────────────────────────────────────────────
 
-import json as _json
-import re as _re
 
 
 def _parse_verdict(

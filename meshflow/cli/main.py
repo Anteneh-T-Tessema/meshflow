@@ -2923,13 +2923,13 @@ async def _async_trace(args: argparse.Namespace) -> None:
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:
+    import os
     from meshflow.runtime.server import serve, _load_api_keys
 
     keys: set[str] = set(args.api_keys) if getattr(args, "api_keys", None) else _load_api_keys()
 
     policy_file = getattr(args, "policy_file", "")
     if policy_file:
-        import os
         if not os.path.exists(policy_file):
             print(f"  Error: policy file not found: {policy_file}")
             sys.exit(1)
@@ -3048,7 +3048,7 @@ def _cmd_mcp_stdio(args: argparse.Namespace) -> None:
 
     if getattr(args, "print_config", False):
         exe = shutil.which("meshflow") or "meshflow"
-        config_arg = f'", "--config", "{args.config}"' if args.config else ""
+        f'", "--config", "{args.config}"' if args.config else ""
         snippet = {
             "mcpServers": {
                 "meshflow": {
@@ -6069,7 +6069,7 @@ def _migrate_detect(
 
     fw_str = ", ".join(result.frameworks) if result.frameworks else "none detected"
     print()
-    print(f"  MeshFlow Migration — Detection Report")
+    print("  MeshFlow Migration — Detection Report")
     print(f"  {'─' * 50}")
     print(f"  Path        : {args.path}")
     print(f"  Frameworks  : {fw_str}")
@@ -6098,7 +6098,7 @@ def _migrate_plan(
 
     fw_str = ", ".join(result.frameworks) if result.frameworks else "none"
     print()
-    print(f"  MeshFlow Migration Plan")
+    print("  MeshFlow Migration Plan")
     print(f"  {'─' * 50}")
     print(f"  Detected    : {fw_str}")
     print(f"  Complexity  : {result.complexity}")
@@ -6209,7 +6209,7 @@ def _migrate_apply(
         if not args.dry_run:
             try:
                 tr.apply(dry_run=False)
-                print(f"    Written.")
+                print("    Written.")
             except Exception as exc:
                 print(f"    ! Write failed: {exc}")
 
@@ -6218,7 +6218,7 @@ def _migrate_apply(
         print("  No changes needed — project may already be migrated.")
     elif args.dry_run:
         print(f"  DRY RUN: {total_changes} change(s) across {changed_files} file(s) — nothing written.")
-        print(f"  Re-run without --dry-run to apply.")
+        print("  Re-run without --dry-run to apply.")
     else:
         print(f"  Applied {total_changes} change(s) across {changed_files} file(s).")
     print()
@@ -6394,8 +6394,8 @@ def _cmd_proxy(args: argparse.Namespace) -> None:
     print(f"\n  MeshFlow Proxy listening on http://{host}:{port}/v1")
     print(f"  Upstream: {upstream}")
     print(f"  Policy: {policy_file or '(none — audit logging only)'}")
-    print(f"  Press Ctrl+C to stop.\n")
-    print(f"  Set in your client:")
+    print("  Press Ctrl+C to stop.\n")
+    print("  Set in your client:")
     print(f"    OPENAI_BASE_URL=http://{host}:{port}/v1")
     print(f"    OPENAI_API_BASE=http://{host}:{port}/v1   # LangChain\n")
 
@@ -6453,7 +6453,8 @@ def _cmd_cost_report(args: argparse.Namespace) -> None:
         print("Provide a run_id or use --task to estimate. Run 'meshflow traces' to list run IDs.")
         return
 
-    import asyncio, sqlite3
+    import asyncio
+    import sqlite3
     db = args.db
     run_id = args.run_id
 
@@ -6598,7 +6599,7 @@ def _cmd_routing_report(args: argparse.Namespace) -> None:
             avg_l = sum(tier_latency.get(tier, [0])) / len(tier_latency.get(tier, [1]))
             print(f"    {tier:8s} {count:5d} ({pct:.0%})  {bar:20s}  quality={avg_q:.2f}  latency={avg_l:.0f}ms")
 
-        print(f"\n  Cost summary:")
+        print("\n  Cost summary:")
         print(f"    actual spend     : ${actual_cost:.4f}")
         print(f"    always-large est : ${always_large_cost:.4f}")
         print(f"    saved            : ${savings:.4f}  ({savings_pct:.0%})")

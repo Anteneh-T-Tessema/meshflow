@@ -242,7 +242,7 @@ class _BuiltAgent(BaseAgent):
             f"You MUST respond with a JSON object matching this schema:\n{schema_str}\n"
             f"Output ONLY the JSON — no prose, no markdown fences."
         )
-        ctx_str = json.dumps(context or {})
+        ctx_str = json.dumps({key: value for key, value in (context or {}).items() if not key.startswith("_")})
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": f"Task: {task}\nContext: {ctx_str}"}
         ]
@@ -321,7 +321,8 @@ class _BuiltAgent(BaseAgent):
                 if k_text:
                     knowledge_ctx = f"\n\n[Knowledge]\n{k_text}"
 
-        text_body = f"Task: {task}\nContext: {context}{mem_ctx}{recall_ctx}{knowledge_ctx}"
+        public_context = {key: value for key, value in context.items() if not key.startswith("_")}
+        text_body = f"Task: {task}\nContext: {public_context}{mem_ctx}{recall_ctx}{knowledge_ctx}"
         _attachments: list[Any] = list(context.get("__attachments__", []))
 
         if knowledge_blocks or _attachments:
@@ -557,9 +558,12 @@ class Agent:
     tpm: int | None = None        # max tokens per minute (rate limiting)
     memory_store: Any = None      # BaseStore instance for cross-session shared facts
     mode: str = "production"
+    max_tokens: int = 2048  # provider output limit, including typed and streaming calls
     _prebuilt_node: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if isinstance(self.max_tokens, bool) or not isinstance(self.max_tokens, int) or self.max_tokens <= 0:
+            raise ValueError("max_tokens must be a positive integer")
         if isinstance(self.role, str):
             self.role = _ROLE_MAP.get(self.role, AgentRole.EXECUTOR)
         if isinstance(self.policy, str):
@@ -657,6 +661,7 @@ class Agent:
             role=role,
             model=self._resolve_model(),
             system_prompt=prompt,
+            max_tokens=self.max_tokens,
             tools=[getattr(t, "name", str(t)) for t in all_tools],
             provider=self._resolve_provider(),
             mode=self.mode,
@@ -758,11 +763,26 @@ class Agent:
         output_type: type[_T],
         context: dict[str, Any] | None = None,
     ) -> _T:
-        """Run this agent and parse the response into *output_type* (a Pydantic model)."""
-        agent = self._build()
-        return await agent.run_typed(task, output_type, context)
+        """Parse typed output under the same controls and budget as ordinary runs."""
+        from meshflow.core.session import governed_operation
 
-    async def stream(
+        async def call(inp: Any) -> tuple[Any, int, float, str]:
+            built = self._build()
+            value = await built.run_typed(inp.task, output_type, inp.context)
+            content = value.model_dump_json() if hasattr(value, "model_dump_json") else str(value)
+            return value, built._total_tokens, built._total_cost, content
+
+        return await governed_operation(self, task, call, context)
+
+    async def stream(self, task: str, context: dict[str, Any] | None = None) -> Any:
+        """Yield live text under governance and persist complete or cancelled streams."""
+        from contextlib import aclosing
+        from meshflow.core.session import stream_agent
+        async with aclosing(stream_agent(self, task, context)) as iterator:
+            async for text in iterator:
+                yield text
+
+    async def _stream_unguarded(
         self,
         task: str,
         context: dict[str, Any] | None = None,
@@ -788,7 +808,7 @@ class Agent:
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
-                "content": f"Task: {task}\nContext: {context or {}}{mem_ctx}",
+                "content": f"Task: {task}\nContext: { {k: v for k, v in (context or {}).items() if not k.startswith('_')} }{mem_ctx}",
             }
         ]
 
@@ -796,7 +816,8 @@ class Agent:
         run_id = str(_uuid.uuid4())[:8]
         step_id = str(_uuid.uuid4())[:8]
 
-        stream_gen: AsyncIterator[Any] = built._provider.stream_complete(
+        from meshflow.core.request_budget import budgeted_provider_stream
+        stream_gen: AsyncIterator[Any] = budgeted_provider_stream(built._provider,
             model=model,
             messages=messages,
             system=prompt,
@@ -805,12 +826,28 @@ class Agent:
             step_id=step_id,
             run_id=run_id,
         )
-        async for chunk in stream_gen:
-            text = getattr(chunk, "text", str(chunk))
-            if text:
-                yield text
+        from contextlib import aclosing
+        async with aclosing(stream_gen):
+            async for chunk in stream_gen:
+                text = getattr(chunk, "text", str(chunk))
+                if text:
+                    yield text
 
     async def run_structured(
+        self, task: str, schema: Any, *, max_retries: int = 3,
+        context: dict[str, Any] | None = None,
+    ) -> Any:
+        """Validate structured output under governance, including every retry."""
+        from meshflow.core.session import governed_operation
+
+        async def call(inp: Any) -> tuple[Any, int, float, str]:
+            value = await self._run_structured_unguarded(
+                inp.task, schema, max_retries=max_retries, context=inp.context)
+            return value, value.tokens, value.cost_usd, value.raw
+
+        return await governed_operation(self, task, call, context)
+
+    async def _run_structured_unguarded(
         self,
         task: str,
         schema: Any,
@@ -886,6 +923,11 @@ class Agent:
         )
 
     async def run(self, task: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Execute through the shared governance kernel and persist the outcome."""
+        from meshflow.core.session import run_agent
+        return await run_agent(self, task, context)
+
+    async def _run_unguarded(self, task: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Run this agent on a task and return the result dict.
 
         If the agent was imported from an external framework (LangGraph, IBM,
@@ -1043,12 +1085,14 @@ class Agent:
                 confidence=result.get("stated_confidence", 0.8),
             )
 
-        return MeshNode.from_callable(
+        node = MeshNode.from_callable(
             self.name,
             _runner,
             risk=self.risk,
             capabilities=[self.role.value if isinstance(self.role, AgentRole) else self.role],
         )
+        node.metadata["request_budget_managed"] = True
+        return node
 
     def with_structured_output(
         self,

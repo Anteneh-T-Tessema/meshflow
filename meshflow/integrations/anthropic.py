@@ -185,7 +185,7 @@ async def meshflow_tool_handler(
 
     task = tool_input.get("task", "")
     policy_mode = tool_input.get("policy", "standard")
-    run_id_resume = tool_input.get("run_id", "")
+    tool_input.get("run_id", "")
 
     if not task:
         return {"status": "error", "result": "No task provided.", "run_id": "", "cost_usd": 0.0}

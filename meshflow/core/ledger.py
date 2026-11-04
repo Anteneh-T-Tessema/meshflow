@@ -96,35 +96,35 @@ def _build_merkle_tree(leaf_hashes: list[str]) -> tuple[str, dict[str, list[str]
     """Build a Merkle tree from leaves and generate proof paths for each leaf."""
     if not leaf_hashes:
         return "", {}
-    
+
     proofs: dict[str, list[str]] = {h: [] for h in leaf_hashes}
     current_level = list(leaf_hashes)
     indices = {h: [i] for i, h in enumerate(leaf_hashes)}
-    
+
     while len(current_level) > 1:
         next_level = []
         next_indices = {}
         for i in range(0, len(current_level), 2):
             left = current_level[i]
             right = current_level[i + 1] if i + 1 < len(current_level) else left
-            
+
             parent = hashlib.sha256((left + right).encode()).hexdigest()
             next_level.append(parent)
-            
+
             left_leaves = indices[left]
             right_leaves = indices[right] if i + 1 < len(current_level) else []
-            
+
             for idx in left_leaves:
                 proofs[leaf_hashes[idx]].append(right)
             for idx in right_leaves:
                 proofs[leaf_hashes[idx]].append(left)
-                
+
             parent_leaves = left_leaves + right_leaves
             next_indices[parent] = parent_leaves
-            
+
         current_level = next_level
         indices = next_indices
-        
+
     return current_level[0], proofs
 
 
@@ -845,6 +845,10 @@ class ReplayLedger:
     # ── Write ─────────────────────────────────────────────────────────────────
 
     async def write(self, record: StepRecord) -> None:
+        if record.metadata.get("hash_version") == 2:
+            from meshflow.core.runtime import record_hash
+            record.metadata["tenant_id"] = self._tenant_id
+            record.entry_hash = record_hash(record)
         if self._enable_batching and self._writer:
             await self._writer.write(record)
             return
@@ -871,22 +875,14 @@ class ReplayLedger:
                     """,
                     (*vals, self._tenant_id),
                 )
+        elif self._tenant_id != "default":
+            await backend.write_batch([record], tenant_id=self._tenant_id)
         else:
             await backend.write(record)
 
     def _compute_leaf_hash(self, record: StepRecord) -> str:
-        from meshflow.core.runtime import _hash_record
-        return _hash_record(
-            run_id=record.run_id,
-            step_id=record.step_id,
-            node_id=record.node_id,
-            input_task=record.input_task,
-            output_content=record.output_content,
-            verdict=record.verdict,
-            blocked=record.blocked,
-            timestamp=record.timestamp,
-            prev_hash="",
-        )
+        from meshflow.core.runtime import record_hash
+        return record_hash(record, leaf=True)
 
     async def _get_last_entry_hash(self) -> str:
         if isinstance(self._backend, SQLiteLedgerBackend):
@@ -904,43 +900,39 @@ class ReplayLedger:
         return ""
 
     async def _flush_batch(self, batch: list[StepRecord]) -> None:
-        from meshflow.core.runtime import _hash_record
 
         if not self._last_entry_hash:
             self._last_entry_hash = await self._get_last_entry_hash()
-            
+
         loop = asyncio.get_running_loop()
         leaf_hashes = await loop.run_in_executor(
             self._thread_pool,
             lambda: [self._compute_leaf_hash(r) for r in batch]
         )
-        
+
         root, proofs = _build_merkle_tree(leaf_hashes)
         self._last_master_root = hashlib.sha256(
             (self._last_master_root + root).encode()
         ).hexdigest()
-        
+
+        run_heads: dict[str, str] = {}
         for i, record in enumerate(batch):
+            if record.run_id not in run_heads:
+                existing = [row for row in await self._backend.get_run(record.run_id)
+                            if row.get("tenant_id", "default") == self._tenant_id]
+                run_heads[record.run_id] = existing[-1]["entry_hash"] if existing else ""
             record.metadata["merkle_proof"] = {
                 "proof": proofs[leaf_hashes[i]],
                 "index": i,
                 "batch_root": root,
                 "master_root": self._last_master_root,
             }
-            record.prev_hash = self._last_entry_hash
-            record.entry_hash = _hash_record(
-                run_id=record.run_id,
-                step_id=record.step_id,
-                node_id=record.node_id,
-                input_task=record.input_task,
-                output_content=record.output_content,
-                verdict=record.verdict,
-                blocked=record.blocked,
-                timestamp=record.timestamp,
-                prev_hash=record.prev_hash,
-            )
+            record.prev_hash = run_heads[record.run_id]
+            from meshflow.core.runtime import record_hash
+            record.entry_hash = record_hash(record)
+            run_heads[record.run_id] = record.entry_hash
             self._last_entry_hash = record.entry_hash
-            
+
         backend = self._backend
         if isinstance(backend, SQLiteLedgerBackend):
             with backend._conn:
@@ -988,7 +980,15 @@ class ReplayLedger:
 
     async def get_run(self, run_id: str) -> list[dict[str, Any]]:
         await self._ensure_flushed()
-        return await self._backend.get_run(run_id)
+        backend = self._backend
+        if isinstance(backend, SQLiteLedgerBackend):
+            rows = backend._conn.execute(
+                "SELECT * FROM step_records WHERE run_id=? AND tenant_id=? ORDER BY id",
+                (run_id, self._tenant_id),
+            ).fetchall()
+            return [_normalize_row(dict(row)) for row in rows]
+        return [row for row in await backend.get_run(run_id)
+                if row.get("tenant_id", "default") == self._tenant_id]
 
     async def list_runs(self) -> list[str]:
         await self._ensure_flushed()
@@ -999,7 +999,7 @@ class ReplayLedger:
                 (self._tenant_id,),
             ).fetchall()
             return [r[0] for r in rows]
-        return await backend.list_runs()
+        return [run for run in await backend.list_runs() if await self.get_run(run)]
 
     async def run_summary(self, run_id: str) -> dict[str, Any]:
         records = await self.get_run(run_id)
@@ -1077,7 +1077,6 @@ class ReplayLedger:
                 "errors": [],            # list of human-readable chain breaks
             }
         """
-        from meshflow.core.runtime import _hash_record
 
         records = await self.get_run(run_id)
         errors: list[str] = []
@@ -1095,17 +1094,14 @@ class ReplayLedger:
                 )
 
             # Recompute entry_hash from stored fields
-            expected_hash = _hash_record(
-                run_id=r.get("run_id", ""),
-                step_id=step_id,
-                node_id=r.get("node_id", ""),
-                input_task=str(r.get("input_task", ""))[:200],
-                output_content=str(r.get("output_content", ""))[:200],
-                verdict=r.get("verdict", ""),
-                blocked=bool(r.get("blocked", False)),
-                timestamp=r.get("timestamp", ""),
-                prev_hash=stored_prev,
-            )
+            from meshflow.core.runtime import record_hash
+            try:
+                expected_hash = record_hash(r)
+            except (KeyError, TypeError, ValueError) as exc:
+                errors.append(f"step {i} ({step_id}): invalid canonical record: {exc}")
+                expected_hash = "invalid"
+            if r.get("metadata", {}).get("hash_version") == 2 and r.get("metadata", {}).get("tenant_id", "default") != r.get("tenant_id", "default"):
+                errors.append(f"step {i} ({step_id}): tenant_id mismatch")
             stored_hash = r.get("entry_hash", "")
             if stored_hash != expected_hash:
                 errors.append(f"step {i} ({step_id}): entry_hash mismatch — record was modified")
@@ -1117,25 +1113,15 @@ class ReplayLedger:
                     meta = json.loads(meta)
                 except Exception:
                     meta = {}
-            
+
             merkle_data = meta.get("merkle_proof") if isinstance(meta, dict) else None
             if merkle_data:
                 proof = merkle_data.get("proof", [])
                 idx = merkle_data.get("index", 0)
                 root = merkle_data.get("batch_root", "")
-                
+
                 # Recompute leaf hash (with prev_hash="")
-                leaf = _hash_record(
-                    run_id=r.get("run_id", ""),
-                    step_id=step_id,
-                    node_id=r.get("node_id", ""),
-                    input_task=str(r.get("input_task", ""))[:200],
-                    output_content=str(r.get("output_content", ""))[:200],
-                    verdict=r.get("verdict", ""),
-                    blocked=bool(r.get("blocked", False)),
-                    timestamp=r.get("timestamp", ""),
-                    prev_hash="",
-                )
+                leaf = record_hash(r, leaf=True)
                 if not _verify_merkle_proof(leaf, idx, proof, root):
                     errors.append(f"step {i} ({step_id}): Merkle proof validation failed for root {root}")
 
@@ -1167,20 +1153,82 @@ class ReplayLedger:
     # ── Durable HITL checkpoints ──────────────────────────────────────────────
 
     async def save_checkpoint(self, run_id: str, data: dict[str, Any]) -> None:
-        """Persist a paused workflow state so it can survive process restarts."""
-        await self._backend.save_checkpoint(run_id, data)
+        """Save a checkpoint without replacing another tenant's state."""
+        backend = self._backend
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        if isinstance(backend, SQLiteLedgerBackend):
+            with backend._conn:
+                result = backend._conn.execute(
+                    "INSERT INTO workflow_checkpoints(run_id,data,created_at,tenant_id) VALUES(?,?,?,?) "
+                    "ON CONFLICT(run_id) DO UPDATE SET data=excluded.data,created_at=excluded.created_at "
+                    "WHERE workflow_checkpoints.tenant_id=excluded.tenant_id",
+                    (run_id, json.dumps(data), now, self._tenant_id),
+                )
+                if result.rowcount == 0:
+                    raise PermissionError("Checkpoint belongs to another tenant")
+        elif isinstance(backend, PostgresLedgerBackend):
+            pool = await backend._ensure_pool()
+            async with pool.acquire() as conn:
+                result = await conn.execute(
+                    "INSERT INTO workflow_checkpoints(run_id,data,created_at,tenant_id) VALUES($1,$2::jsonb,$3,$4) "
+                    "ON CONFLICT(run_id) DO UPDATE SET data=EXCLUDED.data,created_at=EXCLUDED.created_at "
+                    "WHERE workflow_checkpoints.tenant_id=EXCLUDED.tenant_id",
+                    run_id, json.dumps(data), now, self._tenant_id,
+                )
+                if result == "INSERT 0 0":
+                    raise PermissionError("Checkpoint belongs to another tenant")
+        elif self._tenant_id == "default":
+            await backend.save_checkpoint(run_id, data)
+        else:
+            raise NotImplementedError("Backend does not provide tenant-scoped checkpoints")
 
     async def load_checkpoint_data(self, run_id: str) -> dict[str, Any] | None:
-        """Load a paused workflow state by run_id. Returns None if not found."""
-        return await self._backend.load_checkpoint_data(run_id)
+        """Load only state belonging to this tenant namespace."""
+        backend = self._backend
+        if isinstance(backend, SQLiteLedgerBackend):
+            row = backend._conn.execute(
+                "SELECT data FROM workflow_checkpoints WHERE run_id=? AND tenant_id=?",
+                (run_id, self._tenant_id),
+            ).fetchone()
+            return json.loads(row[0]) if row else None
+        if isinstance(backend, PostgresLedgerBackend):
+            pool = await backend._ensure_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT data FROM workflow_checkpoints WHERE run_id=$1 AND tenant_id=$2", run_id, self._tenant_id)
+            if row is None:
+                return None
+            return row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
+        if self._tenant_id != "default":
+            raise NotImplementedError("Backend does not provide tenant-scoped checkpoints")
+        return await backend.load_checkpoint_data(run_id)
 
     async def delete_checkpoint(self, run_id: str) -> None:
-        """Remove a checkpoint after the workflow has successfully resumed."""
-        await self._backend.delete_checkpoint(run_id)
+        backend = self._backend
+        if isinstance(backend, SQLiteLedgerBackend):
+            with backend._conn:
+                backend._conn.execute("DELETE FROM workflow_checkpoints WHERE run_id=? AND tenant_id=?", (run_id, self._tenant_id))
+        elif isinstance(backend, PostgresLedgerBackend):
+            pool = await backend._ensure_pool()
+            async with pool.acquire() as conn:
+                await conn.execute("DELETE FROM workflow_checkpoints WHERE run_id=$1 AND tenant_id=$2", run_id, self._tenant_id)
+        elif self._tenant_id == "default":
+            await backend.delete_checkpoint(run_id)
+        else:
+            raise NotImplementedError("Backend does not provide tenant-scoped checkpoints")
 
     async def list_paused_runs(self) -> list[dict[str, Any]]:
-        """Return all currently paused (checkpointed) runs."""
-        return await self._backend.list_paused_runs()
+        backend = self._backend
+        if isinstance(backend, SQLiteLedgerBackend):
+            rows = backend._conn.execute("SELECT run_id,created_at FROM workflow_checkpoints WHERE tenant_id=? ORDER BY created_at", (self._tenant_id,)).fetchall()
+            return [{"run_id": row[0], "paused_at": row[1]} for row in rows]
+        if isinstance(backend, PostgresLedgerBackend):
+            pool = await backend._ensure_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("SELECT run_id,created_at FROM workflow_checkpoints WHERE tenant_id=$1 ORDER BY created_at", self._tenant_id)
+            return [{"run_id": row["run_id"], "paused_at": row["created_at"]} for row in rows]
+        if self._tenant_id != "default":
+            raise NotImplementedError("Backend does not provide tenant-scoped checkpoints")
+        return await backend.list_paused_runs()
 
     # ── Eval result storage ───────────────────────────────────────────────────
 
@@ -1212,7 +1260,7 @@ class ReplayLedger:
             run_id = row.get("run_id", "")
             if not run_id.startswith("eval:"):
                 continue
-            data = await self._backend.load_checkpoint_data(run_id)
+            data = await self.load_checkpoint_data(run_id)
             if data is None or data.get("_type") != "eval_result":
                 continue
             if suite_name and data.get("suite_name") != suite_name:
@@ -1231,16 +1279,18 @@ class ReplayLedger:
         if isinstance(backend, SQLiteLedgerBackend):
             with backend._conn:
                 n1 = backend._conn.execute(
-                    "DELETE FROM step_records WHERE run_id=?", (run_id,)
+                    "DELETE FROM step_records WHERE run_id=? AND tenant_id=?", (run_id, self._tenant_id)
                 ).rowcount
                 n2 = backend._conn.execute(
-                    "DELETE FROM workflow_checkpoints WHERE run_id=?", (run_id,)
+                    "DELETE FROM workflow_checkpoints WHERE run_id=? AND tenant_id=?", (run_id, self._tenant_id)
                 ).rowcount
             return (n1 or 0) + (n2 or 0)
         return 0
 
     async def delete_tenant(self, tenant_id: str) -> int:
         """Delete all records for a tenant namespace. Returns rows deleted."""
+        if self._tenant_id != "default" and tenant_id != self._tenant_id:
+            raise PermissionError("Cannot delete another tenant's records")
         await self._ensure_flushed()
         backend = self._backend
         if isinstance(backend, SQLiteLedgerBackend):
@@ -1386,8 +1436,8 @@ class ReplayLedger:
             with backend._conn:
                 n = backend._conn.execute(
                     "UPDATE step_records SET input_task='[REDACTED]', output_content='[REDACTED]' "
-                    "WHERE run_id=?",
-                    (run_id,),
+                    "WHERE run_id=? AND tenant_id=?",
+                    (run_id, self._tenant_id),
                 ).rowcount
             return n or 0
         return 0

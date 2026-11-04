@@ -163,7 +163,7 @@ class RewindEngine:
         rewind_run_id = f"{run_id}/rewind_{uuid.uuid4().hex[:6]}"
 
         # ── Reconstruct context from steps BEFORE the rewind point ────────────
-        prior_steps = steps[:to_step - 1]
+        steps[:to_step - 1]
         ctx: dict[str, Any] = {}
         if context_patch:
             ctx.update(context_patch)

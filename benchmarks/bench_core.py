@@ -132,6 +132,7 @@ async def _run_scenario(
 ) -> ScenarioResult:
     from meshflow.core.mesh import Mesh
     from meshflow.core.schemas import Policy
+    from meshflow.agents.base import AgentConfig, ExecutorAgent
 
     provider = _SimulatedProvider(delay_s=provider_delay_s)
     policy = Policy(budget_usd=10.0, max_steps=1)
@@ -145,9 +146,8 @@ async def _run_scenario(
 
     async def _bounded(task_text: str) -> None:
         async with sem:
-            mesh = Mesh(policy=policy)
-            # Inject the simulated provider
-            mesh._simulated_provider = provider  # type: ignore[attr-defined]
+            agent = ExecutorAgent(AgentConfig(model="local/benchmark", provider=provider), policy)
+            mesh = Mesh(agents=[agent], policy=policy)
             r = await _single_run(mesh, task_text)
             results.append(r)
 
@@ -159,7 +159,7 @@ async def _run_scenario(
 
     latencies_ms = [r.latency_s * 1000 for r in results]
     latencies_ms.sort()
-    successes = [r for r in results if r.status not in ("error", "aborted")]
+    successes = [r for r in results if r.status == "completed"]
 
     def percentile(data: list[float], p: float) -> float:
         if not data:
@@ -232,6 +232,7 @@ async def bench_ledger_write(n: int = 1000) -> dict[str, float]:
     for i in range(n):
         await ledger.write(_record(i))
     total = time.perf_counter() - t0
+    await ledger.aclose()
     return {"n": n, "total_s": total, "writes_per_s": n / total}
 
 
@@ -266,6 +267,7 @@ async def bench_chain_validation(n: int = 200) -> dict[str, float]:
     result = await ledger.verify_chain(run_id)
     total = time.perf_counter() - t0
     steps = result.get("total_entries", n)
+    await ledger.aclose()
     return {"n_steps": steps, "validation_s": total, "steps_per_ms": steps / (total * 1000)}
 
 
@@ -284,13 +286,13 @@ def _table(headers: list[str], rows: list[list[str]], title: str = "") -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def _main(concurrencies: list[int], output_path: str | None) -> None:
+async def _main(concurrencies: list[int], output_path: str | None, quick: bool = False) -> None:
     all_results: list[dict[str, Any]] = []
 
     # ── 1. Concurrency / throughput scenarios ─────────────────────────────────
     scenarios = []
     for c in concurrencies:
-        n = min(c * 10, 1000)  # 10× concurrency, max 1000
+        n = min(c * (2 if quick else 10), 1000)
         print(f"  Running concurrency={c}  total_runs={n} …", flush=True)
         r = await _run_scenario(
             name=f"concurrent-{c}",
@@ -323,9 +325,9 @@ async def _main(concurrencies: list[int], output_path: str | None) -> None:
     # ── 2. Microbenchmarks ────────────────────────────────────────────────────
     print("\n  Running microbenchmarks …", flush=True)
 
-    prov = await bench_provider_complete(500)
-    ledger = await bench_ledger_write(1000)
-    chain = await bench_chain_validation(200)
+    prov = await bench_provider_complete(50 if quick else 500)
+    ledger = await bench_ledger_write(100 if quick else 1000)
+    chain = await bench_chain_validation(20 if quick else 200)
 
     _table(
         ["benchmark", "n", "result"],
@@ -341,8 +343,11 @@ async def _main(concurrencies: list[int], output_path: str | None) -> None:
     all_results.append({"type": "micro", **chain, "name": "chain_validate"})
 
     # ── 3. Memory profile at peak load ────────────────────────────────────────
-    print("\n  Memory profile (concurrency=50, 200 runs) …", flush=True)
-    mem_r = await _run_scenario("memory-profile", concurrency=50, total_runs=200)
+    memory_concurrency, memory_runs = (10, 20) if quick else (50, 200)
+    print(f"\n  Memory profile (concurrency={memory_concurrency}, {memory_runs} runs) …", flush=True)
+    mem_r = await _run_scenario(
+        "memory-profile", concurrency=memory_concurrency, total_runs=memory_runs
+    )
     _table(
         ["metric", "value"],
         [
@@ -359,6 +364,9 @@ async def _main(concurrencies: list[int], output_path: str | None) -> None:
         with open(output_path, "w") as f:
             json.dump({"timestamp": time.time(), "results": all_results}, f, indent=2)
         print(f"\nResults saved to {output_path}")
+
+    if any(r.success_rate < 1.0 for r in [*scenarios, mem_r]):
+        raise RuntimeError("Benchmark execution failed; inspect the recorded success rates")
 
 
 def main() -> None:
@@ -385,7 +393,7 @@ def main() -> None:
     print(f"  Python {sys.version.split()[0]}")
     print()
 
-    asyncio.run(_main(levels, args.output))
+    asyncio.run(_main(levels, args.output, quick=args.quick))
     print("\nDone.")
 
 

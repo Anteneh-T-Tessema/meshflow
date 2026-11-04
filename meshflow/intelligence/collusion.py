@@ -199,27 +199,27 @@ def _mask_structural_boilerplate(text: str) -> str:
             cleaned = re.sub(sql_kws, ' ', cleaned, flags=re.IGNORECASE)
         if is_xml:
             cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
-        
+
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         return cleaned
-    
+
     return text
 
 
 def _get_entropy_sensitivity_factor(role: str, text: str) -> float:
     """Returns a baseline threshold multiplier/factor based on role or text content."""
     role_lower = role.lower() if role else ""
-    
+
     # Cryptographic Key Exchange / encrypted payloads: skip profiling entirely (factor = 0.0)
     if "crypt" in role_lower or "key_exchange" in role_lower or "signature" in role_lower:
         return 0.0
     if "BEGIN PUBLIC KEY" in text or "BEGIN PRIVATE KEY" in text or "ssh-rsa" in text:
         return 0.0
-        
+
     # Financial Ledger/Code: scaled-down sensitivity (factor = 0.5)
     if "finance" in role_lower or "ledger" in role_lower or "code" in role_lower or "developer" in role_lower:
         return 0.5
-        
+
     # Detect if text content contains structural code/ledger cues
     is_code = (
         "def " in text or "class " in text or "import " in text or
@@ -231,7 +231,7 @@ def _get_entropy_sensitivity_factor(role: str, text: str) -> float:
     )
     if is_code or is_ledger:
         return 0.5
-        
+
     return 1.0
 
 
@@ -243,7 +243,7 @@ class BigramPerplexityTracker:
         self.bigrams: dict[tuple[str, str], int] = {}
         self.vocab: set[str] = set()
         self.alpha = 0.1
-        
+
         # Train on a baseline English corpus snippet to establish expected probabilities
         sample_text = (
             "the quick brown fox jumps over the lazy dog. this is a standard test sentence for "
@@ -257,7 +257,7 @@ class BigramPerplexityTracker:
             "systems requires tracing, metrics, and logs. always verify the integrity of the chain."
         )
         self.train(sample_text)
-        
+
     def train(self, text: str) -> None:
         tokens = self._tokenize(text)
         if not tokens:
@@ -265,7 +265,7 @@ class BigramPerplexityTracker:
         for tok in tokens:
             self.unigrams[tok] = self.unigrams.get(tok, 0) + 1
             self.vocab.add(tok)
-            
+
         for i in range(len(tokens) - 1):
             bg = (tokens[i], tokens[i+1])
             self.bigrams[bg] = self.bigrams.get(bg, 0) + 1
@@ -278,25 +278,25 @@ class BigramPerplexityTracker:
         tokens = self._tokenize(text)
         if not tokens:
             return 0.0
-            
+
         vocab_size = len(self.vocab)
         log_prob = 0.0
-        
+
         # P(w_1)
         w1 = tokens[0]
         c_w1 = self.unigrams.get(w1, 0)
         total_words = sum(self.unigrams.values())
         prob_w1 = (c_w1 + self.alpha) / (total_words + self.alpha * vocab_size)
         log_prob += math.log(prob_w1)
-        
+
         for i in range(len(tokens) - 1):
             w_prev, w_curr = tokens[i], tokens[i+1]
             c_prev = self.unigrams.get(w_prev, 0)
             c_bg = self.bigrams.get((w_prev, w_curr), 0)
-            
+
             prob = (c_bg + self.alpha) / (c_prev + self.alpha * vocab_size)
             log_prob += math.log(prob)
-            
+
         avg_log_prob = log_prob / len(tokens)
         try:
             return math.exp(-avg_log_prob)
@@ -375,17 +375,17 @@ class SteganographicChannelDetector:
             word_corr = abs(self._pearson(wa, wb))
 
             score = max(len_corr, word_corr)
-            
+
             # Collusion triggers only if character-level entropy drops while semantic perplexity concurrently spikes.
             # We look at the latest output for both agents.
             ent_a = self._entropies.get(a, [4.5])[-1] if self._entropies.get(a) else 4.5
             ent_b = self._entropies.get(b, [4.5])[-1] if self._entropies.get(b) else 4.5
             perp_a = self._perplexities.get(a, [10.0])[-1] if self._perplexities.get(a) else 10.0
             perp_b = self._perplexities.get(b, [10.0])[-1] if self._perplexities.get(b) else 10.0
-            
+
             fact_a = self._sensitivity_factors.get(a, [1.0])[-1] if self._sensitivity_factors.get(a) else 1.0
             fact_b = self._sensitivity_factors.get(b, [1.0])[-1] if self._sensitivity_factors.get(b) else 1.0
-            
+
             # Skip profiling entirely if either agent has key exchange/cryptography active
             if fact_a == 0.0 or fact_b == 0.0:
                 is_alert = False
@@ -395,18 +395,18 @@ class SteganographicChannelDetector:
                 # and increases the perplexity spike threshold.
                 adj_entropy_threshold = 3.9 * f
                 adj_perplexity_threshold = 35.0 / f
-                
+
                 # Check for entropy drop and perplexity spike (either agent)
                 entropy_drop = (ent_a < adj_entropy_threshold) or (ent_b < adj_entropy_threshold)
                 perplexity_spike = (perp_a > adj_perplexity_threshold) or (perp_b > adj_perplexity_threshold)
-                
+
                 # Adjusted correlation thresholds
                 adj_len_threshold = min(0.99, self.LENGTH_CORRELATION_THRESHOLD + (1.0 - f) * 0.15)
                 adj_word_threshold = min(0.99, self.WORD_CORRELATION_THRESHOLD + (1.0 - f) * 0.15)
-                
+
                 len_corr_ok = len_corr > adj_len_threshold
                 word_corr_ok = word_corr > adj_word_threshold
-                
+
                 is_alert = (len_corr_ok or word_corr_ok) and entropy_drop and perplexity_spike
 
             alerts.append(

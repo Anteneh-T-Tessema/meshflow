@@ -164,21 +164,17 @@ class TestRedisMemoryBackendInterface:
         b = RedisMemoryBackend("redis://localhost:6379/0")
         assert b.ttl is None
 
-    def test_missing_redis_raises_import_error(self):
+    def test_missing_redis_raises_import_error(self, monkeypatch):
         """When redis package is absent, save() raises ImportError with install hint."""
         import sys
         from meshflow import RedisMemoryBackend
 
-        # Temporarily hide redis from the import system
-        original = sys.modules.pop("redis", None)
-        try:
-            b = RedisMemoryBackend("redis://localhost:6379/0")
-            b._client = None  # force re-import attempt
-            with pytest.raises(ImportError, match="pip install redis"):
-                b.save("s", {"x": 1})
-        finally:
-            if original is not None:
-                sys.modules["redis"] = original
+        # Block imports even when the optional package is installed locally.
+        monkeypatch.setitem(sys.modules, "redis", None)
+        b = RedisMemoryBackend("redis://localhost:6379/0")
+        b._client = None  # force re-import attempt
+        with pytest.raises(ImportError, match="pip install redis"):
+            b.save("s", {"x": 1})
 
 
 class TestRedisMemoryBackendWithMock:
